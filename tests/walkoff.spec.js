@@ -5,7 +5,9 @@ const { pathToFileURL } = require('url');
 
 const PAGE = pathToFileURL(path.join(__dirname, '..', 'index.html')).href;
 const API = 'https://walkoff-api.walkoff-api.workers.dev';
-const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET, POST, OPTIONS' };
+const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, authorization', 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS' };
+const SESSION = 'test-session';         // 가짜 서버가 받아 주는 로그인 표
+const ACCOUNT_ID = 'p-account-0001';    // 가짜 서버의 계정 ID
 const EMPTY_RANKING = { week: '2026-10-26', nextWeek: '2026-11-02', players: [], teams: [], count: 0, me: null, myTeam: null, lastWeek: { player: null, team: null } };
 const SAMPLE_RANKING = {
   ...EMPTY_RANKING,
@@ -18,37 +20,57 @@ const SAMPLE_RANKING = {
   lastWeek: { player: { rank: 1, nick: '명은', team: 'lotte', total: 20000, days: 7, me: false }, team: { rank: 1, team: 'lotte', total: 20000, players: 1 } },
 };
 
-// 테스트가 실제 랭킹 서버에 점수를 보내지 않도록 서버 주소를 가로채 가짜로 답한다. 보낸 점수는 돌려주는 배열에 쌓인다
-async function mockRanking(page, { rankings = EMPTY_RANKING, fail = false } = {}) {
-  const posted = [];
+// 테스트가 실제 랭킹 서버에 닿지 않도록 서버 주소를 가로채 가짜로 답한다. 받은 요청은 돌려주는 배열에 쌓인다.
+// account: 로그인한 계정에 이미 있는 팀·닉네임(다른 기기에서 쓰던 계정을 흉내 낸다)
+async function mockApi(page, { rankings = EMPTY_RANKING, fail = false, account = {} } = {}) {
+  const calls = [];
   await page.route(`${API}/**`, (route) => {
-    const req = route.request();
+    const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
+    const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
-    if (fail) return route.fulfill({ status: 500, headers: CORS, contentType: 'application/json', body: '{"ok":false,"error":"server_error"}' });
-    if (req.method() === 'POST') {
-      posted.push(JSON.parse(req.postData() || '{}'));
-      const res = { ok: true, accepted: true, week: '2026-10-26', me: { rank: 3, total: 4200, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5 };
-      return route.fulfill({ headers: CORS, contentType: 'application/json', body: JSON.stringify(res) });
+    calls.push({ method: req.method(), path: url.pathname, query: Object.fromEntries(url.searchParams), auth, body: req.postData() ? JSON.parse(req.postData()) : null });
+    if (url.pathname.startsWith('/auth/')) return route.abort();   // 카카오로 가는 길. 돌아오는 것은 loginReturn으로 흉내 낸다
+    if (fail) return reply({ ok: false, error: 'server_error' }, 500);
+    if ((url.pathname === '/me' || url.pathname === '/scores') && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null } : { ok: true });
+    if (url.pathname === '/scores') {
+      return reply({ ok: true, accepted: true, week: '2026-10-26', me: { rank: 3, total: 4200, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5 });
     }
-    return route.fulfill({ headers: CORS, contentType: 'application/json', body: JSON.stringify(rankings) });
+    return reply(rankings);
   });
-  return posted;
+  return calls;
 }
 
-// team: 처음부터 고른 팀(null이면 처음 온 사람). ranking: mockRanking 설정
-async function open(page, query = '?seed=42', { team = 'lg', ranking } = {}) {
+// team: 처음부터 고른 팀(null이면 처음 온 사람). login: 카카오로 로그인한 상태로 연다. api: mockApi 설정
+async function open(page, query = '?seed=42', { team = 'lg', login = false, api } = {}) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  const posted = await mockRanking(page, ranking);
-  if (team) {
-    await page.addInitScript((t) => {
-      if (!localStorage.getItem('walkoff.team')) { localStorage.setItem('walkoff.team', t); localStorage.setItem('walkoff.nick', '테스트'); }
-    }, team);
-  }
+  const calls = await mockApi(page, api);
+  await page.addInitScript(({ team, login, session }) => {
+    if (location.protocol !== 'file:') return;   // 로그인 흉내 중에 지나가는 빈 페이지에서는 저장소를 못 쓴다
+    if (localStorage.getItem('walkoff.seeded')) return;   // 새로고침해도 처음 값으로 되돌리지 않는다
+    localStorage.setItem('walkoff.seeded', '1');
+    if (team) { localStorage.setItem('walkoff.team', team); localStorage.setItem('walkoff.nick', '테스트'); }
+    if (login) localStorage.setItem('walkoff.session', session);
+  }, { team, login, session: SESSION });
   await page.goto(PAGE + query);
   await page.waitForFunction(() => !!window.walkoff);
-  Object.defineProperty(errors, 'posted', { value: posted });   // expect(errors).toEqual([])에 걸리지 않게 숨긴 속성으로 둔다
+  Object.defineProperty(errors, 'calls', { value: calls });   // expect(errors).toEqual([])에 걸리지 않게 숨긴 속성으로 둔다
   return errors;
+}
+const sentScores = (errors) => errors.calls.filter((c) => c.method === 'POST' && c.path === '/scores');
+
+// 게임이 카카오 로그인으로 떠난 요청(서버 /auth/kakao/start)을 기다려 그 값을 돌려준다
+async function kakaoStart(errors) {
+  await expect.poll(() => errors.calls.some((c) => c.path === '/auth/kakao/start')).toBe(true);
+  return errors.calls.find((c) => c.path === '/auth/kakao/start').query;
+}
+
+// 카카오 로그인을 마치고 게임으로 돌아온 것처럼 연다. n은 게임이 보낸 확인값
+async function loginReturn(page, query, n, { error } = {}) {
+  await page.goto('about:blank');
+  await page.goto(`${PAGE}${query}#${error ? `login_error=${error}` : `login=${SESSION}`}&n=${n}`);
+  await page.waitForFunction(() => !!window.walkoff);
 }
 
 const tap = async (page, label) => {
@@ -204,22 +226,23 @@ test.describe('한 판 끝까지', () => {
 
   test('오늘의 10구: 첫 판만 기록되고, 다시 누르면 기록을 보여 준다', async ({ page }) => {
     test.slow();
-    const errors = await open(page, '');
+    const errors = await open(page, '', { login: true });
     await page.keyboard.press('Space');   // 오늘 아직 안 쳤으면 오늘의 10구로 시작
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('daily');
     await playUntilOver(page, 0);
     const saved = await page.evaluate(() => walkoff.store.get('daily.' + walkoff.today(), null));
     expect(saved && saved.score).toBe(await page.evaluate(() => walkoff.game.score));
-    // 첫 판 점수가 랭킹 서버로 한 번 가고, 끝 화면에 이번 주 순위가 붙는다
-    await expect.poll(() => errors.posted.length).toBe(1);
-    const sent = errors.posted[0], today = await page.evaluate(() => walkoff.today());
-    expect(sent).toEqual({ playerId: expect.stringMatching(/^[a-z0-9-]{8,40}$/), nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights });
+    // 첫 판 점수가 로그인 표와 함께 랭킹 서버로 한 번 가고, 끝 화면에 이번 주 순위가 붙는다
+    await expect.poll(() => sentScores(errors).length).toBe(1);
+    const sent = sentScores(errors)[0], today = await page.evaluate(() => walkoff.today());
+    expect(sent.auth).toBe(`Bearer ${SESSION}`);
+    expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights });   // 사람 ID는 서버가 로그인 표에서 꺼낸다
     await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 3위 · LG 2위 · 랭킹 보기 ›');
     await page.keyboard.press('Escape');
     await page.keyboard.press('Space');   // 오늘 친 뒤에는 10구 도전으로 시작
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
-    expect(errors.posted.length).toBe(1);   // 10구 도전은 랭킹에 보내지 않는다
+    expect(sentScores(errors).length).toBe(1);   // 10구 도전은 랭킹에 보내지 않는다
     expect(errors).toEqual([]);
   });
 });
@@ -234,7 +257,7 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.state === 'menu');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '기록'));
     const items = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
-    for (const want of [/^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^이번 주 랭킹$/, /^팀·닉네임 바꾸기$/, /^닫기$/]) {
+    for (const want of [/^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^이번 주 랭킹$/, /^팀·닉네임 바꾸기$/, /^카카오 로그인$/, /^닫기$/]) {
       expect(items.some((l) => want.test(l)), String(want)).toBe(true);
     }
     await page.keyboard.press('Escape');
@@ -256,31 +279,111 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('처음 온 사람은 탭하면 팀과 닉네임부터 고르고, 고른 팀 유니폼을 입는다', async ({ page }) => {
+  test('처음 온 사람은 열자마자 팀과 닉네임을 고르고, 로그인 없이도 시작할 수 있다', async ({ page }) => {
     const errors = await open(page, '?seed=42', { team: null });
-    const vp = page.viewportSize(), nick = page.locator('input[aria-label="닉네임"]');
-    await page.mouse.click(20, vp.height - 20);
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
-    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '이 팀으로 시작'));
-    await tap(page, '이 팀으로 시작');   // 팀을 안 고르면 시작하지 않는다
+    const nick = page.locator('input[aria-label="닉네임"]');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');   // 누르지 않아도 팀 고르기부터
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 시작'));
+    await tap(page, '로그인 없이 하기 · 랭킹 제외');   // 팀을 안 고르면 넘어가지 않는다
     expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
     await tap(page, '한화 이글스');
     expect(await page.evaluate(() => walkoff.batterColors().accent)).toBe('#1b1b1b');   // 고르는 중에도 유니폼을 미리 입혀 본다
     await nick.fill('명은');
-    await tap(page, '이 팀으로 시작');
-    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode, team: walkoff.settings.team, nick: walkoff.settings.nick })))
-      .toEqual({ state: 'windup', mode: 'daily', team: 'hanwha', nick: '명은' });
-    expect(await page.evaluate(() => walkoff.game.opponent !== 'hanwha' && walkoff.pitcherColors().navy !== '#1d2f5c')).toBe(true);   // 투수는 상대 팀 색
+    await nick.press('Enter');   // 처음 화면에서 엔터는 키보드만 닫는다(카카오 로그인으로 넘어가지 않는다)
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
+    await tap(page, '로그인 없이 하기 · 랭킹 제외');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick })))
+      .toEqual({ state: 'title', team: 'hanwha', nick: '명은' });   // 시작 화면에서 규칙과 좌타·우타를 보고 시작한다
     await expect(nick).toBeHidden();
+    const vp = page.viewportSize();
+    await page.mouse.click(20, vp.height - 20);
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
+    expect(await page.evaluate(() => walkoff.game.opponent !== 'hanwha' && walkoff.pitcherColors().navy !== '#1d2f5c')).toBe(true);   // 투수는 상대 팀 색
     await page.reload();
     await page.waitForFunction(() => !!window.walkoff);
-    expect(await page.evaluate(() => ({ team: walkoff.settings.team, nick: walkoff.settings.nick, jersey: walkoff.batterColors().jersey })))
-      .toEqual({ team: 'hanwha', nick: '명은', jersey: '#e65c00' });   // 한화 상의 #ff6600을 조명에 맞춰 0.9배
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick, jersey: walkoff.batterColors().jersey })))
+      .toEqual({ state: 'title', team: 'hanwha', nick: '명은', jersey: '#e65c00' });   // 한화 상의 #ff6600을 조명에 맞춰 0.9배
+    expect(errors.calls).toEqual([]);   // 로그인하지 않으면 서버에 아무것도 보내지 않는다
     expect(errors).toEqual([]);
   });
 
-  test('메뉴에서 팀·닉네임을 바꾸고 엔터로 저장한다', async ({ page }) => {
+  test('카카오로 시작: 다른 기기에서 쓰던 계정이면 그 팀·닉네임으로 이어 간다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { team: null, api: { account: { team: 'lg', nick: '민성' } } });
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 시작'));
+    const pid = await page.evaluate(() => walkoff.settings.playerId);
+    await tap(page, '두산 베어스');
+    await tap(page, '카카오로 시작');
+    const start = await kakaoStart(errors);
+    expect(start).toEqual({ n: expect.stringMatching(/^n[0-9a-f]{32}$/), pid, return: `${PAGE}?seed=42` });
+    await loginReturn(page, '?seed=42', start.n);
+    await page.waitForFunction(() => walkoff.settings.team === 'lg');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick, playerId: walkoff.settings.playerId, toast: walkoff.game.toast?.text, hash: location.hash })))
+      .toEqual({ state: 'title', team: 'lg', nick: '민성', playerId: ACCOUNT_ID, toast: '이어서 해요 · LG 민성', hash: '' });
+    expect(errors.calls.filter((c) => c.method === 'PUT')).toEqual([]);   // 계정에 이미 팀이 있으면 덮어쓰지 않는다
+    expect(errors).toEqual([]);
+  });
+
+  test('카카오 로그인에서 돌아올 때: 취소했거나 확인값이 다르면 로그인하지 않는다', async ({ page }) => {
     const errors = await open(page);
+    await page.evaluate(() => localStorage.setItem('walkoff.loginNonce', 'nabc12345678'));
+    await loginReturn(page, '?seed=42', 'nabc12345678', { error: 'canceled' });
+    expect(await page.evaluate(() => ({ token: walkoff.auth.token, toast: walkoff.game.toast?.text, nonce: localStorage.getItem('walkoff.loginNonce') })))
+      .toEqual({ token: null, toast: '카카오 로그인을 취소했어요', nonce: null });
+    await page.evaluate(() => localStorage.setItem('walkoff.loginNonce', 'nabc12345678'));
+    await loginReturn(page, '?seed=42', 'nother1234567');   // 다른 사람이 만든 로그인 주소
+    expect(await page.evaluate(() => ({ token: walkoff.auth.token, session: localStorage.getItem('walkoff.session'), hash: location.hash })))
+      .toEqual({ token: null, session: null, hash: '' });
+    expect(errors.calls.filter((c) => c.path === '/me')).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인하지 않으면 점수를 남겨 두고, 끝 화면에서 카카오로 로그인하면 그때 올린다', async ({ page }) => {
+    const errors = await open(page);
+    await page.evaluate(() => { walkoff.startGame('daily'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝낸다
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    const today = await page.evaluate(() => walkoff.today()), pending = await page.evaluate(() => walkoff.store.get('pending', null));
+    expect(pending).toMatchObject({ nick: '테스트', team: 'lg', day: today });
+    expect(sentScores(errors)).toEqual([]);
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 로그인하면 랭킹에 올라가요 ›'));
+    await tap(page, '카카오로 로그인하면 랭킹에 올라가요 ›');
+    await loginReturn(page, '?seed=42', (await kakaoStart(errors)).n);
+    await expect.poll(() => sentScores(errors).length).toBe(1);
+    expect(sentScores(errors)[0]).toMatchObject({ auth: `Bearer ${SESSION}`, body: pending });
+    await page.waitForFunction(() => walkoff.store.get('pending', null) === null);
+    expect(await page.evaluate(() => ({ token: walkoff.auth.token, playerId: walkoff.settings.playerId, toast: walkoff.game.toast?.text })))
+      .toEqual({ token: SESSION, playerId: ACCOUNT_ID, toast: '오늘의 10구 기록을 랭킹에 올렸어요' });
+    expect(errors.calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg' }]);   // 새 계정에 팀·닉네임을 올린다
+    expect(errors).toEqual([]);
+  });
+
+  test('내 계정: 랭킹 기록 지우기는 한 번 더 묻고, 지우면 로그아웃된다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true });
+    await page.waitForFunction(() => walkoff.settings.playerId === 'p-account-0001');
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '내 계정'));
+    await tap(page, '내 계정');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '랭킹 기록 지우기'));
+    await tap(page, '랭킹 기록 지우기');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '지우기'));
+    await tap(page, '취소');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '랭킹 기록 지우기'));
+    expect(errors.calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+    await tap(page, '랭킹 기록 지우기');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '지우기'));
+    await tap(page, '지우기');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    expect(errors.calls.filter((c) => c.method === 'DELETE')).toEqual([expect.objectContaining({ path: '/me', auth: `Bearer ${SESSION}` })]);
+    expect(await page.evaluate(() => ({ token: walkoff.auth.token, session: localStorage.getItem('walkoff.session'), newId: walkoff.settings.playerId !== 'p-account-0001', toast: walkoff.game.toast?.text })))
+      .toEqual({ token: null, session: null, newId: true, toast: '랭킹 기록과 계정을 지웠어요' });
+    await page.evaluate(() => walkoff.openAccount());
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 로그인'));   // 로그아웃된 계정 화면
+    expect(errors).toEqual([]);
+  });
+
+  test('메뉴에서 팀·닉네임을 바꾸고 엔터로 저장한다. 로그인했으면 계정에도 적는다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true });
     await tap(page, '메뉴');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀·닉네임 바꾸기'));
     await tap(page, '팀·닉네임 바꾸기');
@@ -291,28 +394,30 @@ test.describe('화면', () => {
     await nick.press('Enter');
     expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick })))
       .toEqual({ state: 'title', team: 'nc', nick: '새이름' });
+    await expect.poll(() => errors.calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toContainEqual({ nick: '새이름', team: 'nc' });
     expect(errors).toEqual([]);
   });
 
   test('랭킹 화면: 순위, 빈 목록, 서버 오류', async ({ page }) => {
-    const errors = await open(page, '?seed=42', { ranking: { rankings: SAMPLE_RANKING } });
+    const errors = await open(page, '?seed=42', { api: { rankings: SAMPLE_RANKING } });
     await page.evaluate(() => walkoff.openRanking('title'));
     await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
     expect(await page.evaluate(() => walkoff.game.ranking.data.me.rank)).toBe(2);
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀'));
     await tap(page, '팀');
     expect(await page.evaluate(() => walkoff.game.rankTab)).toBe('teams');
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('카카오로 로그인하면 나도 올라가요 ›');   // 로그인 안 한 사람에게 보인다
     await page.keyboard.press('Space');   // 스페이스로 닫는다
     expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
 
     await page.unroute(`${API}/**`);
-    await mockRanking(page);   // 아직 아무도 없는 주
+    await mockApi(page);   // 아직 아무도 없는 주
     await page.evaluate(() => walkoff.openRanking('title'));
     await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
     expect(await page.evaluate(() => walkoff.game.ranking.data.players.length)).toBe(0);
 
     await page.unroute(`${API}/**`);
-    await mockRanking(page, { fail: true });
+    await mockApi(page, { fail: true });
     await page.evaluate(() => walkoff.openRanking('title'));
     await page.waitForFunction(() => walkoff.game.ranking?.status === 'error');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '다시 시도'));

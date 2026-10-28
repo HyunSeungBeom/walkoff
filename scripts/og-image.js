@@ -10,7 +10,8 @@ const ROOT = path.join(__dirname, '..');
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
   await page.goto(pathToFileURL(path.join(ROOT, 'index.html')).href);
-  await page.waitForFunction(() => window.walkoff && walkoff.game.state === 'title');
+  await page.waitForFunction(() => !!window.walkoff);
+  await page.evaluate(() => walkoff.goTitle());   // 처음 온 사람은 팀 고르기부터 나오지만, 그림은 팀을 안 고른 기본 색의 시작 화면으로 찍는다
   await page.addStyleTag({ content: '#build { display: none; }' });   // 커밋 번호 표시는 그림에 넣지 않는다
   await page.waitForTimeout(1500);   // 시작 화면 글자가 다 나타날 때까지
   await page.screenshot({ path: path.join(ROOT, 'og.png') });

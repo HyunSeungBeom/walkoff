@@ -932,10 +932,15 @@ function hudLayout() {
   };
 }
 
-function button(r, label, primary) {
+// [바탕색, 글자색]. kakao는 카카오 로그인 버튼 색이다
+const BUTTON_COLORS = {
+  primary: ['#f2c94c', '#1b1405'], kakao: ['#fee500', '#191919'], danger: ['#e5484d', '#fff'], secondary: ['rgba(255,255,255,0.14)', '#fff'],
+};
+function button(r, label, style) {
+  const [bg, fg] = BUTTON_COLORS[style] ?? BUTTON_COLORS.secondary;
   roundRect(r.x, r.y, r.w, r.h, 23);
-  ctx.fillStyle = primary ? '#f2c94c' : 'rgba(255,255,255,0.14)'; ctx.fill();
-  text(label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 16, color: primary ? '#1b1405' : '#fff' });
+  ctx.fillStyle = bg; ctx.fill();
+  text(label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 16, color: fg });
 }
 
 const inRect = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
@@ -1083,7 +1088,7 @@ function addButton(r, label, style, onTap) {
   } else if (style === 'menuIcon') {
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     for (let i = 0; i < 3; i++) ctx.fillRect(r.x + r.w * 0.25, r.y + r.h * (0.32 + i * 0.18) - 1.5, r.w * 0.5, 3);
-  } else button(r, label, style === 'primary');
+  } else button(r, label, style);
   ui.buttons.push({ r, onTap, label });
 }
 
@@ -1502,7 +1507,8 @@ function drawRecords() {
 }
 
 // ===== 팀 고르기 =====
-// 처음 시작할 때 팀과 닉네임을 고른다(2026-10-28 사용자 결정). 메뉴에서 다시 바꿀 수 있다.
+// 처음 온 사람은 열자마자 팀과 닉네임을 고른다(2026-10-28 사용자 결정). 카카오로 시작하면 랭킹에 오르고,
+// 로그인 없이도 할 수 있다. 메뉴에서 다시 바꿀 수 있다.
 // 닉네임은 한글 입력기 때문에 캔버스로 받을 수 없어서 이 화면에서만 HTML 입력칸을 캔버스 위에 띄운다
 const nickInput = document.createElement('input');
 Object.assign(nickInput, { type: 'text', maxLength: 10, autocomplete: 'off', spellcheck: false, placeholder: '닉네임' });
@@ -1514,20 +1520,25 @@ Object.assign(nickInput.style, {
 });
 document.body.appendChild(nickInput);
 
-function openOnboard(next) {   // next: 'start'(고른 뒤 바로 시작) | 'menu'(메뉴에서 바꾸기)
-  game.onboard = { next, team: settings.team };
+// next: 'start'(처음 온 사람) | 'menu'(메뉴에서 바꾸기). play면 고른 뒤 바로 경기를 시작한다(시작 화면을 눌러서 온 경우)
+function openOnboard(next, play = false) {
+  game.onboard = { next, play, team: settings.team };
   nickInput.value = settings.nick || defaultNick();
   game.state = 'onboard';
 }
 
-function confirmOnboard() {
+// how: 'kakao'(카카오로 시작) | 'local'(로그인 없이 하기, 메뉴에서는 저장)
+function confirmOnboard(how = 'local') {
   const ob = game.onboard;
   if (!ob.team) { toast('팀을 골라 주세요'); return; }
   const nick = nickInput.value.trim().slice(0, 10) || defaultNick();
   saveTeamAndNick(ob.team, nick);
   nickInput.blur();
-  if (ob.next === 'start') startDefault();
-  else { goTitle(); toast(`저장했어요 · ${teamById(ob.team).short} ${nick}`); }
+  pushProfile();
+  if (how === 'kakao') startKakaoLogin();
+  else if (ob.next === 'menu') { goTitle(); toast(`저장했어요 · ${teamById(ob.team).short} ${nick}`); }
+  else if (ob.play) startDefault();
+  else goTitle();   // 처음 온 사람은 시작 화면에서 규칙과 좌타·우타를 보고 시작한다
 }
 
 const UNOFFICIAL = 'KBO·각 구단과 관계없는 비공식 팬 게임이에요';
@@ -1543,29 +1554,36 @@ function drawTeamChip(r, t, on) {
 
 function drawOnboard() {
   dim(0.62);
-  const m = view.mobile, cx = view.w / 2, ob = game.onboard;
-  let y = view.h * (m ? 0.1 : 0.13);
-  text(ob.next === 'start' ? '내 팀을 고르세요' : '팀·닉네임 바꾸기', cx, y, { size: m ? 22 : 28, weight: 800 });
-  y += m ? 30 : 36;
+  const m = view.mobile, cx = view.w / 2, ob = game.onboard, first = ob.next === 'start';
+  let y = view.h * (m ? 0.08 : 0.12);
+  text(first ? '내 팀을 고르세요' : '팀·닉네임 바꾸기', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 28 : 36;
   text('팀 색으로 유니폼이 바뀌고, 주간 랭킹에서 팀끼리 겨뤄요', cx, y, { size: m ? 12 : 15, weight: 500, color: 'rgba(255,255,255,0.75)' });
-  y += m ? 26 : 34;
-  const cols = m ? 2 : 5, gap = 10, w = m ? view.w - 32 : 900, cw = (w - gap * (cols - 1)) / cols, ch = m ? 44 : 52;
+  y += m ? 24 : 34;
+  const cols = m ? 2 : 5, gap = m ? 8 : 10, w = m ? view.w - 32 : 900, cw = (w - gap * (cols - 1)) / cols, ch = m ? 40 : 52;
   TEAMS.forEach((t, i) => {
     const r = { x: cx - w / 2 + (i % cols) * (cw + gap), y: y + Math.floor(i / cols) * (ch + gap), w: cw, h: ch };
     drawTeamChip(r, t, ob.team === t.id);
     ui.buttons.push({ r, label: t.name, onTap: () => { ob.team = t.id; } });
   });
-  y += Math.ceil(TEAMS.length / cols) * (ch + gap) + (m ? 12 : 16);
+  y += Math.ceil(TEAMS.length / cols) * (ch + gap) + (m ? 10 : 16);
   text(UNOFFICIAL, cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });   // 구단 이름은 상표라서 공식 게임이 아니라고 밝힌다
-  y += m ? 26 : 32;
+  y += m ? 24 : 32;
   text('닉네임 · 랭킹에 보여요(10자까지)', cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
-  y += m ? 14 : 18;
+  y += m ? 12 : 18;
   const iw = m ? view.w - 64 : 300;
   Object.assign(nickInput.style, { display: 'block', left: `${cx - iw / 2}px`, top: `${y}px`, width: `${iw}px`, height: '44px' });
-  y += 44 + (m ? 18 : 24);
+  y += 44 + (m ? 16 : 24);
   const bw = m ? view.w - 64 : 300;
-  addButton({ x: cx - bw / 2, y, w: bw, h: 50 }, ob.next === 'start' ? '이 팀으로 시작' : '저장', 'primary', confirmOnboard);
-  addButton({ x: cx - 70, y: y + 60, w: 140, h: 36 }, ob.next === 'start' ? '뒤로' : '취소', 'link', goTitle);
+  if (first && !loggedIn()) {
+    addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 시작', 'kakao', () => confirmOnboard('kakao'));
+    y += 48 + (m ? 16 : 20);
+    text('카카오에서는 회원번호만 받아요 · 랭킹에만 써요', cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });
+    addButton({ x: cx - 120, y: y + 10, w: 240, h: 36 }, '로그인 없이 하기 · 랭킹 제외', 'link', () => confirmOnboard('local'));
+  } else {
+    addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, first ? '이 팀으로 시작' : '저장', 'primary', () => confirmOnboard('local'));
+    addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, first ? '뒤로' : '취소', 'link', goTitle);
+  }
 }
 
 // ===== 주간 랭킹 =====
@@ -1585,28 +1603,36 @@ function untilNextWeek(week) {
 }
 
 async function postScore(body) {
-  const res = await fetch(`${RANKING_API}/scores`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const res = await api('/scores', { method: 'POST', body });
   return { status: res.status, data: await res.json().catch(() => ({})) };
 }
 
-// 오늘의 10구 첫 판 점수를 보낸다. 네트워크 오류면 남겨 뒀다가 다음에 열 때 다시 보내고, 서버가 거절한 기록은 버린다
+// 오늘의 10구 첫 판 점수를 보낸다. 로그인하지 않았거나 네트워크 오류면 남겨 뒀다가 로그인하거나 다음에 열 때 보내고,
+// 서버가 거절한 기록은 버린다(날짜가 지난 기록 등)
 async function submitDaily(s) {
   if (!settings.team) return;
   if (!settings.nick) saveTeamAndNick(settings.team, defaultNick());
-  const body = { playerId: settings.playerId, nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights };
+  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights };
   store.set('pending', body);
+  if (!loggedIn()) return;
   game.rankInfo = { status: 'sending' };
   try {
     const { status, data } = await postScore(body);
-    if (status !== 0 && status < 500) store.remove('pending');
+    if (status === 401) { logout('expired'); return; }
+    if (status < 500) store.remove('pending');
     game.rankInfo = status === 200 && data.ok ? { status: 'ok', me: data.me, myTeam: data.myTeam } : { status: 'error' };
   } catch { game.rankInfo = { status: 'error' }; }
 }
 
 async function resendPending() {
   const body = store.get('pending', null);
-  if (!body || typeof body !== 'object') return;
-  try { const { status } = await postScore(body); if (status < 500) store.remove('pending'); } catch { /* 다음에 열 때 다시 보낸다 */ }
+  if (!body || typeof body !== 'object' || !loggedIn()) return;
+  try {
+    const { status, data } = await postScore(body);
+    if (status === 401) { logout('expired'); return; }
+    if (status < 500) store.remove('pending');
+    if (data.accepted) toast('오늘의 10구 기록을 랭킹에 올렸어요');
+  } catch { /* 다음에 열 때 다시 보낸다 */ }
 }
 
 async function fetchRanking() {
@@ -1617,7 +1643,7 @@ async function fetchRanking() {
 
 // 오늘의 10구 기록을 다시 볼 때 이번 주 내 순위를 붙인다
 async function loadMyRank() {
-  if (!settings.team) return;
+  if (!settings.team || !loggedIn()) return;
   game.rankInfo = { status: 'sending' };
   try { const d = await fetchRanking(); game.rankInfo = { status: 'ok', me: d.me, myTeam: d.myTeam }; } catch { game.rankInfo = { status: 'error' }; }
 }
@@ -1632,8 +1658,9 @@ async function loadRanking() {
 }
 function closeRanking() { if (game.rankBack === 'over') game.state = 'over'; else goTitle(); }
 
-// 끝 화면 한 줄: "이번 주 7위 · LG 2위 · 랭킹 보기 ›"
+// 끝 화면 한 줄: "이번 주 7위 · LG 2위 · 랭킹 보기 ›". 로그인하지 않았으면 로그인하라는 줄
 function rankLine() {
+  if (!loggedIn()) return '카카오로 로그인하면 랭킹에 올라가요 ›';
   const ri = game.rankInfo;
   if (!ri || ri.status === 'sending') return '이번 주 랭킹을 불러오는 중…';
   if (ri.status === 'error') return '랭킹 서버에 연결하지 못했어요 · 랭킹 보기 ›';
@@ -1692,14 +1719,134 @@ function drawRanking() {
         { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
     }
   }
+  if (!loggedIn()) addButton({ x: cx - 150, y: view.h - (m ? 152 : 162), w: 300, h: 30 }, '카카오로 로그인하면 나도 올라가요 ›', 'link', startKakaoLogin);
   text(UNOFFICIAL, cx, view.h - (m ? 112 : 122), { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.5)' });
   addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, '닫기', 'primary', closeRanking);
+}
+
+// ===== 카카오 로그인 =====
+// 로그인한 사람만 주간 랭킹에 오른다(2026-10-28 사용자 결정). 카카오와 주고받는 일은 랭킹 서버가 하고,
+// 게임은 서버가 준 로그인 표만 이 브라우저에 둔다. 카카오 회원번호나 카카오 토큰은 게임에 오지 않는다
+const auth = { token: String(store.get('session', '')) || null, fresh: false };
+const loggedIn = () => !!auth.token;
+
+function api(path, { method = 'GET', body } = {}) {
+  const headers = {};
+  if (body) headers['content-type'] = 'application/json';
+  if (auth.token) headers.authorization = `Bearer ${auth.token}`;
+  return fetch(`${RANKING_API}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+}
+
+// 카카오 로그인 화면으로 간다. 확인값을 이 브라우저에 적어 두고, 돌아왔을 때 같은 값인지 본다
+function startKakaoLogin() {
+  const n = `n${Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  store.set('loginNonce', n);
+  location.href = `${RANKING_API}/auth/kakao/start?${new URLSearchParams({ n, pid: settings.playerId, return: location.href.split('#')[0] })}`;
+}
+
+// 카카오 로그인에서 돌아오면 주소 뒤에 #login=표&n=확인값(실패하면 #login_error=까닭&n=확인값)이 붙는다.
+// 이 브라우저가 보낸 확인값과 같을 때만 받고, 표가 주소째 공유되지 않게 주소에서 바로 지운다
+function readLoginReturn() {
+  if (!/(^#|&)(login|login_error)=/.test(location.hash)) return;
+  const q = new URLSearchParams(location.hash.slice(1)), sent = store.get('loginNonce', null);
+  try { history.replaceState(null, '', location.href.split('#')[0]); } catch { location.hash = ''; }
+  store.remove('loginNonce');
+  if (!sent || q.get('n') !== sent) return;
+  if (q.get('login')) {
+    Object.assign(auth, { token: q.get('login'), fresh: true });
+    store.set('session', auth.token);
+  } else toast(q.get('login_error') === 'canceled' ? '카카오 로그인을 취소했어요' : '카카오 로그인을 하지 못했어요. 잠시 뒤 다시 해 주세요');
+}
+
+// 로그인 표로 계정을 확인하고 팀·닉네임을 맞춘다. 다른 기기에서 쓰던 계정이면 그 팀·닉네임으로 이어 가고,
+// 새 계정이면 이 브라우저에서 고른 팀·닉네임을 올린다. 그다음 아직 못 올린 오늘의 10구 기록을 보낸다
+async function syncAccount() {
+  if (!auth.token) return;
+  try {
+    const res = await api('/me');
+    if (res.status === 401) { logout('expired'); return; }
+    if (!res.ok) return;
+    const acct = await res.json();
+    settings.playerId = acct.playerId; store.set('playerId', acct.playerId);
+    let msg = '카카오로 로그인했어요';
+    if (teamById(acct.team)) {
+      if (acct.team !== settings.team || (acct.nick && acct.nick !== settings.nick)) msg = `이어서 해요 · ${teamById(acct.team).short} ${acct.nick || settings.nick}`;
+      saveTeamAndNick(acct.team, acct.nick || settings.nick || defaultNick());
+      if (game.state === 'onboard' && game.onboard.next === 'start') goTitle();
+    } else await pushProfile();
+    if (auth.fresh) toast(msg);
+    auth.fresh = false;
+    await resendPending();
+  } catch { /* 네트워크 오류면 다음에 열 때 다시 맞춘다 */ }
+}
+
+// 팀·닉네임을 계정에도 적는다. 다른 기기에서 이어 가고, 랭킹의 이름이 바로 바뀐다
+async function pushProfile() {
+  if (!auth.token || !settings.team) return;
+  try {
+    const res = await api('/me', { method: 'PUT', body: { nick: settings.nick || defaultNick(), team: settings.team } });
+    if (res.status === 401) logout('expired');
+  } catch { /* 다음에 점수를 보낼 때 함께 적힌다 */ }
+}
+
+function logout(reason) {
+  Object.assign(auth, { token: null, fresh: false });
+  store.remove('session');
+  toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
+}
+
+// 랭킹 기록 지우기: 서버의 점수와 계정을 지우고, 이 브라우저는 새 ID로 시작한다
+async function deleteAccount() {
+  try {
+    const res = await api('/me', { method: 'DELETE' });
+    if (!res.ok && res.status !== 401) throw new Error(`delete ${res.status}`);
+    Object.assign(auth, { token: null, fresh: false });
+    ['session', 'pending', 'playerId'].forEach((k) => store.remove(k));
+    settings.playerId = ensurePlayerId();
+    goTitle();
+    toast('랭킹 기록과 계정을 지웠어요');
+  } catch { toast('지우지 못했어요. 잠시 뒤 다시 해 주세요'); }
+}
+
+// 내 계정(로그인했을 때) 또는 카카오 로그인 안내(안 했을 때). 개인정보 안내도 여기 둔다
+const PRIVACY = [
+  '카카오에서는 회원번호만 받아 알아볼 수 없게 저장해요.',
+  '닉네임·팀·오늘의 10구 점수와 함께 랭킹에만 써요.',
+  '랭킹 기록 지우기를 누르면 바로 모두 지워요.',
+];
+function openAccount() { Object.assign(game, { state: 'account', account: { confirm: false } }); }
+function drawAccount() {
+  dim(0.86);
+  const m = view.mobile, cx = view.w / 2, bw = m ? view.w - 64 : 320, ac = game.account, t = teamById(settings.team);
+  let y = view.h * (m ? 0.16 : 0.2);
+  text(loggedIn() ? '내 계정' : '카카오 로그인', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 36 : 44;
+  const lines = loggedIn() ? ['카카오로 로그인돼 있어요', t ? `${t.name} · ${settings.nick}` : ''] : ['로그인하면 이번 주 랭킹에 올라가고,', '다른 폰이나 브라우저에서도 이어서 해요'];
+  lines.filter(Boolean).forEach((l) => { text(l, cx, y, { size: m ? 14 : 16, weight: 600, color: 'rgba(255,255,255,0.85)' }); y += m ? 22 : 26; });
+  y += m ? 12 : 16;
+  if (!loggedIn()) {
+    addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 로그인', 'kakao', startKakaoLogin);
+    y += 60;
+  } else if (!ac.confirm) {
+    addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '로그아웃', 'secondary', () => { logout(); goTitle(); });
+    addButton({ x: cx - bw / 2, y: y + 60, w: bw, h: 48 }, '랭킹 기록 지우기', 'secondary', () => { ac.confirm = true; });
+    y += 120;
+  } else {
+    text('이번 주와 지난 기록, 계정을 모두 지워요. 되돌릴 수 없어요.', cx, y + 4, { size: m ? 12 : 14, weight: 600, color: '#ffb4b4' });
+    const [a, b] = rowRects(cx, y + (m ? 24 : 28), bw, 48, 2);
+    addButton(a, '지우기', 'danger', deleteAccount);
+    addButton(b, '취소', 'secondary', () => { ac.confirm = false; });
+    y += (m ? 24 : 28) + 60;
+  }
+  y += m ? 8 : 12;
+  PRIVACY.forEach((l) => { text(l, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' }); y += m ? 18 : 21; });
+  addButton({ x: cx - 70, y: y + 8, w: 140, h: 36 }, '닫기', 'link', goTitle);
 }
 
 // ===== 시작 화면과 끝 화면 =====
 // 시작 화면에는 "탭해서 시작"과 [좌타 | 우타]만 둔다(2026-10-28 사용자 피드백). 빈 곳 어디를 눌러도 시작한다.
 // 다른 모드와 설정은 오른쪽 위 메뉴에 있다. 오늘의 10구를 아직 안 쳤으면 오늘의 10구, 쳤으면 10구 도전으로 시작한다
-const startDefault = () => (settings.team ? startGame(dailyRecord() ? 'challenge' : 'daily') : openOnboard('start'));
+const startDefault = () => (settings.team ? startGame(dailyRecord() ? 'challenge' : 'daily') : openOnboard('start', true));
 
 function drawTitle(time) {
   dim(0.6);
@@ -1722,10 +1869,10 @@ function drawTitle(time) {
 
 function drawMenu() {
   dim(0.84);
-  const m = view.mobile, cx = view.w / 2, bw = m ? view.w - 64 : 320;
-  let y = view.h * (m ? 0.18 : 0.2);
+  const m = view.mobile, cx = view.w / 2, bw = m ? view.w - 64 : 320, bh = m ? 44 : 48;
+  let y = view.h * (m ? 0.14 : 0.18);
   text('메뉴', cx, y, { size: m ? 22 : 28, weight: 800 });
-  y += m ? 40 : 50;
+  y += m ? 36 : 50;
   const items = [
     ['끝내기 상황', () => startGame('scenario')],
     ['연습', () => startGame('practice')],
@@ -1733,10 +1880,11 @@ function drawMenu() {
     ['기록', () => { game.state = 'records'; }],
     ['이번 주 랭킹', () => openRanking('title')],
     ['팀·닉네임 바꾸기', () => openOnboard('menu')],
+    [loggedIn() ? '내 계정' : '카카오 로그인', openAccount],
   ];
   if (dailyRecord()) items.unshift(['오늘의 10구 결과 보기', showDailyRecord]);
-  for (const [label, fn] of items) { addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, label, 'secondary', fn); y += 60; }
-  addButton({ x: cx - 70, y: y + 6, w: 140, h: 36 }, '닫기', 'link', goTitle);
+  for (const [label, fn] of items) { addButton({ x: cx - bw / 2, y, w: bw, h: bh }, label, 'secondary', fn); y += bh + (m ? 10 : 12); }
+  addButton({ x: cx - 70, y: y + 2, w: 140, h: 36 }, '닫기', 'link', goTitle);
 }
 
 // [좌타 | 우타] 고르기. cy는 버튼 세로 가운데
@@ -1769,9 +1917,9 @@ function drawGameOver() {
   y += m ? 38 : 48;
   const bw = m ? view.w - 48 : 340;
   if (game.mode === 'daily') {
-    if (settings.team) {   // 이번 주 순위 한 줄. 누르면 랭킹 화면
+    if (settings.team) {   // 이번 주 순위 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인, 오늘 기록은 로그인 뒤 올라간다)
       const lw = Math.min(view.w - 32, 420);
-      addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => openRanking('over'));
+      addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
       y += m ? 32 : 38;
     }
     const [a, b] = rowRects(cx, y, bw, 48, 2);
@@ -1798,7 +1946,7 @@ const game = {
   hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null,
   toast: null, firstDaily: false, newBest: false, best: 0,
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
-  opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title',   // 상대 팀, 팀 고르기, 랭킹 화면
+  opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
 };
 
 function seedFromUrl() {
@@ -1976,7 +2124,8 @@ function primaryAction(eventTime, x, y) {
 canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); primaryAction(e.timeStamp, e.clientX, e.clientY); });
 window.addEventListener('keydown', (e) => {
   if (e.target === nickInput) {   // 닉네임을 입력하는 중에는 게임 키를 쓰지 않는다
-    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); confirmOnboard(); }
+    // 엔터는 메뉴에서 바꿀 때만 저장한다. 처음 화면에서는 키보드만 닫는다(폰 키보드의 완료 키로 카카오 로그인이 열리지 않게)
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); if (game.onboard?.next === 'menu') confirmOnboard(); else nickInput.blur(); }
     else if (e.key === 'Escape') { nickInput.blur(); goTitle(); }
     return;
   }
@@ -2044,6 +2193,7 @@ function render(time) {
   if (game.state === 'records') { drawRecords(); drawToast(); return; }
   if (game.state === 'onboard') { drawOnboard(); drawToast(); return; }
   if (game.state === 'ranking') { drawRanking(); drawToast(); return; }
+  if (game.state === 'account') { drawAccount(); drawToast(); return; }
   if (game.state === 'menu') { drawMenu(); drawToast(); return; }
   if (game.state === 'over') { drawGameOver(); drawTopBar(); drawToast(); return; }
   drawTopBar();
@@ -2076,11 +2226,13 @@ function frame(now) {
 }
 
 resize();
+readLoginReturn();
+if (!settings.team) openOnboard('start');   // 처음 온 사람은 열자마자 팀 고르기
 requestAnimationFrame(frame);
-resendPending();
+syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount };
 </script>
 </body>
 </html>
