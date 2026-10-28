@@ -39,6 +39,8 @@ const PITCHES = {
 const flightTime = (kmh) => 112 / kmh;
 
 const POINTS = { hr: 1000, double: 500, single: 300, ball: 100 };
+// 10구 모드는 기회 10번. 존 밖 공을 골라내면 그 공은 기회를 쓰지 않는다(기회 +1, 최대 +5)
+const CHANCES = 10, MAX_EXTRA = 5;
 const PERFECT_BONUS = 100;
 
 // 외야 담장: 파울라인 쪽 100m, 가운데 122m. spray는 타구 방향(도), 음수가 3루 쪽
@@ -80,44 +82,52 @@ function pickWeighted(rnd, weights) {
   return keys[keys.length - 1];
 }
 
-// 10구 흐름: 1~2구는 직구로 감을 잡고, 3구부터 변화구를 섞고, 10구째는 끝내기 찬스
-function makeSequence(seed) {
-  const rnd = mulberry32(seed);
-  const seq = [];
-  for (let i = 0; i < 10; i++) {
-    let type;
-    if (i < 2) type = 'fastball';
-    else if (i === 2) type = rnd() < 0.5 ? 'fastball' : 'slider';
-    else type = pickWeighted(rnd, { fastball: 3, slider: 2, curve: 1.5, change: 2, fork: 1.5 });
-    const def = PITCHES[type];
-    const kmh = Math.round(lerp(def.kmh[0], def.kmh[1], rnd()));
-    const inZone = rnd() < (i < 3 ? 0.8 : i === 9 ? 0.75 : 0.6);
-    let tx, ty;
-    if (inZone) {
-      tx = lerp(-0.2, 0.2, rnd()); ty = lerp(0.58, 1.02, rnd());
-    } else if (type === 'slider') {
-      tx = lerp(0.33, 0.5, rnd()); ty = lerp(0.45, 0.95, rnd());        // 바깥으로 빠짐
-    } else if (type === 'fastball') {
-      if (rnd() < 0.6) { tx = lerp(-0.2, 0.2, rnd()); ty = lerp(1.17, 1.32, rnd()); }  // 높게
-      else { tx = lerp(-0.5, -0.33, rnd()); ty = lerp(0.6, 1.0, rnd()); }            // 몸쪽
-    } else {
-      tx = lerp(-0.22, 0.22, rnd()); ty = lerp(0.2, 0.42, rnd());       // 떨어지는 공은 낮게 빠짐
-    }
-    seq.push({ n: i + 1, type, kmh, tx, ty, T: flightTime(kmh), last: i === 9 });
+const PITCH_MIX = { fastball: 3, slider: 2, curve: 1.5, change: 2, fork: 1.5 };
+
+// 공 하나. inZone 확률로 존 안에 넣고, 빠질 때는 구종마다 빠지는 쪽이 다르다(우투수 기준)
+function makePitch(rnd, type, inZone, extra = {}) {
+  const def = PITCHES[type];
+  const kmh = Math.round(lerp(def.kmh[0], def.kmh[1], rnd()));
+  let tx, ty;
+  if (rnd() < inZone) {
+    tx = lerp(-0.2, 0.2, rnd()); ty = lerp(0.58, 1.02, rnd());
+  } else if (type === 'slider') {
+    tx = lerp(0.33, 0.5, rnd()); ty = lerp(0.45, 0.95, rnd());        // 우타자 바깥으로 빠짐
+  } else if (type === 'fastball') {
+    if (rnd() < 0.6) { tx = lerp(-0.2, 0.2, rnd()); ty = lerp(1.17, 1.32, rnd()); }  // 높게
+    else { tx = lerp(-0.5, -0.33, rnd()); ty = lerp(0.6, 1.0, rnd()); }            // 우타자 몸쪽
+  } else {
+    tx = lerp(-0.22, 0.22, rnd()); ty = lerp(0.2, 0.42, rnd());       // 떨어지는 공은 낮게 빠짐
   }
-  return seq;
+  return { type, kmh, tx: extra.lefty ? -tx : tx, ty, T: flightTime(kmh), ...extra };   // 좌투수는 좌우가 뒤집힌다
 }
 
-// u: 0(놓는 순간)~1(홈플레이트 앞). 휘는 양이 u의 거듭제곱이라 끝에서 크게 휜다
+// 10구 흐름: 1~2구는 직구로 감을 잡고, 3구부터 변화구를 섞는다
+function makeSequence(seed, lefty = false) {
+  const rnd = mulberry32(seed);
+  // 볼을 골라내면 기회가 늘어서 공을 최대 15개까지 미리 만든다. 같은 시드면 n번째 공은 누구에게나 같다
+  return Array.from({ length: CHANCES + MAX_EXTRA }, (_, i) => {
+    const type = i < 2 ? 'fastball' : i === 2 ? (rnd() < 0.5 ? 'fastball' : 'slider') : pickWeighted(rnd, PITCH_MIX);
+    return makePitch(rnd, type, i < 3 ? 0.8 : 0.6, { n: i + 1, lefty });
+  });
+}
+
+// 판마다 상대 투수의 손. 좌완이 35%다. 공 순서와 다른 난수를 써서 순서는 그대로 둔다
+const pitcherHand = (seed) => (mulberry32((seed ^ 0x9e3779b9) >>> 0)() < 0.35 ? 'L' : 'R');
+
+// u: 0(놓는 순간)~1(홈플레이트 앞). 휘는 양이 u의 거듭제곱이라 끝에서 크게 휜다. 좌투수는 놓는 곳과 휘는 쪽이 반대다
 function ballPos(p, u) {
-  const def = PITCHES[p.type], b = def.brk;
+  const def = PITCHES[p.type], hs = p.lefty ? -1 : 1, rx = RELEASE.x * hs, bx = def.brk.x * hs, by = def.brk.y;
   const k = Math.pow(Math.max(u, 0), def.late);
   return {
-    x: RELEASE.x + (p.tx - b.x - RELEASE.x) * u + b.x * k,
-    y: RELEASE.y + (p.ty - b.y - RELEASE.y) * u + b.y * k,
+    x: rx + (p.tx - bx - rx) * u + bx * k,
+    y: RELEASE.y + (p.ty - by - RELEASE.y) * u + by * k,
     z: RELEASE.z * (1 - u),
   };
 }
+
+// 좌타자는 좌투수를 상대할 일이 드물어서 공이 늦게 보인다(좌타 대 좌완에만 적용. 우타 대 우완은 흔해서 익숙하다)
+const hardMatchup = (p) => !!p.lefty && settings.bats === 'L';
 
 function zoneMiss(p) {
   return Math.max(ZONE.left - p.tx, p.tx - ZONE.right, ZONE.bottom - p.ty, p.ty - ZONE.top, 0);
@@ -150,7 +160,7 @@ function fieldArea(spray) {
 }
 
 // 스윙 판정. dt는 스윙 시각 - 공 도착 시각(ms), 음수면 빠름. 무작위 없이 계산한다
-function judgeSwing(p, dt) {
+function judgeSwing(p, dt, bats = 'R') {
   const def = PITCHES[p.type];
   const miss = zoneMiss(p);
   const adt = Math.abs(dt);
@@ -168,13 +178,15 @@ function judgeSwing(p, dt) {
   const q = tq * (0.35 + 0.65 * reach);
   r.ev = Math.round(75 + 100 * Math.pow(q, 1.2) + (p.kmh - 135) * 0.25);
   r.la = Math.round(24 + (p.ty - 0.8) * 40 + def.la + dt * 0.2);     // 높은 공은 뜨고, 빠르면 덮어 친다
-  r.spray = Math.round(dt / FAIR_MS * 42 + p.tx * 40);                // 빠르면 당겨치고 늦으면 밀어친다
+  // 빠르면 당겨치고 늦으면 밀어친다. 당기는 쪽이 우타는 3루 쪽(음수), 좌타는 1루 쪽(양수)
+  const side = bats === 'L' ? -1 : 1;
+  r.spray = Math.round(side * dt / FAIR_MS * 42 + p.tx * 40);
 
   if (adt > FAIR_MS) {
     r.kind = 'foul'; r.name = '파울'; r.type = 'foul';
     r.ev = Math.round(95 + (FOUL_MS - adt) * 0.8);
     r.la = clamp(r.la, -5, 55);
-    r.spray = Math.sign(dt) * Math.round(48 + (adt - FAIR_MS) * 0.4);
+    r.spray = side * Math.sign(dt) * Math.round(48 + (adt - FAIR_MS) * 0.4);
     r.dist = Math.max(20, carry(r.ev, Math.max(r.la, 15)));
     r.reason = dt < 0 ? (slowBall ? `${eun(def.name)} 느려요. 조금 더 기다리세요` : '빨라서 당겨친 파울') : '늦어서 밀린 파울';
     return r;
@@ -305,6 +317,7 @@ const Sound = (() => {
       noise({ dur: dur * 0.8, freq: 2200, q: 0.6, peak: 0.12, attack: dur * 0.25, delay: 0.1 });
     },
     ding() { tone({ freq: 880, dur: 0.12, peak: 0.15 }); tone({ freq: 1320, dur: 0.18, peak: 0.12, delay: 0.08 }); },
+    tick() { tone({ freq: 1400, dur: 0.035, type: 'square', peak: 0.06 }); },
     groan() { noise({ dur: 0.6, type: 'lowpass', freq: 500, peak: 0.12, attack: 0.15 }); },
   };
 })();
@@ -522,14 +535,14 @@ function hull(pts) {
 const PITCHER_COLOR = { jersey: '#f4f5f9', shade: '#c9cfdb', pants: '#e7e9ef', navy: '#1d2f5c', brim: '#15244a', skin: '#dcae88', glove: '#8a5a2b', pocket: '#6b4320', shoe: '#14161b' };
 
 // 투수는 멀리 있어서 정면 평면 그림으로 충분하다. 포즈는 pitcherPose가 정한다
-function drawPitcher(t, holdingBall) {
-  const pose = pitcherPose(t), C = PITCHER_COLOR;
+function drawPitcher(t, holdingBall, lefty) {
+  const pose = pitcherPose(t), C = PITCHER_COLOR, hs = lefty ? -1 : 1;   // 포즈는 우투수 기준이고 좌투수는 좌우만 뒤집는다
   const z = MOUND + pose.z;
-  const P = (j) => project(j[0], 0.25 + j[1], z);
+  const P = (j) => project(hs * j[0], 0.25 + j[1], z);
   const base = P([0, 0]);
   if (!base) return;
   const s = base.s, hip = pose.hip, sh = pose.sh;
-  ellipseAt({ x: base.x + 0.1 * s, y: base.y }, 0.6 * s, 0.13 * s, 'rgba(0,0,0,0.3)');
+  ellipseAt({ x: base.x + hs * 0.1 * s, y: base.y }, 0.6 * s, 0.13 * s, 'rgba(0,0,0,0.3)');
 
   // 다리: 무릎까지 바지, 그 아래는 남색 스타킹과 검은 신발
   const leg = (h, k, f) => {
@@ -567,7 +580,7 @@ function drawPitcher(t, holdingBall) {
   arm(lSh, pose.glove, 0.12);
   const gp = P(pose.glove);
   ellipseAt(gp, 0.12 * s, 0.14 * s, C.glove);
-  ellipseAt({ x: gp.x - 0.02 * s, y: gp.y + 0.02 * s }, 0.06 * s, 0.08 * s, C.pocket);
+  ellipseAt({ x: gp.x - hs * 0.02 * s, y: gp.y + 0.02 * s }, 0.06 * s, 0.08 * s, C.pocket);
   if (!armBehind) arm(rSh, pose.hand, -0.14);
   const hd = P(pose.hand);
   if (holdingBall) ellipseAt({ x: hd.x, y: hd.y - 0.03 * s }, 0.045 * s, 0.045 * s, '#ffffff');
@@ -581,6 +594,15 @@ function drawPitcher(t, holdingBall) {
   ellipseAt({ x: head.x, y: head.y - 0.03 * s }, 0.15 * s, 0.03 * s, C.brim);
   ctx.fillStyle = 'rgba(0,0,0,0.18)';
   ctx.fillRect(head.x - 0.1 * s, head.y - 0.01 * s, 0.2 * s, 0.035 * s);
+}
+
+// 판의 첫 공이나 투수 손이 바뀐 공의 와인드업 동안 투수 머리 위에 던지는 손을 적는다
+function drawPitcherTag(p) {
+  const q = project(0, 2.55, MOUND);
+  if (!q) return;
+  const hard = hardMatchup(p);
+  pill(`${p.lefty ? '좌완' : '우완'} 투수${hard ? ' · 좌타자에게는 공이 늦게 보여요' : ''}`, q.x, q.y,
+    { size: view.mobile ? 11 : 13, bg: hard ? 'rgba(200,40,40,0.75)' : 'rgba(0,0,0,0.5)' });
 }
 
 // ===== 스트라이크 존과 공 =====
@@ -634,7 +656,7 @@ function drawBall(pos, { alpha = 1, spin = 0, scale = 1.5, shadow = true, glow =
 // 다시 보기: 점은 실제 궤적, 점선은 휘지 않았다면 갔을 길
 function drawTrail(p, uEnd) {
   const def = PITCHES[p.type];
-  const a = project(RELEASE.x, RELEASE.y, RELEASE.z), b = project(p.tx - def.brk.x, p.ty - def.brk.y, 0);
+  const hs = p.lefty ? -1 : 1, a = project(RELEASE.x * hs, RELEASE.y, RELEASE.z), b = project(p.tx - def.brk.x * hs, p.ty - def.brk.y, 0);
   if (a && b && p.type !== 'fastball') {
     ctx.save(); ctx.setLineDash([6, 6]); ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
@@ -691,7 +713,8 @@ function batterSkeleton(tau) {
 
 // 한 번은 빛 테두리 색으로 조금 위에, 한 번은 제 색으로 그려서 조명을 등진 윤곽을 만든다
 function drawBatterFigure(k, col, dy) {
-  const P = (p) => { const q = project(p[0], p[1], p[2]); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
+  // 뼈대는 우타 기준으로 만들고, 좌타는 그릴 때 좌우만 뒤집는다
+  const P = (p) => { const q = project(batSide() * p[0], p[1], p[2]); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
   const seg = (a, b, wa, wb, c) => { const pa = P(a), pb = P(b); if (pa && pb) segment(pa, pb, wa * pa.s, wb * pb.s, col(c)); };
   const ring = (c, l, f, rw, rd, y) => Array.from({ length: 12 }, (_, i) => {
     const a = i / 12 * Math.PI * 2;
@@ -705,7 +728,7 @@ function drawBatterFigure(k, col, dy) {
       seg(k.hips[side], k.knees[side], 0.19, 0.13, far ? 'pantsShade' : 'pants');
       seg(k.knees[side], k.feet[side], 0.12, 0.08, 'accent');
       const f = P(k.feet[side]);
-      if (f) ellipseAt({ x: f.x + 0.05 * f.s, y: f.y }, 0.12 * f.s, 0.045 * f.s, col('shoe'));
+      if (f) ellipseAt({ x: f.x + batSide() * 0.05 * f.s, y: f.y }, 0.12 * f.s, 0.045 * f.s, col('shoe'));
     } });
     parts.push({ depth: k.elbows[side][2], draw: () => {
       seg(k.shoulders[side], k.elbows[side], 0.12, 0.095, far ? 'shade' : 'jersey');
@@ -722,7 +745,7 @@ function drawBatterFigure(k, col, dy) {
     if (brim) ellipseAt(brim, 0.1 * brim.s, 0.035 * brim.s, col('accent'));
     if (h) {
       ellipseAt(h, 0.13 * h.s, 0.125 * h.s, col('accent'));
-      if (dy === 0) ellipseAt({ x: h.x - 0.04 * h.s, y: h.y - 0.06 * h.s }, 0.045 * h.s, 0.025 * h.s, 'rgba(255,255,255,0.28)');
+      if (dy === 0) ellipseAt({ x: h.x - batSide() * 0.04 * h.s, y: h.y - 0.06 * h.s }, 0.045 * h.s, 0.025 * h.s, 'rgba(255,255,255,0.28)');
     }
   } });
   parts.push({ depth: Math.min(k.hand[2], k.tip[2]) - 0.01, draw: () => {
@@ -741,8 +764,9 @@ function drawBatter(tau) {
   // 스윙 잔상
   if (tau != null && tau < 0.16) {
     const band = [];
-    for (let a = -80; a <= k.yaw; a += 10) band.push([k.hand[0] + BAT_LEN * Math.cos(a * DEG), k.hand[2] + BAT_LEN * Math.sin(a * DEG), 0.98]);
-    for (let a = k.yaw; a >= -80; a -= 10) band.push([k.hand[0] + 0.4 * Math.cos(a * DEG), k.hand[2] + 0.4 * Math.sin(a * DEG), 1.0]);
+    const m = batSide();
+    for (let a = -80; a <= k.yaw; a += 10) band.push([m * (k.hand[0] + BAT_LEN * Math.cos(a * DEG)), k.hand[2] + BAT_LEN * Math.sin(a * DEG), 0.98]);
+    for (let a = k.yaw; a >= -80; a -= 10) band.push([m * (k.hand[0] + 0.4 * Math.cos(a * DEG)), k.hand[2] + 0.4 * Math.sin(a * DEG), 1.0]);
     if (band.length > 2) fill3d(band, `rgba(255,255,255,${0.22 * (1 - tau / 0.16)})`);
   }
   drawBatterFigure(k, () => BATTER_COLOR.rim, -2);
@@ -850,19 +874,25 @@ const inRect = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y +
 function drawTopBar() {
   const m = view.mobile, pad = m ? 14 : 22, y = m ? 26 : 32;
   text('walkoff', pad, y, { size: m ? 18 : 22, weight: 800, align: 'left' });
+  const modeLabel = { daily: `오늘의 10구 #${dayNumber(today())}`, challenge: '10구 도전', scenario: '끝내기 상황', practice: '연습' }[game.mode];
+  if (modeLabel) text(modeLabel, pad, y + (m ? 17 : 20), { size: m ? 10 : 12, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'left' });
+  if (game.mode === 'scenario' && game.scn) { drawScenarioBoard(y); return; }
+  if (game.mode === 'practice' && game.practice) { drawPracticeHeader(y); return; }
   text(game.score.toLocaleString(), view.w - pad, y, { size: m ? 18 : 22, weight: 800, align: 'right' });
   text('점수', view.w - pad, y + (m ? 17 : 20), { size: m ? 10 : 12, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'right' });
-  const gap = m ? 19 : 26, x0 = view.w / 2 - gap * 4.5;
-  for (let i = 0; i < 10; i++) {
-    const res = game.results[i], cx = x0 + i * gap, now = i === game.i && game.state !== 'over' && game.state !== 'title';
-    if (res) drawLight(cx, y, now ? 7 : 5.5, lightColor(res));
-    else { ctx.beginPath(); ctx.arc(cx, y, now ? 7 : 5.5, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill(); }
+  // 전광판 칸 수 = 지난 공 + 남은 기회. 볼을 골라내면 한 칸 늘어난다
+  const slots = game.results.length + game.left, playing = game.state !== 'over' && game.state !== 'title';
+  const gap = Math.min(m ? 19 : 26, (m ? 190 : 380) / Math.max(9, slots - 1)), rad = Math.min(5.5, gap * 0.3), x0 = view.w / 2 - gap * (slots - 1) / 2;
+  for (let i = 0; i < slots; i++) {
+    const res = game.results[i], cx = x0 + i * gap, now = i === game.i && playing;
+    if (res) drawLight(cx, y, now ? rad + 1.5 : rad, lightColor(res));
+    else { ctx.beginPath(); ctx.arc(cx, y, now ? rad + 1.5 : rad, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill(); }
     if (now && !res) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); }
-    else if (i === 9 && !res) { ctx.strokeStyle = 'rgba(242,201,76,0.85)'; ctx.lineWidth = 1.5; ctx.stroke(); }   // 끝내기 공 자리
+    else if (i === slots - 1 && !res) { ctx.strokeStyle = 'rgba(242,201,76,0.85)'; ctx.lineWidth = 1.5; ctx.stroke(); }   // 마지막 기회(끝내기 찬스) 자리
   }
-  const p = game.seq[game.i];
-  if (p && p.last && game.state !== 'over' && game.state !== 'title') {
-    pill('9회말 2아웃 · 끝내기 찬스 · 점수 2배', view.w / 2, y + (m ? 32 : 40), { size: m ? 12 : 14, bg: 'rgba(200,40,40,0.85)' });
+  if (playing) text(`남은 기회 ${game.left}`, view.w / 2, y + (m ? 15 : 18), { size: m ? 10 : 11, weight: 600, color: 'rgba(255,255,255,0.6)' });
+  if (game.lastChance && playing) {
+    pill('9회말 2아웃 · 끝내기 찬스 · 점수 2배', view.w / 2, y + (m ? 36 : 44), { size: m ? 12 : 14, bg: 'rgba(200,40,40,0.85)' });
   }
 }
 
@@ -900,7 +930,12 @@ function drawResultCard() {
     const label = r.perfect ? '정타!' : Math.abs(r.dt) <= PERFECT_MS ? '타이밍 정확' : `${Math.abs(r.dt)}ms ${r.dt < 0 ? '빠름' : '늦음'}`;
     chips.push(r.perfect ? [label, '#f2c94c', '#1b1405'] : [label, 'rgba(0,0,0,0.5)', '#fff']);
   }
-  if (game.gained > 0) chips.push([`+${game.gained.toLocaleString()}${game.seq[game.i].last ? ' (2배)' : ''}`, 'rgba(0,0,0,0.5)', '#f2c94c']);
+  if (game.gained > 0) chips.push([`+${game.gained.toLocaleString()}${game.lastChance ? ' (2배)' : ''}`, 'rgba(0,0,0,0.5)', '#f2c94c']);
+  if (r.bonus) chips.push(['기회 +1', 'rgba(61,220,110,0.22)', '#8ef0a8']);
+  if (game.mode === 'scenario' && game.scnEvent) {
+    const end = game.scn.end;
+    chips.push([game.scnEvent, end === 'win' ? '#f2c94c' : 'rgba(0,0,0,0.55)', end === 'win' ? '#1b1405' : end ? '#ff9a9a' : '#ffffff']);
+  }
   if (chips.length) { pillRow(chips, y, m ? 13 : 14); y += m ? 30 : 32; }
   if (!r.took) { const bw = m ? 180 : 240; drawTimingBar(cx - bw / 2, y, bw, r.dt); y += m ? 22 : 24; }
   if (r.ev) { text(`타구 ${r.ev}km/h · 발사각 ${r.la}° · ${Math.round(r.dist)}m`, cx, y, { size: m ? 12 : 14, weight: 600, shadow: true }); y += m ? 20 : 21; }
@@ -925,7 +960,7 @@ function drawPitchInfo(rect) {
   text(inZone ? '스트라이크 존' : '존 밖', tx, box.y + 10, { size: 13, align: 'left', color: inZone ? '#fff' : '#facc15' });
   const cm = (v) => Math.round(Math.abs(v) * 100);
   const lines = [];
-  if (cm(def.brk.x) >= 5) lines.push(`${def.brk.x > 0 ? '→' : '←'}${cm(def.brk.x)}cm`);
+  if (cm(def.brk.x) >= 5) lines.push(`${def.brk.x * (p.lefty ? -1 : 1) > 0 ? '→' : '←'}${cm(def.brk.x)}cm`);
   if (cm(def.brk.y) >= 5) lines.push(`${def.brk.y > 0 ? '↑' : '↓'}${cm(def.brk.y)}cm`);
   text('휜 정도', tx, box.y + 34, { size: 12, weight: 600, align: 'left', color: 'rgba(255,255,255,0.6)' });
   text(lines.join(' ') || '거의 안 휨', tx, box.y + 54, { size: m ? 12 : 13, align: 'left' });
@@ -962,47 +997,489 @@ function drawMiniMap(rect) {
 
 function dim(alpha) { ctx.fillStyle = `rgba(4,9,18,${alpha})`; ctx.fillRect(0, 0, view.w, view.h); }
 
-function drawTitle(time) {
-  dim(0.6);
-  const m = view.mobile, cy = view.h * 0.38;
-  text('끝내기', view.w / 2, cy - (m ? 70 : 92), { size: m ? 16 : 20, weight: 700, color: '#f2c94c' });
-  text('walkoff', view.w / 2, cy - (m ? 30 : 40), { size: m ? 52 : 76, weight: 900, shadow: true });
-  const lines = ['투수가 던지는 공 10개를 타이밍만 맞춰 쳐 내세요.', '구종마다 빠르기가 달라요. 존 밖 공은 참으면 보너스예요.', '10구째는 9회말 끝내기 찬스, 점수 2배예요.'];
-  lines.forEach((l, i) => text(l, view.w / 2, cy + (m ? 28 : 36) + i * (m ? 24 : 30), { size: m ? 13 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' }));
-  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
-  pill(m ? '탭해서 시작' : '스페이스바 · 클릭으로 시작', view.w / 2, cy + (m ? 130 : 160), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
-  ctx.globalAlpha = 1;
+// ===== 버튼 =====
+// 화면을 그리면서 버튼을 모아 두고, 누른 자리에 있는 버튼을 실행한다. 매 프레임 새로 모은다
+const ui = { buttons: [] };
+
+function addButton(r, label, style, onTap) {
+  if (style === 'chip' || style === 'chipOn') {
+    roundRect(r.x, r.y, r.w, r.h, r.h / 2);
+    ctx.fillStyle = style === 'chipOn' ? '#ffffff' : 'rgba(255,255,255,0.12)'; ctx.fill();
+    text(label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 15, color: style === 'chipOn' ? '#0b1424' : 'rgba(255,255,255,0.8)' });
+  } else if (style === 'link') {
+    text(label, r.x + r.w / 2, r.y + r.h / 2, { size: 14, weight: 600, color: 'rgba(255,255,255,0.72)' });
+    ctx.font = font(14, 600);
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(r.x + r.w / 2 - tw / 2, r.y + r.h / 2 + 10, tw, 1);
+  } else if (style === 'menuIcon') {
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    for (let i = 0; i < 3; i++) ctx.fillRect(r.x + r.w * 0.25, r.y + r.h * (0.32 + i * 0.18) - 1.5, r.w * 0.5, 3);
+  } else button(r, label, style === 'primary');
+  ui.buttons.push({ r, onTap, label });
 }
 
+// 가로 totalW를 n칸으로 고르게 나눈 버튼 자리
+function rowRects(cx, y, totalW, h, n, gap = 10) {
+  const w = (totalW - gap * (n - 1)) / n;
+  return Array.from({ length: n }, (_, i) => ({ x: cx - totalW / 2 + i * (w + gap), y, w, h }));
+}
+
+// ===== 저장소 =====
+// 이 브라우저에만 남는다. 사생활 보호 모드처럼 저장소를 못 쓰면 기본값으로 돈다
+const store = {
+  get(key, fallback) {
+    try {
+      const v = localStorage.getItem('walkoff.' + key);
+      if (v == null) return fallback;
+      try { return JSON.parse(v); } catch { return v; }
+    } catch { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem('walkoff.' + key, typeof value === 'string' ? value : JSON.stringify(value)); } catch { /* 저장 못 해도 지금 판은 된다 */ }
+  },
+  keys(prefix) {
+    try { return Object.keys(localStorage).filter((k) => k.startsWith('walkoff.' + prefix)).map((k) => k.slice('walkoff.'.length)); } catch { return []; }
+  },
+};
+
+// ===== 설정: 좌타/우타 =====
+const settings = {
+  bats: store.get('bats', 'R') === 'L' ? 'L' : 'R',
+  offset: clamp(Number(store.get('offset', 0)) || 0, -150, 250),   // 타이밍 보정(ms). 판정할 때 이만큼 뺀다
+};
+function setBats(b) { settings.bats = b; store.set('bats', b); }
+const batSide = () => (settings.bats === 'L' ? -1 : 1);   // 좌타는 홈플레이트 오른쪽에 서서 화면 좌우가 뒤집힌다
+
+// ===== 타이밍 보정 =====
+// 기기마다 화면과 터치가 늦게 반응하는 정도가 달라서, 공이 링에 닿을 때 8번 눌러 평소 어긋남을 잰다.
+// 앞 2번은 손 풀기로 버리고 나머지의 중앙값을 쓴다. 박자 소리는 없다(게임은 눈으로 보고 친다)
+const CALIB = { taps: 8, warmup: 2, period: 1.0, approach: 0.7, lead: 1.2 };
+const fmtMs = (ms) => `${ms > 0 ? '+' : ''}${Math.round(ms)}ms`;
+
+function startCalib() { Object.assign(game, { state: 'calib', calib: { start: performance.now(), taps: [], result: null } }); }
+const calibBeat = (k) => game.calib.start + (CALIB.lead + k * CALIB.period) * 1000;
+
+function calibTap(eventTime) {
+  const c = game.calib;
+  if (c.result != null) return;
+  const k = Math.max(0, Math.round((eventTime - calibBeat(0)) / (CALIB.period * 1000)));
+  const off = eventTime - calibBeat(k);
+  if (Math.abs(off) > 350) return;   // 박자와 상관없이 누른 것은 버린다
+  c.taps.push(off);
+  Sound.tick();
+  if (c.taps.length < CALIB.taps) return;
+  const used = c.taps.slice(CALIB.warmup).sort((a, b) => a - b), mid = used.length / 2;
+  c.result = clamp(Math.round(used.length % 2 ? used[Math.floor(mid)] : (used[mid - 1] + used[mid]) / 2), -150, 250);
+}
+
+function saveCalib(v) {
+  settings.offset = v; store.set('offset', v);
+  toast(v ? `타이밍 보정 ${fmtMs(v)}을 저장했어요` : '타이밍 보정을 껐어요');
+  goTitle();
+}
+
+function drawCalib() {
+  dim(0.78);
+  const m = view.mobile, cx = view.w / 2, c = game.calib, ty = view.h * 0.56, ring = m ? 34 : 40;
+  let y = view.h * 0.14;
+  text('타이밍 보정', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 34 : 42;
+  if (c.result == null) {
+    text('공이 링에 닿는 순간 누르세요', cx, y, { size: m ? 14 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' });
+    for (let i = 0; i < CALIB.taps; i++) {
+      ctx.beginPath(); ctx.arc(cx + (i - (CALIB.taps - 1) / 2) * 22, y + 34, 6, 0, Math.PI * 2);
+      ctx.fillStyle = i < c.taps.length ? '#f2c94c' : 'rgba(255,255,255,0.2)'; ctx.fill();
+    }
+    const now = performance.now(), kNow = Math.floor((now - calibBeat(0)) / (CALIB.period * 1000));
+    const lastBeat = calibBeat(Math.max(0, kNow));
+    const glow = now >= calibBeat(0) && now - lastBeat < 120;
+    ctx.strokeStyle = glow ? '#f2c94c' : 'rgba(255,255,255,0.8)'; ctx.lineWidth = glow ? 5 : 3;
+    ctx.beginPath(); ctx.arc(cx, ty, ring, 0, Math.PI * 2); ctx.stroke();
+    for (let k = Math.max(0, kNow - 1); k <= kNow + 2; k++) {
+      const u = 1 - (calibBeat(k) - now) / (CALIB.approach * 1000);
+      if (u < 0 || u > 1.12) continue;
+      const v = Math.min(u, 1);
+      ctx.globalAlpha = u > 1 ? 1 - (u - 1) / 0.12 : 1;
+      ctx.fillStyle = '#fbfaf5';
+      ctx.beginPath(); ctx.arc(cx, lerp(view.h * 0.26, ty, v), lerp(3, ring * 0.5, v * v), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    addButton({ x: cx - 70, y: view.h - (m ? 70 : 80), w: 140, h: 36 }, '그만두기', 'link', goTitle);
+  } else {
+    const r = c.result;
+    text(r === 0 ? '딱 맞춰 눌렀어요' : `평소 ${Math.abs(r)}ms ${r > 0 ? '늦게' : '빠르게'} 눌러요`, cx, y + 40, { size: m ? 24 : 30, weight: 800, color: '#f2c94c' });
+    text(r === 0 ? '보정 없이 판정해요' : `판정할 때 ${Math.abs(r)}ms를 ${r > 0 ? '빼고' : '더해'} 계산해요`, cx, y + (m ? 80 : 88), { size: m ? 14 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' });
+    const bw = m ? view.w - 48 : 340, [a, b] = rowRects(cx, y + (m ? 120 : 132), bw, 48, 2);
+    addButton(a, '이 값으로 저장', 'primary', () => saveCalib(r));
+    addButton(b, '다시 재기', 'secondary', startCalib);
+    addButton({ x: cx - 90, y: y + (m ? 184 : 200), w: 180, h: 36 }, '보정 끄기 (0ms)', 'link', () => saveCalib(0));
+  }
+}
+
+// ===== 오늘의 10구 =====
+// 한국 시간 날짜로 투구 순서를 정해서 같은 날에는 누구나 같은 공을 친다. 기록은 그날 첫 판만 남는다
+const DAILY_START = '2026-10-28';
+const SHARE_URL = 'https://hyunseungbeom.github.io/walkoff/';
+const today = (now = Date.now()) => new Date(now + 9 * 3600e3).toISOString().slice(0, 10);
+const dayNumber = (date) => Math.round((Date.parse(date) - Date.parse(DAILY_START)) / 864e5) + 1;
+const dailyRecord = () => store.get('daily.' + today(), null);
+
+function dailySeed(date) {
+  let h = 2166136261;
+  for (const ch of 'walkoff-' + date) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); }
+  return (h >>> 0) || 1;
+}
+
+const lightCode = (r) => (r.hit ? 'G' : r.kind === 'ball' ? 'Y' : 'R');
+const LIGHT_BY_CODE = { G: LIGHT.hit, Y: LIGHT.ball, R: LIGHT.miss };
+const SHARE_EMOJI = { G: '🟢', Y: '🟡', R: '🔴' };
+const rankOf = (score) => (score >= 4000 ? '끝내기 영웅' : score >= 2500 ? '클러치 히터' : score >= 1200 ? '주전 타자' : '내일 다시 도전');
+
 function gameSummary() {
-  const c = (k) => game.results.filter((r) => r.kind === k).length;
-  const far = Math.max(0, ...game.results.filter((r) => r.hit).map((r) => Math.round(r.dist)));
-  const rank = game.score >= 4000 ? '끝내기 영웅' : game.score >= 2500 ? '클러치 히터' : game.score >= 1200 ? '주전 타자' : '내일 다시 도전';
-  return { hr: c('hr'), hits: c('single') + c('double'), balls: c('ball'), far, rank };
+  const rs = game.results, c = (k) => rs.filter((r) => r.kind === k).length;
+  const far = Math.max(0, ...rs.filter((r) => r.hit).map((r) => Math.round(r.dist || 0)));
+  return { score: game.score, hr: c('hr'), hits: c('single') + c('double'), balls: c('ball'), far, lights: rs.map(lightCode).join('') };
+}
+
+function shareText(s) {
+  return [
+    `walkoff 오늘의 10구 #${s.day} (${s.bats === 'L' ? '좌타' : '우타'})`,
+    s.lights.split('').map((c) => SHARE_EMOJI[c]).join(''),
+    `${s.score.toLocaleString()}점 · 홈런 ${s.hr}${s.far ? ` · 최장 ${s.far}m` : ''}`,
+    SHARE_URL,
+  ].join('\n');
+}
+
+// 모바일은 공유 창을 띄우고, 안 되면 클립보드에 복사한다
+async function shareResult() {
+  const text = shareText(game.summary);
+  if (navigator.share && view.mobile) {
+    try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(text); toast('복사했어요. 단톡방에 붙여 넣으세요'); return; } catch { /* 아래 방법으로 한 번 더 */ }
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  ta.remove();
+  toast(ok ? '복사했어요. 단톡방에 붙여 넣으세요' : '복사하지 못했어요');
+}
+
+function toast(msg) { game.toast = { text: msg, until: performance.now() + 2200 }; }
+function drawToast() {
+  if (game.toast && performance.now() < game.toast.until) pill(game.toast.text, view.w / 2, view.h - (view.mobile ? 36 : 44), { size: 15, bg: 'rgba(0,0,0,0.8)' });
+}
+
+// ===== 끝내기 상황 =====
+// 9회말 지고 있을 때 타석에 선다. 볼넷·삼진·주자 진루를 세고, 역전하는 순간 끝내기 승리다
+const SCENARIOS = [
+  { outs: 2, bases: [true, true, false], away: 3, home: 2 },
+  { outs: 1, bases: [false, true, false], away: 4, home: 3 },
+  { outs: 2, bases: [true, true, true], away: 5, home: 3 },
+  { outs: 0, bases: [true, false, false], away: 2, home: 0 },
+  { outs: 2, bases: [false, false, false], away: 1, home: 0 },
+  { outs: 1, bases: [false, false, true], away: 6, home: 5 },
+];
+
+function basesLabel(bases) {
+  const on = [1, 2, 3].filter((n) => bases[n - 1]);
+  return on.length === 3 ? '만루' : on.length ? `${on.join('·')}루` : '주자 없음';
+}
+const scenarioLabel = (s) => `9회말 ${s.outs ? `${s.outs}아웃` : '무사'} ${basesLabel(s.bases)} · ${s.away - s.home}점 차`;
+
+function makeScenario(rnd) {
+  const s = SCENARIOS[Math.floor(rnd() * SCENARIOS.length)];
+  const scn = { ...s, bases: [...s.bases], count: { b: 0, s: 0 }, pa: [], end: null };
+  scn.label = scenarioLabel(scn);
+  return scn;
+}
+
+// 투수는 3볼이면 존 안에 넣고, 2스트라이크면 유인구를 더 던진다
+function nextScenarioPitch() {
+  const c = game.scn.count, rnd = game.rnd;
+  const inZone = clamp(0.6 + (c.b === 3 ? 0.25 : 0) - (c.s === 2 && c.b < 2 ? 0.2 : 0), 0.3, 0.9);
+  return makePitch(rnd, pickWeighted(rnd, PITCH_MIX), inZone, { n: game.seq.length + 1, lefty: game.throws === 'L' });
+}
+
+// 공 하나의 결과를 상황에 반영하고 화면에 띄울 한 줄을 돌려준다. 볼·스트라이크만 늘면 빈 줄이다
+// 주자: 안타면 2·3루 주자가 들어오고 1루 주자는 2루로, 2루타면 1루 주자가 3루로 간다
+function applyScenario(s, r) {
+  const c = s.count, [b1, b2, b3] = s.bases;
+  let runs = 0, pa = null, msg = '';
+  if (r.kind === 'ball') {
+    if (++c.b === 4) {
+      if (b1 && b2 && b3) runs = 1;
+      s.bases = [true, b1 || b2, (b1 && b2) || b3];
+      pa = 'Y'; msg = runs ? '밀어내기 볼넷' : '볼넷';
+    }
+  } else if (r.kind === 'strike' || r.kind === 'whiff') {
+    if (++c.s === 3) { s.outs++; pa = 'R'; msg = r.kind === 'strike' ? '루킹 삼진' : '헛스윙 삼진'; }
+  } else if (r.kind === 'foul') {
+    if (c.s < 2) c.s++;   // 2스트라이크 뒤 파울은 세지 않는다
+  } else if (r.kind === 'out') {
+    s.outs++; pa = 'R';
+    if (r.type === 'fly' && b3 && s.outs < 3) { s.bases = [b1, b2, false]; runs = 1; msg = '희생플라이'; }   // 3루 주자가 태그업해서 들어온다
+    else msg = `${s.outs}아웃`;
+  } else if (r.kind === 'single') {
+    runs = (b3 ? 1 : 0) + (b2 ? 1 : 0); s.bases = [true, b1, false]; pa = 'G';
+  } else if (r.kind === 'double') {
+    runs = (b3 ? 1 : 0) + (b2 ? 1 : 0); s.bases = [false, true, b1]; pa = 'G';
+  } else if (r.kind === 'hr') {
+    runs = 1 + (b1 ? 1 : 0) + (b2 ? 1 : 0) + (b3 ? 1 : 0); s.bases = [false, false, false]; pa = 'G';
+  }
+  s.home += runs;
+  if (pa) { s.pa.push(pa); s.count = { b: 0, s: 0 }; }
+  if (s.home > s.away) { s.end = 'win'; return `끝내기! ${s.home}-${s.away} 승리`; }
+  if (s.outs >= 3) { s.end = s.home === s.away ? 'tie' : 'lose'; return s.end === 'tie' ? '3아웃 · 동점으로 끝' : '3아웃 · 경기 끝'; }
+  if (runs) return `${msg ? `${msg} · ` : ''}${runs}점! ${s.home === s.away ? '동점' : `${s.away - s.home}점 차`}`;
+  if (pa === 'G') return `출루 · ${basesLabel(s.bases)}`;
+  return msg;
+}
+
+function finishScenario() {
+  const s = game.scn;
+  Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
+  game.summary = { end: s.end, away: s.away, home: s.home, pa: s.pa.join(''), pitches: game.seq.length, label: s.label };
+  const ss = store.get('scnStats', { plays: 0, wins: 0 });
+  store.set('scnStats', { plays: ss.plays + 1, wins: ss.wins + (s.end === 'win' ? 1 : 0) });
+}
+
+// 상단: 점수, 볼·스트라이크·아웃 불(실제 전광판처럼 초록·노랑·빨강), 주자 마름모
+function drawScenarioBoard(y) {
+  const m = view.mobile, s = game.scn, pad = m ? 14 : 22, cx = view.w / 2;
+  text(`원정 ${s.away} : ${s.home} 홈`, cx, y, { size: m ? 17 : 21, weight: 800 });
+  text('9회말', cx, y + (m ? 18 : 22), { size: m ? 11 : 12, weight: 600, color: 'rgba(255,255,255,0.6)' });
+  const d = m ? 9 : 13, dx = view.w - pad - d * 1.6, dy = y + 4;
+  const base = (x, yy, on) => {
+    ctx.save(); ctx.translate(x, yy); ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = on ? '#f2c94c' : 'rgba(255,255,255,0.2)'; ctx.fillRect(-d / 2, -d / 2, d, d);
+    ctx.restore();
+  };
+  base(dx + d, dy, s.bases[0]); base(dx, dy - d, s.bases[1]); base(dx - d, dy, s.bases[2]);
+  const lx = dx - d * 2 - (m ? 44 : 66), r = m ? 3.5 : 5, step = m ? 11 : 15;
+  const row = (label, n, max, color, yy) => {
+    text(label, lx, yy, { size: m ? 10 : 11, weight: 800, color: 'rgba(255,255,255,0.7)', align: 'left' });
+    for (let i = 0; i < max; i++) {
+      const x = lx + (m ? 13 : 15) + i * step;
+      if (i < n) drawLight(x, yy, r, color);
+      else { ctx.beginPath(); ctx.arc(x, yy, r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fill(); }
+    }
+  };
+  const rs = m ? 11 : 13;
+  row('B', s.count.b, 3, LIGHT.hit, y - rs + 1); row('S', s.count.s, 2, LIGHT.ball, y + 1); row('O', s.outs, 2, LIGHT.miss, y + rs + 1);
+  if (game.i === 0 && (game.state === 'windup' || game.state === 'pitch')) {
+    pill(`${s.label}. 역전하면 끝내기!`, cx, y + (m ? 44 : 52), { size: m ? 12 : 14, bg: 'rgba(200,40,40,0.85)' });
+  }
+}
+
+function drawScenarioOver() {
+  const m = view.mobile, cx = view.w / 2, s = game.summary;
+  let y = view.h * 0.19;
+  text('끝내기 상황', cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
+  y += m ? 54 : 68;
+  text(s.end === 'win' ? '끝내기 승리!' : s.end === 'tie' ? '동점으로 끝' : '아쉬운 패배', cx, y,
+    { size: m ? 44 : 64, weight: 900, color: s.end === 'win' ? '#f2c94c' : '#fff', shadow: true });
+  y += m ? 48 : 60;
+  text(`원정 ${s.away} : ${s.home} 홈 · 9회말`, cx, y, { size: m ? 18 : 22 });
+  y += m ? 38 : 48;
+  const pa = s.pa.split('');
+  pa.forEach((c, i) => drawLight(cx + (i - (pa.length - 1) / 2) * (m ? 30 : 36), y, m ? 10 : 12, LIGHT_BY_CODE[c]));
+  y += m ? 34 : 42;
+  const cnt = (c) => pa.filter((x) => x === c).length;
+  text(`타석 ${pa.length} · 안타 ${cnt('G')} · 볼넷 ${cnt('Y')} · 투구 ${s.pitches}개`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
+  y += m ? 24 : 28;
+  text(`처음 상황: ${s.label}`, cx, y, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.6)' });
+  y += m ? 30 : 36;
+  drawBatsToggle(y + 19);
+  y += 38 + 18;
+  const [a, b] = rowRects(cx, y, m ? view.w - 48 : 340, 48, 2);
+  addButton(a, '다시 하기', 'primary', () => startGame('scenario'));
+  addButton(b, '처음으로', 'secondary', goTitle);
+}
+
+// ===== 연습 =====
+// 구종과 빠르기를 골라 끝없이 친다. 점수와 기록은 남기지 않는다
+const PRACTICE_TYPES = ['fastball', 'slider', 'curve', 'change', 'fork', 'mix'];
+const typeName = (t) => (t === 'mix' ? '섞어서' : PITCHES[t].name);
+
+function nextPracticePitch() {
+  const pr = game.practice, rnd = game.rnd;
+  const p = makePitch(rnd, pr.type === 'mix' ? pickWeighted(rnd, PITCH_MIX) : pr.type, 0.75, { n: game.seq.length + 1, lefty: pr.throws === 'L' });
+  if (pr.slow) p.T *= 1.35;   // 느리게: 같은 공이 35% 늦게 들어온다
+  return p;
+}
+
+function setPractice(patch) {
+  Object.assign(game.practice, patch);
+  game.throws = game.practice.throws;   // 다음 공부터 바뀐 손으로 던진다
+  store.set('practice', { type: game.practice.type, slow: game.practice.slow, throws: game.practice.throws });
+}
+
+function drawPracticeHeader(y) {
+  const m = view.mobile, pr = game.practice, cx = view.w / 2;
+  text(`${typeName(pr.type)}${pr.slow ? ' · 느리게' : ''}`, cx, y, { size: m ? 17 : 21, weight: 800 });
+  // 통계는 점수 자리(오른쪽 위)에 둔다. 가운데 아래는 결과 글자가 올라온다
+  const avg = pr.swings ? `${Math.round(pr.sumAbs / pr.swings)}ms` : '-', right = view.w - (m ? 14 : 22);
+  text(`정타 ${pr.perfect} / 스윙 ${pr.swings}`, right, y, { size: m ? 13 : 16, weight: 800, align: 'right' });
+  text(`평균 오차 ${avg}`, right, y + (m ? 17 : 20), { size: m ? 10 : 12, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'right' });
+}
+
+// 공과 공 사이에만 보인다. 공이 날아올 때 누르면 스윙이라서
+function drawPracticeControls(L) {
+  const m = view.mobile, pr = game.practice;
+  const [a, b, c, d] = rowRects(view.w / 2, L.replay.y - 50, m ? view.w - 24 : 520, 38, 4, 8);
+  addButton(a, `${typeName(pr.type)} ▸`, 'chipOn', () => setPractice({ type: PRACTICE_TYPES[(PRACTICE_TYPES.indexOf(pr.type) + 1) % PRACTICE_TYPES.length] }));
+  addButton(b, pr.slow ? '느리게 켬' : '느리게 끔', pr.slow ? 'chipOn' : 'chip', () => setPractice({ slow: !pr.slow }));
+  addButton(c, pr.throws === 'L' ? '좌완 ▸' : '우완 ▸', 'chip', () => setPractice({ throws: pr.throws === 'L' ? 'R' : 'L' }));
+  addButton(d, '연습 끝', 'chip', goTitle);
+  if (!m) text('1~6: 구종 · S: 느리게 · L: 좌완/우완', view.w / 2, L.replay.y - 64, { size: 12, weight: 500, color: 'rgba(255,255,255,0.55)' });
+}
+
+// ===== 기록 =====
+// 연습을 뺀 모든 판에서 구종별로 쌓는다
+function recordPitch(p, r) {
+  const st = store.get('stats', {});
+  const s = st[p.type] || (st[p.type] = { seen: 0, swings: 0, hits: 0, perfect: 0, sumAbs: 0 });
+  s.seen++;
+  if (!r.took) {
+    s.swings++; s.sumAbs += Math.min(Math.abs(r.dt), 300);
+    if (r.hit) s.hits++;
+    if (r.perfect) s.perfect++;
+  }
+  store.set('stats', st);
+}
+
+function drawRecords() {
+  dim(0.84);
+  const m = view.mobile, cx = view.w / 2, w = m ? view.w - 40 : 480, x0 = cx - w / 2;
+  let y = view.h * 0.11;
+  text('기록', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 44 : 54;
+  const days = store.keys('daily.').map((k) => store.get(k, null)).filter(Boolean);
+  const ss = store.get('scnStats', { plays: 0, wins: 0 });
+  const rows = [
+    ['10구 도전 최고', store.get('best', 0) ? `${store.get('best', 0).toLocaleString()}점` : '아직 없음'],
+    ['오늘의 10구', days.length ? `${days.length}일 · 최고 ${Math.max(...days.map((d) => d.score || 0)).toLocaleString()}점` : '아직 없음'],
+    ['끝내기 상황', ss.plays ? `${ss.wins}승 / ${ss.plays}판` : '아직 없음'],
+  ];
+  for (const [k, v] of rows) {
+    text(k, x0, y, { size: m ? 14 : 16, weight: 600, color: 'rgba(255,255,255,0.7)', align: 'left' });
+    text(v, x0 + w, y, { size: m ? 14 : 16, weight: 700, align: 'right' });
+    y += m ? 30 : 34;
+  }
+  y += m ? 18 : 22;
+  text('구종별 (연습 제외)', x0, y, { size: m ? 13 : 14, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'left' });
+  y += m ? 28 : 32;
+  const colX = [0, 0.4, 0.55, 0.7, 0.85, 1].map((f) => x0 + w * f);
+  const row = (cells, color) => cells.forEach((c, i) => text(c, colX[i], y, { size: m ? 13 : 15, weight: i ? 700 : 600, color, align: i ? 'right' : 'left' }));
+  row(['구종', '본 공', '스윙', '안타', '정타', '평균 오차'], 'rgba(255,255,255,0.55)');
+  const st = store.get('stats', {});
+  for (const t of Object.keys(PITCHES)) {
+    y += m ? 28 : 32;
+    const s = st[t];
+    row([PITCHES[t].name, ...(s ? [s.seen, s.swings, s.hits, s.perfect, s.swings ? `${Math.round(s.sumAbs / s.swings)}ms` : '-'] : ['-', '-', '-', '-', '-']).map(String)], '#fff');
+  }
+  y += m ? 48 : 56;
+  addButton({ x: cx - 90, y, w: 180, h: 48 }, '처음으로', 'primary', goTitle);
+}
+
+// ===== 시작 화면과 끝 화면 =====
+// 시작 화면에는 "탭해서 시작"과 [좌타 | 우타]만 둔다(2026-10-28 사용자 피드백). 빈 곳 어디를 눌러도 시작한다.
+// 다른 모드와 설정은 오른쪽 위 메뉴에 있다. 오늘의 10구를 아직 안 쳤으면 오늘의 10구, 쳤으면 10구 도전으로 시작한다
+const startDefault = () => startGame(dailyRecord() ? 'challenge' : 'daily');
+
+function drawTitle(time) {
+  dim(0.6);
+  const m = view.mobile, cx = view.w / 2, cy = view.h * 0.38;
+  text('끝내기', cx, cy - (m ? 70 : 92), { size: m ? 16 : 20, weight: 700, color: '#f2c94c' });
+  text('walkoff', cx, cy - (m ? 30 : 40), { size: m ? 52 : 76, weight: 900, shadow: true });
+  const lines = ['기회 10번, 타이밍만 맞춰 쳐 내세요.', '존 밖 공을 골라내면 기회가 1번 늘어요.', '마지막 기회는 9회말 끝내기 찬스, 점수 2배예요.'];
+  lines.forEach((l, i) => text(l, cx, cy + (m ? 28 : 36) + i * (m ? 24 : 30), { size: m ? 13 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' }));
+  drawBatsToggle(cy + (m ? 112 : 134));
+  if (!m) text('← → 키로도 바꿀 수 있어요', cx, cy + 168, { size: 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
+  pill(m ? '탭해서 시작' : '스페이스바 · 빈 곳 클릭으로 시작', cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
+  ctx.globalAlpha = 1;
+  const rec = dailyRecord(), day = dayNumber(today());
+  text(rec ? `오늘의 10구 #${day} ${rec.score.toLocaleString()}점 기록 · 지금은 10구 도전` : `오늘의 10구 #${day} · 하루 첫 판만 기록돼요`, cx, cy + (m ? 196 : 250),
+    { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.6)' });
+  const s = 40, pad = m ? 8 : 14;
+  addButton({ x: view.w - pad - s, y: pad, w: s, h: s }, '메뉴', 'menuIcon', () => { game.state = 'menu'; });
+}
+
+function drawMenu() {
+  dim(0.84);
+  const m = view.mobile, cx = view.w / 2, bw = m ? view.w - 64 : 320;
+  let y = view.h * (m ? 0.18 : 0.2);
+  text('메뉴', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 40 : 50;
+  const items = [
+    ['끝내기 상황', () => startGame('scenario')],
+    ['연습', () => startGame('practice')],
+    [`타이밍 보정 ${fmtMs(settings.offset)}`, startCalib],
+    ['기록', () => { game.state = 'records'; }],
+  ];
+  if (dailyRecord()) items.unshift(['오늘의 10구 결과 보기', showDailyRecord]);
+  for (const [label, fn] of items) { addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, label, 'secondary', fn); y += 60; }
+  addButton({ x: cx - 70, y: y + 6, w: 140, h: 36 }, '닫기', 'link', goTitle);
+}
+
+// [좌타 | 우타] 고르기. cy는 버튼 세로 가운데
+function drawBatsToggle(cy) {
+  const w = view.mobile ? 84 : 96, h = 38;
+  rowRects(view.w / 2, cy - h / 2, w * 2 + 6, h, 2, 6).forEach((r, i) => {
+    const b = i === 0 ? 'L' : 'R';
+    addButton(r, b === 'L' ? '좌타' : '우타', settings.bats === b ? 'chipOn' : 'chip', () => setBats(b));
+  });
 }
 
 function drawGameOver() {
-  dim(0.7);
-  const m = view.mobile, cy = view.h * 0.36, s = gameSummary();
-  text('경기 끝', view.w / 2, cy - (m ? 92 : 118), { size: m ? 18 : 22, color: 'rgba(255,255,255,0.7)' });
-  text(game.score.toLocaleString(), view.w / 2, cy - (m ? 46 : 58), { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
-  text(s.rank, view.w / 2, cy + (m ? 2 : 6), { size: m ? 18 : 22 });
-  const gap = m ? 30 : 36;   // 10구 결과를 전광판과 같은 색 불로 한 줄에
-  game.results.forEach((r, i) => drawLight(view.w / 2 + (i - 4.5) * gap, cy + (m ? 44 : 56), m ? 10 : 12, lightColor(r)));
-  text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, view.w / 2, cy + (m ? 82 : 100), { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
-  const r = game.btnRestart = { x: view.w / 2 - 90, y: cy + (m ? 112 : 136), w: 180, h: 48 };
-  button(r, '다시 하기', true);
+  dim(0.72);
+  if (game.mode === 'scenario') { drawScenarioOver(); return; }
+  const m = view.mobile, cx = view.w / 2, s = game.summary;
+  let y = view.h * 0.19;
+  text(game.mode === 'daily' ? `오늘의 10구 #${s.day}` : '10구 도전', cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
+  y += m ? 54 : 70;
+  text(s.score.toLocaleString(), cx, y, { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
+  y += m ? 50 : 64;
+  const best = game.mode === 'challenge';
+  text(best ? (game.newBest ? '새 최고 기록!' : `최고 기록 ${game.best.toLocaleString()}점`) : rankOf(s.score), cx, y,
+    { size: m ? 18 : 22, color: best && game.newBest ? '#f2c94c' : '#fff' });
+  y += m ? 40 : 50;
+  const lights = s.lights.split(''), lg = Math.min(m ? 30 : 36, (m ? view.w - 70 : 520) / Math.max(1, lights.length - 1));
+  lights.forEach((c, i) => drawLight(cx + (i - (lights.length - 1) / 2) * lg, y, Math.min(m ? 10 : 12, lg * 0.36), LIGHT_BY_CODE[c]));
+  y += m ? 36 : 44;
+  text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
+  y += m ? 38 : 48;
+  const bw = m ? view.w - 48 : 340;
+  if (game.mode === 'daily') {
+    const [a, b] = rowRects(cx, y, bw, 48, 2);
+    addButton(a, '결과 공유하기', 'primary', shareResult);
+    addButton(b, '처음으로', 'secondary', goTitle);
+    y += 48 + 26;
+    const note = game.firstDaily ? ['오늘 기록으로 남았어요.', '내일 0시(한국 시간)에 새 공이 나와요.'] : ['오늘은 이미 쳤어요.', '내일 0시(한국 시간)에 새 공이 나와요.'];
+    (m ? note : [note.join(' ')]).forEach((l, i) => text(l, cx, y + i * 20, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.6)' }));
+  } else {
+    drawBatsToggle(y + 19);
+    y += 38 + 18;
+    const [a, b] = rowRects(cx, y, bw, 48, 2);
+    addButton(a, '다시 하기', 'primary', () => startGame(game.mode));
+    addButton(b, '처음으로', 'secondary', goTitle);
+  }
 }
 
 // ===== 게임 진행 =====
 // title → windup(투수 와인드업) → pitch(공이 날아옴) → result → 다음 공 … → over
 const game = {
-  state: 'title', seq: [], i: 0, score: 0, results: [], seed: 0,
+  state: 'title', mode: 'challenge', throws: 'R', seq: [], i: 0, score: 0, results: [], seed: 0, summary: null,
   t: 0,              // 와인드업 시작부터 흐른 시간(초). 맞는 순간 멈춤 동안은 흐르지 않는다
   clockAt: 0,        // t를 마지막으로 올린 시각(performance.now 기준)
   swingAt: null,     // 공을 놓은 뒤 몇 초에 휘둘렀는지
   outcome: null, gained: 0, resultT: 0, revealAt: 0, flightT: 0,
-  hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null, btnRestart: null,
+  hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null,
+  toast: null, firstDaily: false, newBest: false, best: 0,
+  left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
 };
 
 function seedFromUrl() {
@@ -1010,16 +1487,34 @@ function seedFromUrl() {
   return Number.isFinite(s) && s > 0 ? s : (Date.now() % 2147483647);
 }
 
-function startGame() {
-  game.seed = seedFromUrl();
-  game.seq = makeSequence(game.seed);
-  game.i = 0; game.score = 0; game.results = [];
+// mode: 'daily'(오늘의 10구) | 'challenge'(10구 도전, 매번 다른 공)
+function startGame(mode) {
+  game.mode = mode;
+  game.seed = mode === 'daily' ? dailySeed(today()) : seedFromUrl();
+  Object.assign(game, { i: 0, score: 0, results: [], summary: null, firstDaily: false, newBest: false, scn: null, scnEvent: '', left: mode === 'daily' || mode === 'challenge' ? CHANCES : 0, extra: 0 });
+  game.throws = pitcherHand(game.seed);
+  if (mode === 'scenario') {
+    game.rnd = mulberry32(game.seed);
+    game.scn = makeScenario(game.rnd);
+    game.seq = [];
+    game.seq.push(nextScenarioPitch());
+  } else if (mode === 'practice') {
+    game.rnd = mulberry32(game.seed);
+    const saved = store.get('practice', {});
+    game.practice = { type: PRACTICE_TYPES.includes(saved.type) ? saved.type : 'fastball', slow: !!saved.slow, throws: saved.throws === 'L' ? 'L' : 'R', swings: 0, perfect: 0, sumAbs: 0 };
+    game.throws = game.practice.throws;
+    game.seq = [];
+    game.seq.push(nextPracticePitch());
+  } else game.seq = makeSequence(game.seed, game.throws === 'L');
   startPitch();
 }
 
 function startPitch() {
   Object.assign(game, { state: 'windup', t: -0.5, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, mittDone: false, replay: null });
+  game.lastChance = game.mode !== 'scenario' && game.left === 1;
 }
+
+function goTitle() { Object.assign(game, { state: 'title', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null }); }
 
 const ballTime = () => game.t - WINDUP;
 
@@ -1027,8 +1522,8 @@ function swing(eventTime) {
   const p = game.seq[game.i];
   const bt = ballTime() + Math.max(0, (eventTime - game.clockAt) / 1000);
   game.swingAt = bt;
-  const dtMs = Math.round((bt - p.T) * 1000);
-  const r = judgeSwing(p, dtMs);
+  const dtMs = Math.round((bt - p.T) * 1000 - settings.offset);
+  const r = judgeSwing(p, dtMs, settings.bats);
   if (r.kind === 'whiff') Sound.whoosh();
   else {
     game.contactPos = ballPos(p, bt / p.T);
@@ -1043,10 +1538,24 @@ function swing(eventTime) {
 }
 
 function finish(r) {
-  const p = game.seq[game.i];
-  const base = r.points + (r.perfect ? PERFECT_BONUS : 0);
-  game.gained = base * (p.last ? 2 : 1);
-  game.score += game.gained;
+  if (game.mode !== 'practice') recordPitch(game.seq[game.i], r);
+  if (game.mode === 'practice') {
+    game.gained = 0;
+    const pr = game.practice;
+    if (!r.took) { pr.swings++; pr.sumAbs += Math.min(Math.abs(r.dt), 300); if (r.perfect) pr.perfect++; }
+  } else if (game.mode === 'scenario') {
+    game.gained = 0;
+    game.scnEvent = applyScenario(game.scn, r);
+    if (game.scn.end === 'win') setTimeout(() => Sound.cheer(3), 300);
+  } else {
+    game.gained = (r.points + (r.perfect ? PERFECT_BONUS : 0)) * (game.lastChance ? 2 : 1);
+    game.score += game.gained;
+    game.left -= 1;
+    if (r.kind === 'ball') {
+      if (game.extra < MAX_EXTRA) { game.extra++; game.left++; r.bonus = true; r.reason = '잘 골라냈어요 · 기회 +1'; }
+      else r.reason = `잘 골라냈어요 · 추가 기회는 ${MAX_EXTRA}번까지예요`;
+    }
+  }
   game.results[game.i] = r;
   game.outcome = r;
   game.state = 'result';
@@ -1056,9 +1565,42 @@ function finish(r) {
 }
 
 function next() {
-  if (game.i >= 9) { game.state = 'over'; game.t = 0; game.resultT = 0; return; }
+  if (game.mode === 'practice') {
+    game.i++;
+    game.seq.push(nextPracticePitch());
+    startPitch();
+    return;
+  }
+  if (game.mode === 'scenario') {
+    if (game.scn.end) { finishScenario(); return; }
+    game.i++;
+    game.seq.push(nextScenarioPitch());
+    startPitch();
+    return;
+  }
+  if (game.left <= 0) { finishGame(); return; }
   game.i++;
   startPitch();
+}
+
+function finishGame() {
+  Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
+  game.summary = { ...gameSummary(), bats: settings.bats, day: dayNumber(today()) };
+  if (game.mode === 'daily' && !dailyRecord()) { store.set('daily.' + today(), game.summary); game.firstDaily = true; }
+  if (game.mode === 'challenge') {
+    const best = store.get('best', 0);
+    game.newBest = game.score > best;
+    game.best = Math.max(best, game.score);
+    if (game.newBest) store.set('best', game.score);
+  }
+}
+
+// 오늘 이미 친 기록을 끝 화면으로 다시 보여 준다
+function showDailyRecord() {
+  const s = dailyRecord();
+  if (!s) return;
+  const results = s.lights.split('').map((c) => ({ hit: c === 'G', kind: c === 'G' ? 'single' : c === 'Y' ? 'ball' : 'out' }));
+  Object.assign(game, { state: 'over', mode: 'daily', summary: s, results, score: s.score, i: results.length - 1, left: 0, t: 0, resultT: 1, firstDaily: false, outcome: null, swingAt: null });
 }
 
 function startReplay() { if (game.outcome) game.replay = 0; }
@@ -1090,15 +1632,21 @@ function update(dt) {
 }
 
 // ===== 입력: 스페이스바, 클릭, 탭 =====
+// 버튼 위를 누르면 그 버튼, 아니면 화면마다 정한 기본 동작(시작, 스윙, 다음 공)을 한다
 function primaryAction(eventTime, x, y) {
   Sound.init();
-  if (game.state === 'title') { startGame(); return; }
-  if (game.state === 'pitch' && game.swingAt == null) { swing(eventTime); return; }
-  if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) {
-    if (x != null && inRect(hudLayout().replay, x, y)) startReplay(); else next();
-    return;
+  if (x != null && game.state !== 'pitch' && game.state !== 'windup') {
+    const b = ui.buttons.find((btn) => inRect(btn.r, x, y));
+    if (b) { b.onTap(); return; }
   }
-  if (game.state === 'over' && game.resultT > 0.6) startGame();
+  if (game.state === 'title') startDefault();   // 버튼이 아닌 빈 곳을 누르면 시작
+  else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime);
+  else if (game.state === 'calib') calibTap(eventTime);
+  else if (game.state === 'records' && x == null) goTitle();
+  else if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) next();
+  else if (game.state === 'over' && game.resultT > 0.6 && x == null) {
+    if (game.mode === 'daily') shareResult(); else startGame(game.mode);
+  }
 }
 
 canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); primaryAction(e.timeStamp, e.clientX, e.clientY); });
@@ -1107,11 +1655,19 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (!e.repeat) primaryAction(e.timeStamp);
   } else if (e.code === 'KeyR' && game.state === 'result') startReplay();
+  else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && (game.state === 'title' || game.state === 'over')) setBats(e.code === 'ArrowLeft' ? 'L' : 'R');
+  else if (e.code === 'Escape' && game.state !== 'title') goTitle();
+  else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'calib'].includes(game.state)) {
+    if (/^Digit[1-6]$/.test(e.code)) setPractice({ type: PRACTICE_TYPES[Number(e.code.slice(5)) - 1] });
+    else if (e.code === 'KeyS') setPractice({ slow: !game.practice.slow });
+    else if (e.code === 'KeyL') setPractice({ throws: game.practice.throws === 'L' ? 'R' : 'L' });
+  }
 });
 window.addEventListener('resize', resize);
 
 // ===== 그리기 =====
 function render(time) {
+  ui.buttons = [];
   ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
   ctx.save();
   if (view.shake > 0) ctx.translate((Math.random() * 2 - 1) * view.shake, (Math.random() * 2 - 1) * view.shake);
@@ -1120,7 +1676,8 @@ function render(time) {
   const playing = game.state === 'windup' || game.state === 'pitch' || game.state === 'result';
   const p = game.seq[game.i], r = game.outcome;
   const bt = ballTime();
-  drawPitcher(playing ? game.t : 0, playing && game.t > 0.35 && bt < 0);
+  drawPitcher(playing ? game.t : 0, playing && game.t > 0.35 && bt < 0, playing && p ? !!p.lefty : game.throws === 'L');
+  if (game.state === 'windup' && p && (game.i === 0 || !!game.seq[game.i - 1].lefty !== !!p.lefty)) drawPitcherTag(p);
 
   if (hasBattedBall()) {
     const fp = flightPos(r, game.flightT);
@@ -1131,7 +1688,8 @@ function render(time) {
   if (playing && bt >= 0) {
     const u = (game.replay != null ? game.replay : bt) / p.T;
     const hiddenByHit = hasBattedBall() && game.replay == null;
-    if (!hiddenByHit && u <= 1.06) drawBall(ballPos(p, u), { spin: (game.replay ?? bt) * SPIN[p.type] });
+    const seen = game.replay == null && hardMatchup(p) ? clamp((u - 0.12) / 0.05, 0, 1) : 1;   // 좌타 대 좌완이면 처음 12%는 안 보인다
+    if (!hiddenByHit && u <= 1.06 && seen > 0) drawBall(ballPos(p, u), { spin: (game.replay ?? bt) * SPIN[p.type] * (p.lefty ? -1 : 1), alpha: seen });
   }
   if (hasBattedBall()) {
     const fp = flightPos(r, game.flightT);
@@ -1150,8 +1708,11 @@ function render(time) {
   }
   ctx.restore();
 
-  if (game.state === 'title') { drawTitle(time); return; }
-  if (game.state === 'over') { drawGameOver(); drawTopBar(); return; }
+  if (game.state === 'title') { drawTitle(time); drawToast(); return; }
+  if (game.state === 'calib') { drawCalib(); drawToast(); return; }
+  if (game.state === 'records') { drawRecords(); drawToast(); return; }
+  if (game.state === 'menu') { drawMenu(); drawToast(); return; }
+  if (game.state === 'over') { drawGameOver(); drawTopBar(); drawToast(); return; }
   drawTopBar();
   const L = hudLayout();
   if (game.i === 0 && game.state !== 'result') {
@@ -1163,10 +1724,13 @@ function render(time) {
       drawPitchInfo(L.info);
       if (hasBattedBall()) drawMiniMap(L.map);
       const m = view.mobile;
-      button(L.replay, m ? '다시 보기' : '다시 보기 (R)', false);
-      button(L.next, game.i >= 9 ? '결과 보기' : m ? '다음 공' : '다음 공 (Space)', true);
+      addButton(L.replay, m ? '다시 보기' : '다시 보기 (R)', 'secondary', startReplay);
+      const last = game.mode === 'scenario' ? !!game.scn.end : game.mode !== 'practice' && game.left <= 0;
+      addButton(L.next, last ? '결과 보기' : m ? '다음 공' : '다음 공 (Space)', 'primary', next);
+      if (game.mode === 'practice') drawPracticeControls(L);
     }
   }
+  drawToast();
 }
 
 let lastFrame = performance.now();
@@ -1182,7 +1746,7 @@ resize();
 requestAnimationFrame(frame);
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, judgeSwing, judgeTake, makeSequence, ballTime, PITCHES };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES };
 </script>
 </body>
 </html>
