@@ -18,11 +18,13 @@ test('전광판으로 낼 수 있는 최대 점수', () => {
 });
 
 const NOW = Date.parse('2026-10-28T03:00:00Z');   // 한국 시간 2026-10-28 12:00(수)
-const base = { playerId: 'p-1234abcd', nick: '타자1234', team: 'lg', day: '2026-10-28', lights: 'GGRRGGRRGR', score: 3000 };
-const check = (patch) => validateSubmission({ ...base, ...patch }, NOW);
+const PID = 'p-1234abcd';   // 로그인 표에서 꺼낸 사람 ID
+const base = { nick: '타자1234', team: 'lg', day: '2026-10-28', lights: 'GGRRGGRRGR', score: 3000 };
+const check = (patch, playerId = PID) => validateSubmission({ ...base, ...patch }, NOW, playerId);
 
 test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
-  assert.deepEqual(check({}), { ok: true, value: { ...base, week: '2026-10-26' } });
+  assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26' } });
+  assert.equal(check({ playerId: 'someone-else' }).value.playerId, PID);   // 보낸 내용의 ID는 쓰지 않는다
   assert.equal(check({ day: '2026-10-26' }).ok, true);                         // 이틀 전까지 받는다
   assert.equal(check({ day: '2026-10-29' }).ok, true);                         // 기기 시계가 조금 빨라도 받는다
   assert.equal(check({ lights: 'GGGGGGGGGGY', score: 1000 }).ok, true);        // 볼 1개면 11칸
@@ -38,7 +40,6 @@ test('규칙상 나올 수 없는 값은 거절한다', () => {
     bad_score: { score: maxScoreFor(base.lights) + 1 },
     stale_day: { day: '2026-10-25' },               // 사흘 전
     bad_nick: { nick: '가나다라마바사아자차카' },      // 11자
-    bad_player: { playerId: 'ABC' },
   };
   for (const [error, patch] of Object.entries(cases)) assert.deepEqual(check(patch), { ok: false, error }, error);
   assert.equal(check({ day: '2026-10-30' }).error, 'stale_day');   // 이틀 뒤
@@ -47,7 +48,9 @@ test('규칙상 나올 수 없는 값은 거절한다', () => {
   assert.equal(check({ score: -1 }).error, 'bad_score');
   assert.equal(check({ nick: '' }).error, 'bad_nick');
   assert.equal(check({ nick: 'a\u0007b' }).error, 'bad_nick');
-  assert.equal(validateSubmission(null, NOW).error, 'bad_body');
+  assert.equal(check({}, 'ABC').error, 'bad_player');
+  assert.equal(check({}, '').error, 'bad_player');
+  assert.equal(validateSubmission(null, NOW, PID).error, 'bad_body');
 });
 
 test('주간 순위: 같은 점수는 같은 등수, 팀 점수는 그날 팀으로', () => {

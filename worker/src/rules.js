@@ -19,14 +19,23 @@ export function maxScoreFor(lights) {
   return each.reduce((a, b) => a + b, 0) + Math.max(...each);   // 마지막 기회 한 공은 점수 2배
 }
 
-// 오늘의 10구 점수 한 건을 검사한다. 마음먹고 조작한 요청까지 막지는 못하고, 규칙상 나올 수 없는 값만 거른다
-export function validateSubmission(b, nowMs) {
+// 닉네임(10자까지)과 팀
+export function validateProfile(b) {
   if (!b || typeof b !== 'object') return { ok: false, error: 'bad_body' };
-  const playerId = String(b.playerId ?? ''), nick = String(b.nick ?? '').trim(), team = String(b.team ?? '');
-  const day = String(b.day ?? ''), lights = String(b.lights ?? ''), score = b.score;
-  if (!/^[a-z0-9-]{8,40}$/.test(playerId)) return { ok: false, error: 'bad_player' };
+  const nick = String(b.nick ?? '').trim(), team = String(b.team ?? '');
   if (!nick || [...nick].length > 10 || /[\u0000-\u001f\u007f]/.test(nick)) return { ok: false, error: 'bad_nick' };
   if (!TEAM_IDS.includes(team)) return { ok: false, error: 'bad_team' };
+  return { ok: true, value: { nick, team } };
+}
+
+// 오늘의 10구 점수 한 건을 검사한다. 마음먹고 조작한 요청까지 막지는 못하고, 규칙상 나올 수 없는 값만 거른다.
+// 사람 ID는 보낸 내용이 아니라 로그인 표에서 꺼낸 값을 받는다
+export function validateSubmission(b, nowMs, playerId) {
+  if (!/^[a-z0-9-]{8,40}$/.test(String(playerId ?? ''))) return { ok: false, error: 'bad_player' };
+  const profile = validateProfile(b);
+  if (!profile.ok) return profile;
+  const { nick, team } = profile.value;
+  const day = String(b.day ?? ''), lights = String(b.lights ?? ''), score = b.score;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, error: 'bad_day' };
   const today = kstDay(nowMs);
   if (day < addDays(today, -2) || day > addDays(today, 1)) return { ok: false, error: 'stale_day' };   // 늦게 보낸 기록은 이틀까지 받는다
