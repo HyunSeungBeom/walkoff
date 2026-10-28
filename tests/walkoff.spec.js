@@ -4,14 +4,58 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 
 const PAGE = pathToFileURL(path.join(__dirname, '..', 'index.html')).href;
+const API = 'https://walkoff-api.walkoff-api.workers.dev';
+const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET, POST, OPTIONS' };
+const EMPTY_RANKING = { week: '2026-10-26', nextWeek: '2026-11-02', players: [], teams: [], count: 0, me: null, myTeam: null, lastWeek: { player: null, team: null } };
+const SAMPLE_RANKING = {
+  ...EMPTY_RANKING,
+  players: [
+    { rank: 1, nick: '명은', team: 'lotte', total: 12300, days: 3, me: false },
+    { rank: 2, nick: '민성', team: 'lg', total: 9100, days: 2, me: true },
+  ],
+  teams: [{ rank: 1, team: 'lotte', total: 12300, players: 1 }, { rank: 2, team: 'lg', total: 9100, players: 1 }],
+  count: 2, me: { rank: 2, total: 9100, days: 2, team: 'lg' }, myTeam: { rank: 2, total: 9100, team: 'lg' },
+  lastWeek: { player: { rank: 1, nick: '명은', team: 'lotte', total: 20000, days: 7, me: false }, team: { rank: 1, team: 'lotte', total: 20000, players: 1 } },
+};
 
-async function open(page, query = '?seed=42') {
+// 테스트가 실제 랭킹 서버에 점수를 보내지 않도록 서버 주소를 가로채 가짜로 답한다. 보낸 점수는 돌려주는 배열에 쌓인다
+async function mockRanking(page, { rankings = EMPTY_RANKING, fail = false } = {}) {
+  const posted = [];
+  await page.route(`${API}/**`, (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+    if (fail) return route.fulfill({ status: 500, headers: CORS, contentType: 'application/json', body: '{"ok":false,"error":"server_error"}' });
+    if (req.method() === 'POST') {
+      posted.push(JSON.parse(req.postData() || '{}'));
+      const res = { ok: true, accepted: true, week: '2026-10-26', me: { rank: 3, total: 4200, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5 };
+      return route.fulfill({ headers: CORS, contentType: 'application/json', body: JSON.stringify(res) });
+    }
+    return route.fulfill({ headers: CORS, contentType: 'application/json', body: JSON.stringify(rankings) });
+  });
+  return posted;
+}
+
+// team: 처음부터 고른 팀(null이면 처음 온 사람). ranking: mockRanking 설정
+async function open(page, query = '?seed=42', { team = 'lg', ranking } = {}) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  const posted = await mockRanking(page, ranking);
+  if (team) {
+    await page.addInitScript((t) => {
+      if (!localStorage.getItem('walkoff.team')) { localStorage.setItem('walkoff.team', t); localStorage.setItem('walkoff.nick', '테스트'); }
+    }, team);
+  }
   await page.goto(PAGE + query);
   await page.waitForFunction(() => !!window.walkoff);
+  Object.defineProperty(errors, 'posted', { value: posted });   // expect(errors).toEqual([])에 걸리지 않게 숨긴 속성으로 둔다
   return errors;
 }
+
+const tap = async (page, label) => {
+  const r = await page.evaluate((l) => walkoff.ui.buttons.find((b) => b.label === l)?.r, label);
+  if (!r) throw new Error(`버튼이 없다: ${label}`);
+  await page.mouse.click(r.x + r.w / 2, r.y + r.h / 2);
+};
 
 // 공이 홈플레이트에 닿는 시각보다 dt(ms)만큼 빠르게(-)/늦게(+) 스페이스를 보낸다. dt가 null이면 치지 않는다
 async function playPitch(page, dt) {
@@ -166,9 +210,16 @@ test.describe('한 판 끝까지', () => {
     await playUntilOver(page, 0);
     const saved = await page.evaluate(() => walkoff.store.get('daily.' + walkoff.today(), null));
     expect(saved && saved.score).toBe(await page.evaluate(() => walkoff.game.score));
+    // 첫 판 점수가 랭킹 서버로 한 번 가고, 끝 화면에 이번 주 순위가 붙는다
+    await expect.poll(() => errors.posted.length).toBe(1);
+    const sent = errors.posted[0], today = await page.evaluate(() => walkoff.today());
+    expect(sent).toEqual({ playerId: expect.stringMatching(/^[a-z0-9-]{8,40}$/), nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights });
+    await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 3위 · LG 2위 · 랭킹 보기 ›');
     await page.keyboard.press('Escape');
     await page.keyboard.press('Space');   // 오늘 친 뒤에는 10구 도전으로 시작
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
+    expect(errors.posted.length).toBe(1);   // 10구 도전은 랭킹에 보내지 않는다
     expect(errors).toEqual([]);
   });
 });
@@ -183,7 +234,7 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.state === 'menu');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '기록'));
     const items = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
-    for (const want of [/^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^닫기$/]) {
+    for (const want of [/^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^이번 주 랭킹$/, /^팀·닉네임 바꾸기$/, /^닫기$/]) {
       expect(items.some((l) => want.test(l)), String(want)).toBe(true);
     }
     await page.keyboard.press('Escape');
@@ -202,6 +253,69 @@ test.describe('화면', () => {
     await page.reload();
     await page.waitForFunction(() => !!window.walkoff);
     expect(await page.evaluate(() => walkoff.settings.bats)).toBe('L');
+    expect(errors).toEqual([]);
+  });
+
+  test('처음 온 사람은 탭하면 팀과 닉네임부터 고르고, 고른 팀 유니폼을 입는다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { team: null });
+    const vp = page.viewportSize(), nick = page.locator('input[aria-label="닉네임"]');
+    await page.mouse.click(20, vp.height - 20);
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '이 팀으로 시작'));
+    await tap(page, '이 팀으로 시작');   // 팀을 안 고르면 시작하지 않는다
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
+    await tap(page, '한화 이글스');
+    expect(await page.evaluate(() => walkoff.batterColors().accent)).toBe('#1b1b1b');   // 고르는 중에도 유니폼을 미리 입혀 본다
+    await nick.fill('명은');
+    await tap(page, '이 팀으로 시작');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode, team: walkoff.settings.team, nick: walkoff.settings.nick })))
+      .toEqual({ state: 'windup', mode: 'daily', team: 'hanwha', nick: '명은' });
+    expect(await page.evaluate(() => walkoff.game.opponent !== 'hanwha' && walkoff.pitcherColors().navy !== '#1d2f5c')).toBe(true);   // 투수는 상대 팀 색
+    await expect(nick).toBeHidden();
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    expect(await page.evaluate(() => ({ team: walkoff.settings.team, nick: walkoff.settings.nick, jersey: walkoff.batterColors().jersey })))
+      .toEqual({ team: 'hanwha', nick: '명은', jersey: '#e65c00' });   // 한화 상의 #ff6600을 조명에 맞춰 0.9배
+    expect(errors).toEqual([]);
+  });
+
+  test('메뉴에서 팀·닉네임을 바꾸고 엔터로 저장한다', async ({ page }) => {
+    const errors = await open(page);
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀·닉네임 바꾸기'));
+    await tap(page, '팀·닉네임 바꾸기');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '저장'));
+    await tap(page, 'NC 다이노스');
+    const nick = page.locator('input[aria-label="닉네임"]');
+    await nick.fill('새이름');
+    await nick.press('Enter');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick })))
+      .toEqual({ state: 'title', team: 'nc', nick: '새이름' });
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹 화면: 순위, 빈 목록, 서버 오류', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { ranking: { rankings: SAMPLE_RANKING } });
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
+    expect(await page.evaluate(() => walkoff.game.ranking.data.me.rank)).toBe(2);
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀'));
+    await tap(page, '팀');
+    expect(await page.evaluate(() => walkoff.game.rankTab)).toBe('teams');
+    await page.keyboard.press('Space');   // 스페이스로 닫는다
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+
+    await page.unroute(`${API}/**`);
+    await mockRanking(page);   // 아직 아무도 없는 주
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
+    expect(await page.evaluate(() => walkoff.game.ranking.data.players.length)).toBe(0);
+
+    await page.unroute(`${API}/**`);
+    await mockRanking(page, { fail: true });
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'error');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '다시 시도'));
     expect(errors).toEqual([]);
   });
 
@@ -257,4 +371,17 @@ test.describe('결과 공유', () => {
       expect(errors).toEqual([]);
     });
   }
+});
+
+test.describe('랭킹 규칙', () => {
+  test.skip(({ isMobile }) => isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+
+  test('게임과 랭킹 서버가 같은 팀 목록과 주 계산(한국 시간 월요일 시작)을 쓴다', async ({ page }) => {
+    const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
+    await open(page);
+    const days = Array.from({ length: 400 }, (_, i) => rules.addDays('2026-10-01', i));
+    const game = await page.evaluate((days) => ({ ids: walkoff.TEAMS.map((t) => t.id), weeks: days.map((d) => walkoff.weekStartOf(d)) }), days);
+    expect(game.ids).toEqual(rules.TEAM_IDS);
+    expect(game.weeks).toEqual(days.map((d) => rules.weekStart(d)));
+  });
 });

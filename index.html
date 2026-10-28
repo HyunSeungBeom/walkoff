@@ -556,7 +556,7 @@ const PITCHER_COLOR = { jersey: '#f4f5f9', shade: '#c9cfdb', pants: '#e7e9ef', n
 
 // 투수는 멀리 있어서 정면 평면 그림으로 충분하다. 포즈는 pitcherPose가 정한다
 function drawPitcher(t, holdingBall, lefty) {
-  const pose = pitcherPose(t), C = PITCHER_COLOR, hs = lefty ? -1 : 1;   // 포즈는 우투수 기준이고 좌투수는 좌우만 뒤집는다
+  const pose = pitcherPose(t), C = pitcherColors(), hs = lefty ? -1 : 1;   // 포즈는 우투수 기준이고 좌투수는 좌우만 뒤집는다
   const z = MOUND + pose.z;
   const P = (j) => project(hs * j[0], 0.25 + j[1], z);
   const base = P([0, 0]);
@@ -710,9 +710,57 @@ function batPose(tau) {
 }
 
 const BATTER_COLOR = {
-  jersey: '#8b93a6', shade: '#6c7487', pants: '#a0a7b7', pantsShade: '#7f8696', accent: '#74182a', belt: '#1b1d24',
+  jersey: '#8b93a6', shade: '#6c7487', pants: '#a0a7b7', pantsShade: '#7f8696', accent: '#74182a', helmet: '#74182a', belt: '#1b1d24',
   skin: '#c18f69', shoe: '#121418', glove: '#e9e9ec', bat: '#c8955a', batEnd: '#8a5e32', rim: 'rgba(225,232,245,0.6)',
 };
+
+// ===== 팀 =====
+// KBO 10개 구단(2026-10-28 사용자 결정). 구단 이름은 상표라서 로고·엠블럼은 쓰지 않고, 팀 고르기·랭킹 화면에
+// "KBO·각 구단과 관계없는 비공식 팬 게임"이라고 적는다. 색은 공식 색상 코드가 아니라 대표 색에 가깝게 고른 값이다.
+// id는 랭킹 서버(worker/src/rules.js)의 TEAM_IDS와 순서까지 같아야 한다. main은 상의·헬멧, accent는 소매·스타킹 색이다
+const TEAMS = [
+  { id: 'kia', name: 'KIA 타이거즈', short: 'KIA', main: '#ea0029', accent: '#0b1c2c' },
+  { id: 'kt', name: 'KT 위즈', short: 'KT', main: '#1b1b1b', accent: '#eb1c24' },
+  { id: 'lg', name: 'LG 트윈스', short: 'LG', main: '#a50034', accent: '#1b1b1b' },
+  { id: 'nc', name: 'NC 다이노스', short: 'NC', main: '#315288', accent: '#c7a079' },
+  { id: 'ssg', name: 'SSG 랜더스', short: 'SSG', main: '#ce0e2d', accent: '#ffb81c' },
+  { id: 'doosan', name: '두산 베어스', short: '두산', main: '#131230', accent: '#f4f5f9' },
+  { id: 'lotte', name: '롯데 자이언츠', short: '롯데', main: '#041e42', accent: '#d00f31' },
+  { id: 'samsung', name: '삼성 라이온즈', short: '삼성', main: '#074ca1', accent: '#f4f5f9' },
+  { id: 'kiwoom', name: '키움 히어로즈', short: '키움', main: '#820024', accent: '#f4f5f9' },
+  { id: 'hanwha', name: '한화 이글스', short: '한화', main: '#ff6600', accent: '#1b1b1b' },
+];
+const teamById = (id) => TEAMS.find((t) => t.id === id) ?? null;
+
+// 상대 팀은 내 팀이 아닌 팀 가운데서 판마다 고른다. 공 순서와 다른 난수를 써서 순서는 그대로 둔다
+function pickOpponent(seed) {
+  const others = TEAMS.filter((t) => t.id !== settings.team);
+  return others[Math.floor(mulberry32((seed ^ 0x51ed270b) >>> 0)() * others.length)].id;
+}
+// 끝내기 상황 점수판의 [원정, 홈] 이름. 팀을 안 골랐으면 원정·홈이라고 쓴다
+const sideNames = () => [teamById(game.opponent)?.short ?? '원정', teamById(settings.team)?.short ?? '홈'];
+
+// '#rrggbb'의 밝기를 k배로(1보다 작으면 어둡게)
+function tint(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  return `#${[16, 8, 0].map((s) => clamp(Math.round(((n >> s) & 255) * k), 0, 255).toString(16).padStart(2, '0')).join('')}`;
+}
+
+// 타자는 팀 색 유니폼을 입는다. 조명을 등지고 있어서 상의는 조금 어둡게 칠한다.
+// 팀을 고르는 화면에서는 고르는 중인 팀을 미리 입혀 보여 준다
+const paletteCache = {};
+function batterColors() {
+  const t = teamById(game.state === 'onboard' && game.onboard?.team ? game.onboard.team : settings.team);
+  if (!t) return BATTER_COLOR;
+  return (paletteCache[`b-${t.id}`] ??= { ...BATTER_COLOR, jersey: tint(t.main, 0.9), shade: tint(t.main, 0.7), helmet: tint(t.main, 0.75), accent: t.accent, pants: '#b4b9c4', pantsShade: '#8f949f' });
+}
+
+// 투수는 흰 유니폼에 상대 팀 색(모자, 소매, 스타킹, 번호)을 입는다
+function pitcherColors() {
+  const t = teamById(game.opponent);
+  if (!t) return PITCHER_COLOR;
+  return (paletteCache[`p-${t.id}`] ??= { ...PITCHER_COLOR, navy: tint(t.main, 0.85), brim: tint(t.main, 0.65) });
+}
 
 // 타자 뼈대(3D). 준비 자세에서는 어깨가 투수 쪽으로 닫혀 있고, 스윙하면 엉덩이가 먼저, 어깨가 뒤따라 돈다
 function batterSkeleton(tau) {
@@ -762,9 +810,9 @@ function drawBatterFigure(k, col, dy) {
     seg(V.add(k.chest, [0.02, 0.05, 0]), V.add(k.head, [0, -0.08, 0]), 0.1, 0.09, 'skin');
     // 헬멧: 챙은 투수 쪽을 향해 머리 뒤로 조금만 보인다
     const brim = P(V.add(k.head, [0.03, -0.04, 0.12])), h = P(k.head);
-    if (brim) ellipseAt(brim, 0.1 * brim.s, 0.035 * brim.s, col('accent'));
+    if (brim) ellipseAt(brim, 0.1 * brim.s, 0.035 * brim.s, col('helmet'));
     if (h) {
-      ellipseAt(h, 0.13 * h.s, 0.125 * h.s, col('accent'));
+      ellipseAt(h, 0.13 * h.s, 0.125 * h.s, col('helmet'));
       if (dy === 0) ellipseAt({ x: h.x - batSide() * 0.04 * h.s, y: h.y - 0.06 * h.s }, 0.045 * h.s, 0.025 * h.s, 'rgba(255,255,255,0.28)');
     }
   } });
@@ -790,7 +838,8 @@ function drawBatter(tau) {
     if (band.length > 2) fill3d(band, `rgba(255,255,255,${0.22 * (1 - tau / 0.16)})`);
   }
   drawBatterFigure(k, () => BATTER_COLOR.rim, -2);
-  drawBatterFigure(k, (name) => BATTER_COLOR[name], 0);
+  const C = batterColors();
+  drawBatterFigure(k, (name) => C[name], 0);
 }
 
 // ===== 맞은 공 =====
@@ -1060,14 +1109,34 @@ const store = {
   keys(prefix) {
     try { return Object.keys(localStorage).filter((k) => k.startsWith('walkoff.' + prefix)).map((k) => k.slice('walkoff.'.length)); } catch { return []; }
   },
+  remove(key) {
+    try { localStorage.removeItem('walkoff.' + key); } catch { /* 저장소를 못 쓰면 지울 것도 없다 */ }
+  },
 };
+
+// 랭킹에서 이 브라우저를 구별하는 무작위 ID. 이름이나 기기 정보는 담지 않는다
+function ensurePlayerId() {
+  const saved = String(store.get('playerId', ''));
+  if (/^[a-z0-9-]{8,40}$/.test(saved)) return saved;
+  const id = globalThis.crypto?.randomUUID?.() ?? `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  store.set('playerId', id);
+  return id;
+}
+const defaultNick = () => `타자${Math.floor(1000 + Math.random() * 9000)}`;
 
 // ===== 설정: 좌타/우타 =====
 const settings = {
   bats: store.get('bats', 'R') === 'L' ? 'L' : 'R',
   offset: clamp(Number(store.get('offset', 0)) || 0, -150, 250),   // 타이밍 보정(ms). 판정할 때 이만큼 뺀다
+  team: teamById(String(store.get('team', ''))) ? String(store.get('team', '')) : null,   // 처음 시작할 때 고른다
+  nick: String(store.get('nick', '')).trim().slice(0, 10),
+  playerId: ensurePlayerId(),
 };
 function setBats(b) { settings.bats = b; store.set('bats', b); }
+function saveTeamAndNick(team, nick) {
+  Object.assign(settings, { team, nick });
+  store.set('team', team); store.set('nick', nick);
+}
 const batSide = () => (settings.bats === 'L' ? -1 : 1);   // 좌타는 홈플레이트 오른쪽에 서서 화면 좌우가 뒤집힌다
 
 // ===== 타이밍 보정 =====
@@ -1282,7 +1351,8 @@ function finishScenario() {
 // 상단: 점수, 볼·스트라이크·아웃 불(실제 전광판처럼 초록·노랑·빨강), 주자 마름모
 function drawScenarioBoard(y) {
   const m = view.mobile, s = game.scn, pad = m ? 14 : 22, cx = view.w / 2;
-  text(`원정 ${s.away} : ${s.home} 홈`, cx, y, { size: m ? 17 : 21, weight: 800 });
+  const [away, home] = sideNames();
+  text(`${away} ${s.away} : ${s.home} ${home}`, cx, y, { size: m ? 17 : 21, weight: 800 });
   text('9회말', cx, y + (m ? 18 : 22), { size: m ? 11 : 12, weight: 600, color: 'rgba(255,255,255,0.6)' });
   const d = m ? 9 : 13, dx = view.w - pad - d * 1.6, dy = y + 4;
   const base = (x, yy, on) => {
@@ -1315,7 +1385,8 @@ function drawScenarioOver() {
   text(scenarioEndText(s.end), cx, y,
     { size: m ? 44 : 64, weight: 900, color: s.end === 'win' ? '#f2c94c' : '#fff', shadow: true });
   y += m ? 48 : 60;
-  text(`원정 ${s.away} : ${s.home} 홈 · 9회말`, cx, y, { size: m ? 18 : 22 });
+  const [away, home] = sideNames();
+  text(`${away} ${s.away} : ${s.home} ${home} · 9회말`, cx, y, { size: m ? 18 : 22 });
   y += m ? 38 : 48;
   const pa = s.pa.split('');
   pa.forEach((c, i) => drawLight(cx + (i - (pa.length - 1) / 2) * (m ? 30 : 36), y, m ? 10 : 12, LIGHT_BY_CODE[c]));
@@ -1430,10 +1501,205 @@ function drawRecords() {
   addButton({ x: cx - 90, y, w: 180, h: 48 }, '처음으로', 'primary', goTitle);
 }
 
+// ===== 팀 고르기 =====
+// 처음 시작할 때 팀과 닉네임을 고른다(2026-10-28 사용자 결정). 메뉴에서 다시 바꿀 수 있다.
+// 닉네임은 한글 입력기 때문에 캔버스로 받을 수 없어서 이 화면에서만 HTML 입력칸을 캔버스 위에 띄운다
+const nickInput = document.createElement('input');
+Object.assign(nickInput, { type: 'text', maxLength: 10, autocomplete: 'off', spellcheck: false, placeholder: '닉네임' });
+nickInput.setAttribute('aria-label', '닉네임');
+Object.assign(nickInput.style, {
+  position: 'fixed', display: 'none', boxSizing: 'border-box', padding: '0 12px', zIndex: '2', outline: 'none',
+  border: '2px solid rgba(255,255,255,0.35)', borderRadius: '12px', background: 'rgba(8,16,30,0.85)', color: '#fff',
+  font: `700 16px ${FONT}`, textAlign: 'center',   // 16px보다 작으면 아이폰이 입력할 때 화면을 확대한다
+});
+document.body.appendChild(nickInput);
+
+function openOnboard(next) {   // next: 'start'(고른 뒤 바로 시작) | 'menu'(메뉴에서 바꾸기)
+  game.onboard = { next, team: settings.team };
+  nickInput.value = settings.nick || defaultNick();
+  game.state = 'onboard';
+}
+
+function confirmOnboard() {
+  const ob = game.onboard;
+  if (!ob.team) { toast('팀을 골라 주세요'); return; }
+  const nick = nickInput.value.trim().slice(0, 10) || defaultNick();
+  saveTeamAndNick(ob.team, nick);
+  nickInput.blur();
+  if (ob.next === 'start') startDefault();
+  else { goTitle(); toast(`저장했어요 · ${teamById(ob.team).short} ${nick}`); }
+}
+
+const UNOFFICIAL = 'KBO·각 구단과 관계없는 비공식 팬 게임이에요';
+function drawTeamChip(r, t, on) {
+  roundRect(r.x, r.y, r.w, r.h, 12);
+  ctx.fillStyle = on ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)'; ctx.fill();
+  if (on) { ctx.strokeStyle = '#f2c94c'; ctx.lineWidth = 2.5; ctx.stroke(); }
+  const d = r.h * 0.5, x = r.x + 12 + d / 2, y = r.y + r.h / 2;
+  ctx.beginPath(); ctx.arc(x, y, d / 2, 0, Math.PI * 2);   // 유니폼 견본: 상의 색에 소매 색 테두리
+  ctx.fillStyle = t.main; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = t.accent; ctx.stroke();
+  text(t.name, x + d / 2 + 10, y + 1, { size: view.mobile ? 13 : 15, align: 'left' });
+}
+
+function drawOnboard() {
+  dim(0.62);
+  const m = view.mobile, cx = view.w / 2, ob = game.onboard;
+  let y = view.h * (m ? 0.1 : 0.13);
+  text(ob.next === 'start' ? '내 팀을 고르세요' : '팀·닉네임 바꾸기', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 30 : 36;
+  text('팀 색으로 유니폼이 바뀌고, 주간 랭킹에서 팀끼리 겨뤄요', cx, y, { size: m ? 12 : 15, weight: 500, color: 'rgba(255,255,255,0.75)' });
+  y += m ? 26 : 34;
+  const cols = m ? 2 : 5, gap = 10, w = m ? view.w - 32 : 900, cw = (w - gap * (cols - 1)) / cols, ch = m ? 44 : 52;
+  TEAMS.forEach((t, i) => {
+    const r = { x: cx - w / 2 + (i % cols) * (cw + gap), y: y + Math.floor(i / cols) * (ch + gap), w: cw, h: ch };
+    drawTeamChip(r, t, ob.team === t.id);
+    ui.buttons.push({ r, label: t.name, onTap: () => { ob.team = t.id; } });
+  });
+  y += Math.ceil(TEAMS.length / cols) * (ch + gap) + (m ? 12 : 16);
+  text(UNOFFICIAL, cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });   // 구단 이름은 상표라서 공식 게임이 아니라고 밝힌다
+  y += m ? 26 : 32;
+  text('닉네임 · 랭킹에 보여요(10자까지)', cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
+  y += m ? 14 : 18;
+  const iw = m ? view.w - 64 : 300;
+  Object.assign(nickInput.style, { display: 'block', left: `${cx - iw / 2}px`, top: `${y}px`, width: `${iw}px`, height: '44px' });
+  y += 44 + (m ? 18 : 24);
+  const bw = m ? view.w - 64 : 300;
+  addButton({ x: cx - bw / 2, y, w: bw, h: 50 }, ob.next === 'start' ? '이 팀으로 시작' : '저장', 'primary', confirmOnboard);
+  addButton({ x: cx - 70, y: y + 60, w: 140, h: 36 }, ob.next === 'start' ? '뒤로' : '취소', 'link', goTitle);
+}
+
+// ===== 주간 랭킹 =====
+// 서버는 worker/(Cloudflare Workers + D1). 오늘의 10구 하루 첫 판 점수를 모아 한국 시간 월요일 0시에 새로 시작하는
+// 주간 순위를 매긴다. 주소 뒤에 ?api=주소를 붙이면 로컬 서버나 테스트용 가짜 서버를 쓴다
+const RANKING_API = new URLSearchParams(location.search).get('api') || 'https://walkoff-api.walkoff-api.workers.dev';
+const addDay = (day, n) => new Date(Date.parse(`${day}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+// worker/src/rules.js의 weekStart와 같은 규칙이다(테스트로 맞춰 본다)
+function weekStartOf(day) {
+  const dow = new Date(`${day}T00:00:00Z`).getUTCDay();   // 0 일요일 … 6 토요일
+  return addDay(day, -((dow + 6) % 7));
+}
+const fmtMD = (day) => `${Number(day.slice(5, 7))}월 ${Number(day.slice(8, 10))}일`;
+function untilNextWeek(week) {
+  const ms = Date.parse(`${addDay(week, 7)}T00:00:00+09:00`) - Date.now();
+  return ms > 864e5 ? `새 주까지 ${Math.ceil(ms / 864e5)}일` : `새 주까지 ${Math.max(1, Math.ceil(ms / 3600e3))}시간`;
+}
+
+async function postScore(body) {
+  const res = await fetch(`${RANKING_API}/scores`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+
+// 오늘의 10구 첫 판 점수를 보낸다. 네트워크 오류면 남겨 뒀다가 다음에 열 때 다시 보내고, 서버가 거절한 기록은 버린다
+async function submitDaily(s) {
+  if (!settings.team) return;
+  if (!settings.nick) saveTeamAndNick(settings.team, defaultNick());
+  const body = { playerId: settings.playerId, nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights };
+  store.set('pending', body);
+  game.rankInfo = { status: 'sending' };
+  try {
+    const { status, data } = await postScore(body);
+    if (status !== 0 && status < 500) store.remove('pending');
+    game.rankInfo = status === 200 && data.ok ? { status: 'ok', me: data.me, myTeam: data.myTeam } : { status: 'error' };
+  } catch { game.rankInfo = { status: 'error' }; }
+}
+
+async function resendPending() {
+  const body = store.get('pending', null);
+  if (!body || typeof body !== 'object') return;
+  try { const { status } = await postScore(body); if (status < 500) store.remove('pending'); } catch { /* 다음에 열 때 다시 보낸다 */ }
+}
+
+async function fetchRanking() {
+  const res = await fetch(`${RANKING_API}/rankings?player=${encodeURIComponent(settings.playerId)}`);
+  if (!res.ok) throw new Error(`ranking ${res.status}`);
+  return res.json();
+}
+
+// 오늘의 10구 기록을 다시 볼 때 이번 주 내 순위를 붙인다
+async function loadMyRank() {
+  if (!settings.team) return;
+  game.rankInfo = { status: 'sending' };
+  try { const d = await fetchRanking(); game.rankInfo = { status: 'ok', me: d.me, myTeam: d.myTeam }; } catch { game.rankInfo = { status: 'error' }; }
+}
+
+function openRanking(back) {
+  Object.assign(game, { state: 'ranking', rankBack: back });
+  loadRanking();
+}
+async function loadRanking() {
+  game.ranking = { status: 'loading' };
+  try { game.ranking = { status: 'ok', data: await fetchRanking() }; } catch { game.ranking = { status: 'error' }; }
+}
+function closeRanking() { if (game.rankBack === 'over') game.state = 'over'; else goTitle(); }
+
+// 끝 화면 한 줄: "이번 주 7위 · LG 2위 · 랭킹 보기 ›"
+function rankLine() {
+  const ri = game.rankInfo;
+  if (!ri || ri.status === 'sending') return '이번 주 랭킹을 불러오는 중…';
+  if (ri.status === 'error') return '랭킹 서버에 연결하지 못했어요 · 랭킹 보기 ›';
+  if (!ri.me) return '이번 주 랭킹 보기 ›';
+  const t = teamById(ri.myTeam?.team);
+  return `이번 주 ${ri.me.rank}위${t ? ` · ${t.short} ${ri.myTeam.rank}위` : ''} · 랭킹 보기 ›`;
+}
+
+function drawRankRow(y, x0, w, cells, highlight) {
+  const m = view.mobile, h = m ? 28 : 32;
+  if (highlight) { roundRect(x0 - 8, y - h / 2, w + 16, h, 8); ctx.fillStyle = 'rgba(242,201,76,0.2)'; ctx.fill(); }
+  const [rank, team, name, sub, total] = cells, t = teamById(team);
+  text(rank, x0 + 18, y, { size: m ? 13 : 15, weight: 800, color: '#f2c94c' });
+  if (t) { ctx.beginPath(); ctx.arc(x0 + 46, y, 6, 0, Math.PI * 2); ctx.fillStyle = t.main; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = t.accent; ctx.stroke(); }
+  text(name, x0 + 60, y, { size: m ? 13 : 15, weight: 700, align: 'left' });
+  text(sub, x0 + w * (m ? 0.66 : 0.64), y, { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
+  text(total, x0 + w, y, { size: m ? 13 : 15, weight: 800, align: 'right' });
+}
+
+function drawRanking() {
+  dim(0.86);
+  const m = view.mobile, cx = view.w / 2, w = m ? view.w - 40 : 560, x0 = cx - w / 2, rk = game.ranking ?? { status: 'loading' }, d = rk.data;
+  let y = view.h * (m ? 0.08 : 0.1);
+  text('이번 주 랭킹', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 28 : 34;
+  const week = d?.week ?? weekStartOf(today());
+  text(`${fmtMD(week)}(월) ~ ${fmtMD(addDay(week, 6))}(일) · ${untilNextWeek(week)}`, cx, y, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.65)' });
+  y += m ? 30 : 36;
+  rowRects(cx, y, m ? 220 : 260, 36, 2, 8).forEach((r, i) => {
+    const tab = i ? 'teams' : 'players';
+    addButton(r, i ? '팀' : '개인', game.rankTab === tab ? 'chipOn' : 'chip', () => { game.rankTab = tab; });
+  });
+  y += 36 + (m ? 24 : 30);
+  const note = (s) => text(s, cx, y + 20, { size: m ? 13 : 15, weight: 500, color: 'rgba(255,255,255,0.75)' });
+  if (rk.status === 'loading') note('불러오는 중…');
+  else if (rk.status === 'error') {
+    note('랭킹을 불러오지 못했어요');
+    addButton({ x: cx - 80, y: y + 44, w: 160, h: 42 }, '다시 시도', 'secondary', loadRanking);
+  } else {
+    const players = game.rankTab === 'players', rows = players ? d.players : d.teams;
+    if (!rows.length) note('아직 이번 주 기록이 없어요. 오늘의 10구를 쳐서 첫 줄에 올라 보세요');
+    const shown = rows.slice(0, 10), mine = players ? rows.find((p) => p.me) : rows.find((t) => t.team === d.myTeam?.team);
+    if (mine && !shown.includes(mine)) shown.push(null, mine);   // 10위 밖이면 … 아래에 내 줄
+    const step = m ? 30 : 34;
+    for (const row of shown) {
+      if (!row) { text('…', cx, y, { size: 14, color: 'rgba(255,255,255,0.5)' }); y += step; continue; }
+      const total = `${row.total.toLocaleString()}점`;
+      if (players) drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total], row.me);
+      else drawRankRow(y, x0, w, [String(row.rank), row.team, teamById(row.team)?.name ?? row.team, `${row.players}명`, total], row === mine);
+      y += step;
+    }
+    const lp = d.lastWeek?.player, lt = d.lastWeek?.team;
+    if (lp || lt) {
+      y += m ? 8 : 12;
+      text(`지난주 1위 ${lp ? `${lp.nick}(${teamById(lp.team)?.short ?? ''}) ${lp.total.toLocaleString()}점` : '-'} · 팀 1위 ${lt ? teamById(lt.team)?.short ?? lt.team : '-'}`, cx, y,
+        { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
+    }
+  }
+  text(UNOFFICIAL, cx, view.h - (m ? 112 : 122), { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.5)' });
+  addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, '닫기', 'primary', closeRanking);
+}
+
 // ===== 시작 화면과 끝 화면 =====
 // 시작 화면에는 "탭해서 시작"과 [좌타 | 우타]만 둔다(2026-10-28 사용자 피드백). 빈 곳 어디를 눌러도 시작한다.
 // 다른 모드와 설정은 오른쪽 위 메뉴에 있다. 오늘의 10구를 아직 안 쳤으면 오늘의 10구, 쳤으면 10구 도전으로 시작한다
-const startDefault = () => startGame(dailyRecord() ? 'challenge' : 'daily');
+const startDefault = () => (settings.team ? startGame(dailyRecord() ? 'challenge' : 'daily') : openOnboard('start'));
 
 function drawTitle(time) {
   dim(0.6);
@@ -1465,6 +1731,8 @@ function drawMenu() {
     ['연습', () => startGame('practice')],
     [`타이밍 보정 ${fmtMs(settings.offset)}`, startCalib],
     ['기록', () => { game.state = 'records'; }],
+    ['이번 주 랭킹', () => openRanking('title')],
+    ['팀·닉네임 바꾸기', () => openOnboard('menu')],
   ];
   if (dailyRecord()) items.unshift(['오늘의 10구 결과 보기', showDailyRecord]);
   for (const [label, fn] of items) { addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, label, 'secondary', fn); y += 60; }
@@ -1501,6 +1769,11 @@ function drawGameOver() {
   y += m ? 38 : 48;
   const bw = m ? view.w - 48 : 340;
   if (game.mode === 'daily') {
+    if (settings.team) {   // 이번 주 순위 한 줄. 누르면 랭킹 화면
+      const lw = Math.min(view.w - 32, 420);
+      addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => openRanking('over'));
+      y += m ? 32 : 38;
+    }
     const [a, b] = rowRects(cx, y, bw, 48, 2);
     addButton(a, '결과 공유하기', 'primary', shareResult);
     addButton(b, '처음으로', 'secondary', goTitle);
@@ -1525,6 +1798,7 @@ const game = {
   hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null,
   toast: null, firstDaily: false, newBest: false, best: 0,
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
+  opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title',   // 상대 팀, 팀 고르기, 랭킹 화면
 };
 
 function seedFromUrl() {
@@ -1538,6 +1812,8 @@ function startGame(mode) {
   game.seed = mode === 'daily' ? dailySeed(today()) : seedFromUrl();
   Object.assign(game, { i: 0, score: 0, results: [], summary: null, firstDaily: false, newBest: false, scn: null, scnEvent: '', left: mode === 'daily' || mode === 'challenge' ? CHANCES : 0, extra: 0 });
   game.throws = pitcherHand(game.seed);
+  game.opponent = pickOpponent(game.seed);
+  game.rankInfo = null;
   if (mode === 'scenario') {
     game.rnd = mulberry32(game.seed);
     game.scn = makeScenario(game.rnd);
@@ -1630,8 +1906,8 @@ function next() {
 
 function finishGame() {
   Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
-  game.summary = { ...gameSummary(), bats: settings.bats, day: dayNumber(today()) };
-  if (game.mode === 'daily' && !dailyRecord()) { store.set('daily.' + today(), game.summary); game.firstDaily = true; }
+  game.summary = { ...gameSummary(), bats: settings.bats, day: dayNumber(today()), date: today() };
+  if (game.mode === 'daily' && !dailyRecord()) { store.set('daily.' + today(), game.summary); game.firstDaily = true; submitDaily(game.summary); }
   if (game.mode === 'challenge') {
     const best = store.get('best', 0);
     game.newBest = game.score > best;
@@ -1647,6 +1923,7 @@ function showDailyRecord() {
   if (!s) return;
   const results = s.lights.split('').map((c) => ({ hit: c === 'G', kind: c === 'G' ? 'single' : c === 'Y' ? 'ball' : 'out' }));
   Object.assign(game, { state: 'over', mode: 'daily', summary: s, results, score: s.score, i: results.length - 1, left: 0, t: 0, resultT: 1, firstDaily: false, outcome: null, swingAt: null });
+  loadMyRank();
 }
 
 function startReplay() { if (game.outcome) game.replay = 0; }
@@ -1689,6 +1966,7 @@ function primaryAction(eventTime, x, y) {
   else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime);
   else if (game.state === 'calib') calibTap(eventTime);
   else if (game.state === 'records' && x == null) goTitle();
+  else if (game.state === 'ranking' && x == null) closeRanking();
   else if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) next();
   else if (game.state === 'over' && game.resultT > 0.6 && x == null) {
     if (game.mode === 'daily') shareResult(); else startGame(game.mode);
@@ -1697,6 +1975,12 @@ function primaryAction(eventTime, x, y) {
 
 canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); primaryAction(e.timeStamp, e.clientX, e.clientY); });
 window.addEventListener('keydown', (e) => {
+  if (e.target === nickInput) {   // 닉네임을 입력하는 중에는 게임 키를 쓰지 않는다
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); confirmOnboard(); }
+    else if (e.key === 'Escape') { nickInput.blur(); goTitle(); }
+    return;
+  }
+  if (game.state === 'ranking' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) { game.rankTab = e.code === 'ArrowLeft' ? 'players' : 'teams'; return; }
   if (e.code === 'Space' || e.code === 'Enter') {
     e.preventDefault();
     if (!e.repeat) primaryAction(e.timeStamp);
@@ -1714,6 +1998,7 @@ window.addEventListener('resize', resize);
 // ===== 그리기 =====
 function render(time) {
   ui.buttons = [];
+  if (game.state !== 'onboard' && nickInput.style.display !== 'none') nickInput.style.display = 'none';
   ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
   ctx.save();
   if (view.shake > 0) ctx.translate((Math.random() * 2 - 1) * view.shake, (Math.random() * 2 - 1) * view.shake);
@@ -1757,6 +2042,8 @@ function render(time) {
   if (game.state === 'title') { drawTitle(time); drawToast(); return; }
   if (game.state === 'calib') { drawCalib(); drawToast(); return; }
   if (game.state === 'records') { drawRecords(); drawToast(); return; }
+  if (game.state === 'onboard') { drawOnboard(); drawToast(); return; }
+  if (game.state === 'ranking') { drawRanking(); drawToast(); return; }
   if (game.state === 'menu') { drawMenu(); drawToast(); return; }
   if (game.state === 'over') { drawGameOver(); drawTopBar(); drawToast(); return; }
   drawTopBar();
@@ -1790,9 +2077,10 @@ function frame(now) {
 
 resize();
 requestAnimationFrame(frame);
+resendPending();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API };
 </script>
 </body>
 </html>
