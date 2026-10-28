@@ -108,6 +108,27 @@ test.describe('판정 계산', () => {
     ]);
   });
 
+  test('공유 글 형식: 10구 도전과 끝내기 상황은 첫 줄에 모드가 적힌다', async ({ page }) => {
+    await open(page);
+    const r = await page.evaluate(() => ({
+      challenge: walkoff.shareText({ bats: 'R', lights: 'GRY', score: 3200, hr: 2, far: 131, newBest: true }, 'challenge'),
+      scenario: walkoff.shareText({ bats: 'L', end: 'win', away: 4, home: 5, pa: 'RGG', label: '2사 1·2루, 1점 차' }, 'scenario'),
+    }));
+    expect(r.challenge.split('\n')).toEqual([
+      'walkoff 10구 도전 (우타)',
+      '🟢🔴🟡',
+      '3,200점 · 새 최고 기록 · 홈런 2 · 최장 131m',
+      'https://hyunseungbeom.github.io/walkoff/',
+    ]);
+    expect(r.scenario.split('\n')).toEqual([
+      'walkoff 끝내기 상황 (좌타)',
+      '끝내기 승리! 원정 4 : 5 홈',
+      '🔴🟢🟢',
+      '처음 상황: 2사 1·2루, 1점 차',
+      'https://hyunseungbeom.github.io/walkoff/',
+    ]);
+  });
+
   test('좌투수는 공 위치와 궤적이 우투수와 좌우 대칭이다', async ({ page }) => {
     await open(page);
     const r = await page.evaluate(() => {
@@ -192,4 +213,48 @@ test.describe('화면', () => {
     expect(await page.evaluate(() => walkoff.game.results.length)).toBe(1);
     expect(errors).toEqual([]);
   });
+});
+
+test.describe('결과 공유', () => {
+  // 모바일은 공유 창, PC는 클립보드로 나간다. 둘 다 가로채서 나간 글을 window.__shared에 남긴다
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__shared = null;
+      navigator.share = async (data) => { window.__shared = data.text; };
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__shared = t; } } });
+    });
+  });
+
+  // 공 하나를 치지 않고 보낸 뒤 판을 끝낸다
+  async function endAfterOnePitch(page, mode) {
+    await page.evaluate((mode) => {
+      walkoff.startGame(mode);
+      if (mode !== 'scenario') Object.assign(walkoff.game, { left: 1, extra: 99 });   // 기회 1번, 볼이어도 기회가 늘지 않게
+    }, mode);
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    if (mode === 'scenario') await page.evaluate(() => { walkoff.game.scn.end = walkoff.game.scn.end || 'win'; });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+  }
+
+  const MODES = [
+    ['오늘의 10구', 'daily', /^walkoff 오늘의 10구 #\d+ \(우타\)$/, '처음으로'],
+    ['10구 도전', 'challenge', /^walkoff 10구 도전 \(우타\)$/, '다시 하기'],
+    ['끝내기 상황', 'scenario', /^walkoff 끝내기 상황 \(우타\)$/, '다시 하기'],
+  ];
+  for (const [name, mode, firstLine, other] of MODES) {
+    test(`${name} 끝 화면: 결과 공유하기를 누르면 첫 줄에 모드가 적힌 결과가 나간다`, async ({ page }) => {
+      const errors = await open(page);
+      await endAfterOnePitch(page, mode);
+      await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '결과 공유하기'));
+      expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain(other);
+      const r = await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '결과 공유하기').r);
+      await page.mouse.click(r.x + r.w / 2, r.y + r.h / 2);
+      await page.waitForFunction(() => window.__shared != null);
+      const lines = (await page.evaluate(() => window.__shared)).split('\n');
+      expect(lines[0]).toMatch(firstLine);
+      expect(lines.at(-1)).toBe('https://hyunseungbeom.github.io/walkoff/');
+      expect(errors).toEqual([]);
+    });
+  }
 });

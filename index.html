@@ -1161,18 +1161,32 @@ function gameSummary() {
   return { score: game.score, hr: c('hr'), hits: c('single') + c('double'), balls: c('ball'), far, lights: rs.map(lightCode).join('') };
 }
 
-function shareText(s) {
+const scenarioEndText = (end) => (end === 'win' ? '끝내기 승리!' : end === 'tie' ? '동점으로 끝' : '아쉬운 패배');
+const emojiLine = (codes) => codes.split('').map((c) => SHARE_EMOJI[c]).join('');
+
+// 공유 글. 첫 줄에 모드를 적어 오늘의 10구 결과와 섞이지 않게 하고, 마지막 줄은 늘 게임 주소다
+function shareText(s, mode = 'daily') {
+  const bats = s.bats === 'L' ? '좌타' : '우타';
+  if (mode === 'scenario') {
+    return [
+      `walkoff 끝내기 상황 (${bats})`,
+      `${scenarioEndText(s.end)} 원정 ${s.away} : ${s.home} 홈`,
+      emojiLine(s.pa),
+      `처음 상황: ${s.label}`,
+      SHARE_URL,
+    ].filter(Boolean).join('\n');
+  }
   return [
-    `walkoff 오늘의 10구 #${s.day} (${s.bats === 'L' ? '좌타' : '우타'})`,
-    s.lights.split('').map((c) => SHARE_EMOJI[c]).join(''),
-    `${s.score.toLocaleString()}점 · 홈런 ${s.hr}${s.far ? ` · 최장 ${s.far}m` : ''}`,
+    mode === 'challenge' ? `walkoff 10구 도전 (${bats})` : `walkoff 오늘의 10구 #${s.day} (${bats})`,
+    emojiLine(s.lights),
+    `${s.score.toLocaleString()}점${s.newBest ? ' · 새 최고 기록' : ''} · 홈런 ${s.hr}${s.far ? ` · 최장 ${s.far}m` : ''}`,
     SHARE_URL,
   ].join('\n');
 }
 
 // 모바일은 공유 창을 띄우고, 안 되면 클립보드에 복사한다
 async function shareResult() {
-  const text = shareText(game.summary);
+  const text = shareText(game.summary, game.mode);
   if (navigator.share && view.mobile) {
     try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
   }
@@ -1260,7 +1274,7 @@ function applyScenario(s, r) {
 function finishScenario() {
   const s = game.scn;
   Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
-  game.summary = { end: s.end, away: s.away, home: s.home, pa: s.pa.join(''), pitches: game.seq.length, label: s.label };
+  game.summary = { end: s.end, away: s.away, home: s.home, pa: s.pa.join(''), pitches: game.seq.length, label: s.label, bats: settings.bats };
   const ss = store.get('scnStats', { plays: 0, wins: 0 });
   store.set('scnStats', { plays: ss.plays + 1, wins: ss.wins + (s.end === 'win' ? 1 : 0) });
 }
@@ -1298,7 +1312,7 @@ function drawScenarioOver() {
   let y = view.h * 0.19;
   text('끝내기 상황', cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
   y += m ? 54 : 68;
-  text(s.end === 'win' ? '끝내기 승리!' : s.end === 'tie' ? '동점으로 끝' : '아쉬운 패배', cx, y,
+  text(scenarioEndText(s.end), cx, y,
     { size: m ? 44 : 64, weight: 900, color: s.end === 'win' ? '#f2c94c' : '#fff', shadow: true });
   y += m ? 48 : 60;
   text(`원정 ${s.away} : ${s.home} 홈 · 9회말`, cx, y, { size: m ? 18 : 22 });
@@ -1313,9 +1327,21 @@ function drawScenarioOver() {
   y += m ? 30 : 36;
   drawBatsToggle(y + 19);
   y += 38 + 18;
-  const [a, b] = rowRects(cx, y, m ? view.w - 48 : 340, 48, 2);
-  addButton(a, '다시 하기', 'primary', () => startGame('scenario'));
-  addButton(b, '처음으로', 'secondary', goTitle);
+  drawRetryShareButtons(y, m ? view.w - 48 : 340, () => startGame('scenario'));
+}
+
+// 10구 도전·끝내기 상황 끝 화면: [결과 공유하기 | 다시 하기] 아래에 처음으로. 스페이스바가 다시 하기라서 그쪽을 강조한다
+function drawRetryShareButtons(y, bw, retry) {
+  const cx = view.w / 2, [a, b] = rowRects(cx, y, bw, 48, 2);
+  addButton(a, '결과 공유하기', 'secondary', shareResult);
+  addButton(b, '다시 하기', 'primary', retry);
+  addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
+}
+
+// 끝 화면을 캡처해서 보내도 주소가 함께 가도록 아래쪽에 새긴다
+const SITE_LABEL = `walkoff · ${SHARE_URL.replace(/^https:\/\//, '').replace(/\/$/, '')}`;
+function drawSiteMark() {
+  text(SITE_LABEL, view.w / 2, view.h - (view.mobile ? 40 : 34), { size: view.mobile ? 12 : 13, weight: 600, color: 'rgba(255,255,255,0.5)' });
 }
 
 // ===== 연습 =====
@@ -1456,6 +1482,7 @@ function drawBatsToggle(cy) {
 
 function drawGameOver() {
   dim(0.72);
+  drawSiteMark();
   if (game.mode === 'scenario') { drawScenarioOver(); return; }
   const m = view.mobile, cx = view.w / 2, s = game.summary;
   let y = view.h * 0.19;
@@ -1483,9 +1510,7 @@ function drawGameOver() {
   } else {
     drawBatsToggle(y + 19);
     y += 38 + 18;
-    const [a, b] = rowRects(cx, y, bw, 48, 2);
-    addButton(a, '다시 하기', 'primary', () => startGame(game.mode));
-    addButton(b, '처음으로', 'secondary', goTitle);
+    drawRetryShareButtons(y, bw, () => startGame(game.mode));
   }
 }
 
@@ -1610,6 +1635,7 @@ function finishGame() {
   if (game.mode === 'challenge') {
     const best = store.get('best', 0);
     game.newBest = game.score > best;
+    game.summary.newBest = game.newBest;   // 공유 글에 '새 최고 기록'을 붙인다
     game.best = Math.max(best, game.score);
     if (game.newBest) store.set('best', game.score);
   }
