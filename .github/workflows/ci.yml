@@ -22,6 +22,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: 랭킹 서버 규칙 테스트
+        run: node --test 'worker/test/*.test.js'
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
       - name: 실패하면 테스트 보고서 올리기

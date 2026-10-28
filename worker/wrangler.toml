@@ -1,0 +1,9 @@
+# walkoff 랭킹 서버. worker 폴더에서 npm run deploy로 올린다
+name = "walkoff-api"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "walkoff"
+database_id = "2fe2c53b-2747-4af6-a360-b4359142e066"   # 2026-10-28 npx wrangler d1 create walkoff(APAC)로 만든 저장소
