@@ -1,0 +1,11 @@
+{
+  "name": "walkoff",
+  "private": true,
+  "description": "투수가 던지는 변화구를 타이밍만 맞춰 쳐 내는 야구 타격 게임",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}
