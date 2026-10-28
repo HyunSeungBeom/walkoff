@@ -4,16 +4,36 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>walkoff</title>
+<meta name="description" content="투수가 던지는 변화구를 타이밍만 맞춰 쳐 내는 야구 타격 게임">
+<meta name="theme-color" content="#07111f">
+<!-- 링크 미리보기(카톡, SNS). 그림은 시작 화면을 찍어 만든다: npm run og -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="walkoff">
+<meta property="og:title" content="walkoff · 끝내기">
+<meta property="og:description" content="투수가 던지는 변화구를 타이밍만 맞춰 쳐 내세요. 오늘의 10구는 매일 바뀌어요.">
+<meta property="og:url" content="https://hyunseungbeom.github.io/walkoff/">
+<meta property="og:image" content="https://hyunseungbeom.github.io/walkoff/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='29' fill='%23fff' stroke='%23d9d4c7' stroke-width='3'/%3E%3Cpath d='M18 9Q30 32 18 55M46 9Q34 32 46 55' fill='none' stroke='%23d23a3a' stroke-width='3.5' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
   html, body { margin: 0; height: 100%; background: #07111f; overflow: hidden; }
   canvas {
     display: block; position: fixed; inset: 0; width: 100%; height: 100%;
     touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
   }
+  /* 배포한 커밋 번호. 배포할 때 local이 커밋 번호로 바뀐다. 누르면 아래 캔버스가 그대로 받는다 */
+  #build {
+    position: fixed; right: 8px; bottom: max(6px, env(safe-area-inset-bottom));
+    font: 10px/1 ui-monospace, Menlo, monospace; color: #fff; opacity: 0.35;
+    pointer-events: none; user-select: none; -webkit-user-select: none;
+  }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<div id="build">local</div>
 <script>
 'use strict';
 

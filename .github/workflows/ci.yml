@@ -46,8 +46,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
-      - name: 배포할 파일만 모으기
-        run: mkdir _site && cp index.html _site/
+      - name: 배포할 파일만 모으고 커밋 번호 넣기
+        run: |
+          mkdir _site && cp index.html og.png _site/
+          sed -i "s|<div id=\"build\">local</div>|<div id=\"build\">${GITHUB_SHA::7}</div>|" _site/index.html
+          grep -q "<div id=\"build\">${GITHUB_SHA::7}</div>" _site/index.html
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
