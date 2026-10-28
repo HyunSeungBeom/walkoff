@@ -1,0 +1,1188 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>walkoff</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #07111f; overflow: hidden; }
+  canvas {
+    display: block; position: fixed; inset: 0; width: 100%; height: 100%;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+
+// ===== 기본 값 (단위: m, km/h, 초, ms) =====
+// 좌표: x는 오른쪽(1루 쪽), y는 위, z는 투수 쪽. 홈플레이트 앞 끝이 z = 0
+const RELEASE = { x: -0.55, y: 1.75, z: 17.0 };                    // 우투수가 공을 놓는 곳
+const ZONE = { left: -0.25, right: 0.25, bottom: 0.5, top: 1.1 };   // 공 반지름까지 넣은 스트라이크 존
+const BALL_R = 0.037;
+const FAIR_MS = 90;      // 타이밍 차이가 이 안이면 앞으로 가는 타구
+const FOUL_MS = 140;     // 이 안이면 파울, 넘으면 헛스윙
+const PERFECT_MS = 15;   // 정타
+const REACH_M = 0.2;     // 존 밖으로 이만큼 넘게 빠지면 배트가 닿지 않음
+
+const PITCHES = {
+  fastball: { name: '직구',     kmh: [146, 153], brk: { x: 0.02, y: 0.06 },  late: 2.0, la: 4,   color: '#ffffff' },
+  slider:   { name: '슬라이더', kmh: [134, 140], brk: { x: 0.32, y: -0.08 }, late: 2.6, la: -3,  color: '#7fd1ff' },
+  curve:    { name: '커브',     kmh: [116, 124], brk: { x: 0.16, y: -0.55 }, late: 2.0, la: -6,  color: '#c49bff' },
+  change:   { name: '체인지업', kmh: [125, 131], brk: { x: -0.14, y: -0.24 }, late: 2.2, la: -7, color: '#8ef0a8' },
+  fork:     { name: '포크',     kmh: [132, 138], brk: { x: 0.0, y: -0.5 },   late: 3.0, la: -14, color: '#ffb86b' },
+};
+
+// 실제 150km 직구는 0.4초 남짓이지만 게임에서는 0.75초쯤으로 늦춘다
+const flightTime = (kmh) => 112 / kmh;
+
+const POINTS = { hr: 1000, double: 500, single: 300, ball: 100 };
+const PERFECT_BONUS = 100;
+
+// 외야 담장: 파울라인 쪽 100m, 가운데 122m. spray는 타구 방향(도), 음수가 3루 쪽
+const fenceDist = (spray) => 100 + 22 * Math.cos(clamp(spray, -45, 45) * 2 * Math.PI / 180);
+const INFIELDERS = [
+  { pos: '3루수', a: -33, d: 32 }, { pos: '유격수', a: -13, d: 40 },
+  { pos: '2루수', a: 13, d: 40 }, { pos: '1루수', a: 33, d: 32 }, { pos: '투수', a: 0, d: 18 },
+];
+const OUTFIELDERS = [
+  { pos: '좌익수', a: -28, d: 86 }, { pos: '중견수', a: 0, d: 95 }, { pos: '우익수', a: 28, d: 86 },
+];
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function easeOut(t) { return 1 - Math.pow(1 - clamp(t, 0, 1), 3); }
+const DEG = Math.PI / 180;
+
+function hasBatchim(word) {
+  const c = word.charCodeAt(word.length - 1) - 0xac00;
+  return c >= 0 && c <= 11171 && c % 28 !== 0;
+}
+const eun = (word) => word + (hasBatchim(word) ? '은' : '는');
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickWeighted(rnd, weights) {
+  const keys = Object.keys(weights);
+  let r = rnd() * keys.reduce((s, k) => s + weights[k], 0);
+  for (const k of keys) { r -= weights[k]; if (r <= 0) return k; }
+  return keys[keys.length - 1];
+}
+
+// 10구 흐름: 1~2구는 직구로 감을 잡고, 3구부터 변화구를 섞고, 10구째는 끝내기 찬스
+function makeSequence(seed) {
+  const rnd = mulberry32(seed);
+  const seq = [];
+  for (let i = 0; i < 10; i++) {
+    let type;
+    if (i < 2) type = 'fastball';
+    else if (i === 2) type = rnd() < 0.5 ? 'fastball' : 'slider';
+    else type = pickWeighted(rnd, { fastball: 3, slider: 2, curve: 1.5, change: 2, fork: 1.5 });
+    const def = PITCHES[type];
+    const kmh = Math.round(lerp(def.kmh[0], def.kmh[1], rnd()));
+    const inZone = rnd() < (i < 3 ? 0.8 : i === 9 ? 0.75 : 0.6);
+    let tx, ty;
+    if (inZone) {
+      tx = lerp(-0.2, 0.2, rnd()); ty = lerp(0.58, 1.02, rnd());
+    } else if (type === 'slider') {
+      tx = lerp(0.33, 0.5, rnd()); ty = lerp(0.45, 0.95, rnd());        // 바깥으로 빠짐
+    } else if (type === 'fastball') {
+      if (rnd() < 0.6) { tx = lerp(-0.2, 0.2, rnd()); ty = lerp(1.17, 1.32, rnd()); }  // 높게
+      else { tx = lerp(-0.5, -0.33, rnd()); ty = lerp(0.6, 1.0, rnd()); }            // 몸쪽
+    } else {
+      tx = lerp(-0.22, 0.22, rnd()); ty = lerp(0.2, 0.42, rnd());       // 떨어지는 공은 낮게 빠짐
+    }
+    seq.push({ n: i + 1, type, kmh, tx, ty, T: flightTime(kmh), last: i === 9 });
+  }
+  return seq;
+}
+
+// u: 0(놓는 순간)~1(홈플레이트 앞). 휘는 양이 u의 거듭제곱이라 끝에서 크게 휜다
+function ballPos(p, u) {
+  const def = PITCHES[p.type], b = def.brk;
+  const k = Math.pow(Math.max(u, 0), def.late);
+  return {
+    x: RELEASE.x + (p.tx - b.x - RELEASE.x) * u + b.x * k,
+    y: RELEASE.y + (p.ty - b.y - RELEASE.y) * u + b.y * k,
+    z: RELEASE.z * (1 - u),
+  };
+}
+
+function zoneMiss(p) {
+  return Math.max(ZONE.left - p.tx, p.tx - ZONE.right, ZONE.bottom - p.ty, p.ty - ZONE.top, 0);
+}
+
+// 발사각별 비거리 비율. 공기 저항 때문에 30도 근처에서 가장 멀리 간다
+const CARRY_BY_LA = [[0, 0], [5, 0.25], [10, 0.45], [15, 0.62], [20, 0.8], [25, 0.93], [30, 1], [35, 0.97],
+  [40, 0.9], [45, 0.8], [50, 0.68], [60, 0.5], [70, 0.32], [80, 0.15], [90, 0]];
+
+function carry(ev, la) {
+  if (la <= 0) return 0;
+  let g = 0;
+  for (let i = 1; i < CARRY_BY_LA.length; i++) {
+    const [a0, g0] = CARRY_BY_LA[i - 1], [a1, g1] = CARRY_BY_LA[i];
+    if (la <= a1) { g = lerp(g0, g1, (la - a0) / (a1 - a0)); break; }
+  }
+  return Math.max(0, 1.07 * ev - 54) * g;   // 177km/h·30도면 135m쯤
+}
+
+function nearest(list, spray) {
+  return list.reduce((best, f) => (Math.abs(f.a - spray) < Math.abs(best.a - spray) ? f : best));
+}
+
+function fieldArea(spray) {
+  if (spray < -20) return '좌';
+  if (spray < -8) return '좌중';
+  if (spray <= 8) return '중';
+  if (spray <= 20) return '우중';
+  return '우';
+}
+
+// 스윙 판정. dt는 스윙 시각 - 공 도착 시각(ms), 음수면 빠름. 무작위 없이 계산한다
+function judgeSwing(p, dt) {
+  const def = PITCHES[p.type];
+  const miss = zoneMiss(p);
+  const adt = Math.abs(dt);
+  const slowBall = p.type === 'curve' || p.type === 'change';
+  const r = { kind: 'whiff', name: '헛스윙', hit: false, points: 0, dt, ev: 0, la: 0, spray: 0, dist: 0, reason: '', perfect: false };
+
+  if (miss > REACH_M) { r.reason = '존에서 크게 빠진 공이었어요'; return r; }
+  if (adt > FOUL_MS) {
+    r.reason = dt < 0 ? (slowBall ? `${eun(def.name)} 느려요. 더 기다렸다 치세요` : '너무 빨리 휘둘렀어요') : '너무 늦게 휘둘렀어요';
+    return r;
+  }
+
+  const tq = 1 - Math.pow(Math.min(adt, FAIR_MS) / FAIR_MS, 1.6);
+  const reach = 1 - miss / REACH_M;
+  const q = tq * (0.35 + 0.65 * reach);
+  r.ev = Math.round(75 + 100 * Math.pow(q, 1.2) + (p.kmh - 135) * 0.25);
+  r.la = Math.round(24 + (p.ty - 0.8) * 40 + def.la + dt * 0.2);     // 높은 공은 뜨고, 빠르면 덮어 친다
+  r.spray = Math.round(dt / FAIR_MS * 42 + p.tx * 40);                // 빠르면 당겨치고 늦으면 밀어친다
+
+  if (adt > FAIR_MS) {
+    r.kind = 'foul'; r.name = '파울'; r.type = 'foul';
+    r.ev = Math.round(95 + (FOUL_MS - adt) * 0.8);
+    r.la = clamp(r.la, -5, 55);
+    r.spray = Math.sign(dt) * Math.round(48 + (adt - FAIR_MS) * 0.4);
+    r.dist = Math.max(20, carry(r.ev, Math.max(r.la, 15)));
+    r.reason = dt < 0 ? (slowBall ? `${eun(def.name)} 느려요. 조금 더 기다리세요` : '빨라서 당겨친 파울') : '늦어서 밀린 파울';
+    return r;
+  }
+
+  r.perfect = adt <= PERFECT_MS && miss === 0;
+  r.dist = carry(r.ev, r.la);
+  classify(r, p, miss);
+  return r;
+}
+
+function classify(r, p, miss) {
+  const s = r.spray, ev = r.ev, la = r.la;
+  const area = fieldArea(s);
+  const single = () => {
+    r.kind = 'single'; r.hit = true;
+    r.name = area.startsWith('좌') ? '좌전 안타' : area.startsWith('우') ? '우전 안타' : '중전 안타';
+  };
+  const double = () => {
+    r.kind = 'double'; r.hit = true;
+    r.name = s < -35 ? '좌익선상 2루타' : s < -8 ? '좌중간 2루타' : s <= 8 ? '중월 2루타' : s <= 35 ? '우중간 2루타' : '우익선상 2루타';
+  };
+  const homeRun = () => { r.kind = 'hr'; r.hit = true; r.name = `${area}월 홈런`; };
+  const outBy = (f, what) => { r.kind = 'out'; r.name = `${f.pos} ${what}`; r.fielder = f; };
+  const infield4 = INFIELDERS.slice(0, 4);
+
+  if (la < 8) {
+    r.type = 'ground';
+    const fielders = ev < 110 ? INFIELDERS : infield4;          // 느린 땅볼은 투수도 잡는다
+    const cover = 7 + 8 * clamp((150 - ev) / 60, 0, 1);         // 느릴수록 수비가 따라간다
+    const f = nearest(fielders, s);
+    if (Math.abs(f.a - s) <= cover || ev < 85) { outBy(f, '땅볼'); r.dist = f.d; }
+    else if (Math.abs(s) > 33 && ev >= 140) { double(); r.dist = 78; }
+    else { single(); r.dist = 62; r.gap = s < -13 ? '3유간' : s > 13 ? '1·2루간' : '투수 옆'; }
+  } else if (la < 22) {
+    r.type = 'line';
+    const fi = nearest(infield4, s), fo = nearest(OUTFIELDERS, s);
+    if (r.dist < 28) { if (Math.abs(fi.a - s) <= 7) outBy(fi, '직선타'); else single(); }
+    else if (r.dist >= fenceDist(s)) homeRun();
+    else if (Math.abs(fo.a - s) <= 7 && r.dist > 55 && r.dist < 98) outBy(fo, '직선타');
+    else if (r.dist >= 82) double();
+    else single();
+  } else if (la < 50) {
+    r.type = 'fly';
+    const fence = fenceDist(s), fo = nearest(OUTFIELDERS, s);
+    if (r.dist >= fence) homeRun();
+    else if (r.dist >= fence - 6) { double(); r.wall = true; }
+    else if (r.dist < 38) outBy(nearest(infield4, s), '뜬공');
+    else if (r.dist < 58) single();                                // 내야와 외야 사이에 떨어진다
+    else if (Math.abs(fo.a - s) > 10 && r.dist >= 80) double();    // 외야수 사이를 가른다
+    else outBy(fo, '뜬공');
+  } else {
+    r.type = 'pop';
+    outBy(nearest(infield4, s), '뜬공');
+    r.dist = Math.min(r.dist, 30);
+  }
+  r.points = POINTS[r.kind] || 0;
+  r.reason = reasonFor(r, p, miss);
+}
+
+function reasonFor(r, p, miss) {
+  if (r.kind === 'hr') return r.perfect ? '완벽한 타이밍이에요' : `${Math.round(r.dist)}m 날아갔어요`;
+  if (miss > 0) return '존 밖 공이라 힘이 덜 실렸어요';
+  if (p.type === 'fork' && r.type === 'ground') return '포크는 끝에서 떨어져서 공 윗부분을 치기 쉬워요';
+  if (r.wall) return '조금만 더 갔으면 홈런이었어요';
+  if (p.ty > 1.0 && (r.type === 'fly' || r.type === 'pop')) return '높은 공은 뜨기 쉬워요';
+  if (p.ty < 0.65 && r.type === 'ground') return '낮은 공은 땅볼이 되기 쉬워요';
+  if (r.gap) return `${r.gap}을 빠져나갔어요`;
+  if (Math.abs(r.dt) <= PERFECT_MS) return '타이밍은 완벽했어요';
+  return r.dt > 0 ? '늦어서 밀어친 타구예요' : '빨라서 당겨친 타구예요';
+}
+
+function judgeTake(p) {
+  return zoneMiss(p) === 0
+    ? { kind: 'strike', name: '루킹 스트라이크', points: 0, reason: '존에 들어온 공이었어요', took: true }
+    : { kind: 'ball', name: '볼', points: POINTS.ball, reason: '잘 골라냈어요 · 선구안 보너스', took: true };
+}
+
+// ===== 소리: 파일 없이 Web Audio로 합성 =====
+const Sound = (() => {
+  let ac = null, master = null, noiseBuf = null;
+  function init() {
+    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ac = new AC();
+    master = ac.createGain(); master.gain.value = 0.7; master.connect(ac.destination);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  function env(g, t0, attack, dur, peak) {
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  }
+  function noise({ dur = 0.1, type = 'bandpass', freq = 2000, freqTo, q = 1, peak = 0.5, attack = 0.002, delay = 0 }) {
+    if (!ac) return;
+    const t0 = ac.currentTime + delay;
+    const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+    const f = ac.createBiquadFilter(); f.type = type; f.Q.value = q; f.frequency.setValueAtTime(freq, t0);
+    if (freqTo) f.frequency.exponentialRampToValueAtTime(freqTo, t0 + dur);
+    const g = ac.createGain(); env(g, t0, attack, dur, peak);
+    src.connect(f).connect(g).connect(master);
+    src.start(t0, Math.random()); src.stop(t0 + dur + 0.05);
+  }
+  function tone({ freq = 440, freqTo, dur = 0.1, type = 'sine', peak = 0.3, attack = 0.002, delay = 0 }) {
+    if (!ac) return;
+    const t0 = ac.currentTime + delay;
+    const o = ac.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t0);
+    if (freqTo) o.frequency.exponentialRampToValueAtTime(freqTo, t0 + dur);
+    const g = ac.createGain(); env(g, t0, attack, dur, peak);
+    o.connect(g).connect(master); o.start(t0); o.stop(t0 + dur + 0.05);
+  }
+  return {
+    init,
+    crack(power) {   // 딱. power 0~1
+      noise({ dur: 0.07 + 0.05 * power, freq: 2600, q: 0.9, peak: 0.5 + 0.5 * power });
+      tone({ freq: 1500, freqTo: 700, dur: 0.05, type: 'triangle', peak: 0.25 + 0.2 * power });
+      tone({ freq: 180, freqTo: 70, dur: 0.14, peak: 0.25 + 0.45 * power });
+    },
+    foul() { noise({ dur: 0.05, freq: 1400, q: 1.5, peak: 0.35 }); tone({ freq: 600, freqTo: 400, dur: 0.04, type: 'triangle', peak: 0.12 }); },
+    whoosh() { noise({ dur: 0.22, freq: 300, freqTo: 1600, q: 1.2, peak: 0.22, attack: 0.05 }); },
+    mitt() { noise({ dur: 0.08, type: 'lowpass', freq: 700, peak: 0.6 }); tone({ freq: 120, freqTo: 80, dur: 0.09, peak: 0.35 }); },
+    release() { noise({ dur: 0.15, type: 'highpass', freq: 2500, peak: 0.05, attack: 0.03 }); },
+    cheer(dur) {
+      noise({ dur, freq: 900, q: 0.4, peak: 0.3, attack: dur * 0.3 });
+      noise({ dur: dur * 0.8, freq: 2200, q: 0.6, peak: 0.12, attack: dur * 0.25, delay: 0.1 });
+    },
+    ding() { tone({ freq: 880, dur: 0.12, peak: 0.15 }); tone({ freq: 1320, dur: 0.18, peak: 0.12, delay: 0.08 }); },
+    groan() { noise({ dur: 0.6, type: 'lowpass', freq: 500, peak: 0.12, attack: 0.15 }); },
+  };
+})();
+
+// ===== 화면과 원근 =====
+// 카메라는 홈플레이트 뒤 3.2m, 눈높이 1.4m에서 투수 쪽을 본다. 멀수록 f / 거리만큼 작게 그린다
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const view = { w: 0, h: 0, dpr: 1, f: 0, cx: 0, cy: 0, panX: 0, panY: 0, mobile: false, shake: 0 };
+const cam = { x: 0, y: 1.4, z: -3.2 };
+const MOUND = 18.44;
+const FONT = "-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif";
+const font = (size, weight = 700) => `${weight} ${Math.round(size)}px ${FONT}`;
+const polar = (a, d) => [d * Math.sin(a * DEG), d * Math.cos(a * DEG)];
+
+function resize() {
+  view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  view.w = window.innerWidth; view.h = window.innerHeight;
+  canvas.width = Math.round(view.w * view.dpr); canvas.height = Math.round(view.h * view.dpr);
+  view.mobile = view.w < 640;
+  view.f = Math.min(1.45 * view.h, 2.3 * view.w);
+  view.cx = view.w / 2;
+  view.cy = view.h * (view.mobile ? 0.31 : 0.34);
+}
+
+function project(x, y, z) {
+  const d = z - cam.z;
+  if (d < 0.1) return null;
+  const s = view.f / d;
+  return { x: view.cx + view.panX + (x - cam.x) * s, y: view.cy + view.panY - (y - cam.y) * s, s };
+}
+
+// points: [x, z, y = 0] 목록. close면 닫힌 도형
+function path3d(points, close = true) {
+  ctx.beginPath();
+  let first = true;
+  for (const [x, z, y = 0] of points) {
+    const p = project(x, y, z);
+    if (!p) continue;
+    if (first) { ctx.moveTo(p.x, p.y); first = false; } else ctx.lineTo(p.x, p.y);
+  }
+  if (close) ctx.closePath();
+}
+
+function fill3d(points, color) { path3d(points); ctx.fillStyle = color; ctx.fill(); }
+
+function arcPoints(from, to, step, fn) {
+  const out = [];
+  const dir = from <= to ? 1 : -1;
+  for (let a = from; dir > 0 ? a <= to : a >= to; a += step * dir) out.push(fn(a));
+  return out;
+}
+
+function drawField() {
+  const { w, h } = view;
+  const horizon = view.cy + view.panY;
+  const sky = ctx.createLinearGradient(0, 0, 0, Math.max(1, horizon));
+  sky.addColorStop(0, '#040912'); sky.addColorStop(1, '#16305a');
+  ctx.fillStyle = sky; ctx.fillRect(-50, -50, w + 100, h + 100);
+  ctx.fillStyle = '#145029'; ctx.fillRect(-50, horizon, w + 100, h - horizon + 100);
+
+  // 관중석
+  const stands = [
+    ...arcPoints(-58, 58, 4, (a) => [...polar(a, fenceDist(a) + 2), 3]),
+    ...arcPoints(58, -58, 4, (a) => [...polar(a, fenceDist(a) + 45), 24]),
+  ];
+  path3d(stands);
+  const st = ctx.createLinearGradient(0, horizon - view.f * 0.2, 0, horizon);
+  st.addColorStop(0, '#0a1222'); st.addColorStop(1, '#1f2c44');
+  ctx.fillStyle = st; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+  for (let k = 1; k < 6; k++) {
+    path3d(arcPoints(-58, 58, 4, (a) => [...polar(a, fenceDist(a) + 2 + 43 * k / 6), 3 + 21 * k / 6]), false);
+    ctx.stroke();
+  }
+  // 조명탑
+  for (const a of [-42, -15, 15, 42]) {
+    const [x, z] = polar(a, fenceDist(a) + 55);
+    const p = project(x, 36, z);
+    if (!p) continue;
+    const R = view.f * 0.09;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, R);
+    g.addColorStop(0, 'rgba(255,250,220,0.85)'); g.addColorStop(0.18, 'rgba(255,245,200,0.28)'); g.addColorStop(1, 'rgba(255,245,200,0)');
+    ctx.fillStyle = g; ctx.fillRect(p.x - R, p.y - R, R * 2, R * 2);
+    ctx.fillStyle = '#fffbe8'; ctx.fillRect(p.x - p.s * 3, p.y - p.s, p.s * 6, p.s * 2);
+  }
+
+  // 담장과 경고 트랙
+  const fenceBase = arcPoints(-45, 45, 3, (a) => [...polar(a, fenceDist(a)), 0]);
+  const fenceTop = arcPoints(-45, 45, 3, (a) => [...polar(a, fenceDist(a)), 3]);
+  fill3d([...fenceBase, ...fenceTop.slice().reverse()], '#0d3b2b');
+  path3d(fenceTop, false); ctx.strokeStyle = '#f2c94c'; ctx.lineWidth = 2; ctx.stroke();
+  fill3d([...arcPoints(-45, 45, 3, (a) => polar(a, fenceDist(a))), ...arcPoints(45, -45, 3, (a) => polar(a, fenceDist(a) - 5))], '#6b4c34');
+
+  // 외야 잔디 무늬
+  for (let r = 34; r < 118; r += 10) {
+    fill3d([
+      ...arcPoints(-45, 45, 3, (a) => polar(a, Math.min(r, fenceDist(a) - 5))),
+      ...arcPoints(45, -45, 3, (a) => polar(a, Math.min(r + 5, fenceDist(a) - 5))),
+    ], 'rgba(255,255,255,0.045)');
+  }
+  // 파울 지역은 조금 어둡게
+  for (const s of [-1, 1]) fill3d([[0, -3], polar(45 * s, 110), polar(80 * s, 110), [s * 30, -3]], 'rgba(0,0,0,0.2)');
+
+  // 내야 흙과 잔디
+  fill3d([[0, -1], polar(45, 38.9), ...arcPoints(71.8, -71.8, 6, (t) => [29 * Math.sin(t * DEG), MOUND + 29 * Math.cos(t * DEG)]), polar(-45, 38.9)], '#9a6b45');
+  fill3d([[0, 2.2], [17.4, 19.4], [0, 36.6], [-17.4, 19.4]], '#1a6233');
+  fill3d(arcPoints(0, 345, 15, (t) => [2.74 * Math.sin(t * DEG), MOUND + 2.74 * Math.cos(t * DEG)]), '#a7754c');
+  fill3d([[-0.3, MOUND - 0.08], [0.3, MOUND - 0.08], [0.3, MOUND + 0.08], [-0.3, MOUND + 0.08]], '#eeeae0');
+  fill3d(arcPoints(0, 345, 15, (t) => [4 * Math.sin(t * DEG), -0.2 + 4 * Math.cos(t * DEG)]), '#9a6b45');
+  for (const [x, z] of [polar(45, 27.43), [0, 38.8], polar(-45, 27.43)]) {
+    fill3d([[x - 0.25, z - 0.25], [x + 0.25, z - 0.25], [x + 0.25, z + 0.25], [x - 0.25, z + 0.25]], '#f4f1ea');
+  }
+  // 파울 라인과 폴
+  for (const s of [-1, 1]) {
+    const a = 45 * s, nx = Math.cos(a * DEG) * 0.05, nz = -Math.sin(a * DEG) * 0.05;
+    const [x0, z0] = polar(a, 0.6), [x1, z1] = polar(a, 100);
+    fill3d([[x0 - nx, z0 - nz], [x1 - nx, z1 - nz], [x1 + nx, z1 + nz], [x0 + nx, z0 + nz]], 'rgba(255,255,255,0.85)');
+    const b = project(x1, 0, z1), t = project(x1, 25, z1);
+    if (b && t) { ctx.strokeStyle = '#f2c94c'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(t.x, t.y); ctx.stroke(); }
+  }
+  // 타석과 홈플레이트
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = Math.max(1.5, view.f * 0.0016);
+  for (const s of [-1, 1]) { path3d([[s * 0.36, -0.95], [s * 1.5, -0.95], [s * 1.5, 0.85], [s * 0.36, 0.85]]); ctx.stroke(); }
+  fill3d([[-0.216, 0], [0.216, 0], [0.216, -0.216], [0, -0.43], [-0.216, -0.216]], '#f7f5ef');
+}
+
+// ===== 투수 =====
+// 포즈는 투수 발밑(마운드 위) 기준 [x, y] 미터. 화면 왼쪽이 투수의 오른팔이다
+const POSES = {
+  set:     { z: 0,     hip: [0, 0.95],    sh: [0, 1.45],     head: [0, 1.68],     hand: [-0.08, 1.18], glove: [0.06, 1.2],  lknee: [0.12, 0.5],  lfoot: [0.15, 0],    rfoot: [-0.15, 0] },
+  lift:    { z: 0,     hip: [0.02, 0.98], sh: [-0.02, 1.47], head: [-0.03, 1.7],  hand: [0, 1.22],     glove: [0.05, 1.24], lknee: [0.24, 0.95], lfoot: [0.14, 0.55], rfoot: [-0.1, 0] },
+  cock:    { z: -0.6,  hip: [0.05, 0.86], sh: [0, 1.36],     head: [0.02, 1.58],  hand: [-0.62, 1.58], glove: [0.45, 1.25], lknee: [0.3, 0.45],  lfoot: [0.42, 0],    rfoot: [-0.25, 0.05] },
+  release: { z: -1.44, hip: [0.05, 0.8],  sh: [-0.02, 1.3],  head: [-0.02, 1.52], hand: [-0.55, 1.5],  glove: [0.3, 1.0],   lknee: [0.3, 0.45],  lfoot: [0.42, 0],    rfoot: [-0.2, 0.15] },
+  follow:  { z: -1.5,  hip: [0.08, 0.74], sh: [0.1, 1.12],   head: [0.12, 1.32],  hand: [0.38, 0.62],  glove: [0.3, 0.95],  lknee: [0.3, 0.4],   lfoot: [0.42, 0],    rfoot: [0.02, 0.35] },
+};
+const WINDUP = 1.0;   // 와인드업 시작부터 공을 놓기까지(초)
+const POSE_KEYS = [[0, 'set'], [0.35, 'lift'], [0.75, 'cock'], [WINDUP, 'release'], [1.25, 'follow'], [2.2, 'set']];
+
+function pitcherPose(t) {
+  if (t <= 0) return POSES.set;
+  for (let i = 1; i < POSE_KEYS.length; i++) {
+    const [t1, k1] = POSE_KEYS[i];
+    if (t > t1) continue;
+    const [t0, k0] = POSE_KEYS[i - 1];
+    const a = POSES[k0], b = POSES[k1];
+    const e = (t - t0) / (t1 - t0), k = e * e * (3 - 2 * e);
+    const out = {};
+    for (const key of Object.keys(a)) out[key] = key === 'z' ? lerp(a.z, b.z, k) : [lerp(a[key][0], b[key][0], k), lerp(a[key][1], b[key][1], k)];
+    return out;
+  }
+  return POSES.set;
+}
+
+// ===== 사람 그리기 공통 =====
+const V = {
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  mul: (a, k) => [a[0] * k, a[1] * k, a[2] * k],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  len: (a) => Math.hypot(a[0], a[1], a[2]),
+};
+
+// 두 마디(넓적다리·정강이, 위팔·아래팔)를 이을 무릎·팔꿈치 위치. pole 쪽으로 굽힌다
+function bendJoint(a, c, l1, l2, pole) {
+  const d = V.sub(c, a), full = V.len(d) || 1;
+  const dist = Math.min(full, l1 + l2 - 0.001);
+  const dir = V.mul(d, 1 / full);
+  const along = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist);
+  const h = Math.sqrt(Math.max(0, l1 * l1 - along * along));
+  const p = V.sub(pole, V.mul(dir, V.dot(pole, dir)));
+  return V.add(V.add(a, V.mul(dir, along)), V.mul(p, h / (V.len(p) || 1)));
+}
+
+// 굵기가 wa에서 wb로 변하는 마디(화면 좌표). 같은 색끼리는 관절이 이음매 없이 붙는다
+function segment(a, b, wa, wb, color) {
+  if (!a || !b) return;
+  const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1, nx = -dy / l, ny = dx / l;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(a.x + nx * wa / 2, a.y + ny * wa / 2); ctx.lineTo(b.x + nx * wb / 2, b.y + ny * wb / 2);
+  ctx.lineTo(b.x - nx * wb / 2, b.y - ny * wb / 2); ctx.lineTo(a.x - nx * wa / 2, a.y - ny * wa / 2);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.arc(a.x, a.y, wa / 2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(b.x, b.y, wb / 2, 0, Math.PI * 2); ctx.fill();
+}
+
+// 점들을 부드럽게 이은 닫힌 도형
+function smoothShape(pts, fill) {
+  pts = pts.filter(Boolean);
+  if (pts.length < 3) return;
+  const n = pts.length, mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+  const m0 = mid(pts[n - 1], pts[0]);
+  ctx.beginPath(); ctx.moveTo(m0.x, m0.y);
+  for (let i = 0; i < n; i++) { const m = mid(pts[i], pts[(i + 1) % n]); ctx.quadraticCurveTo(pts[i].x, pts[i].y, m.x, m.y); }
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+}
+
+function ellipseAt(p, rx, ry, color) {
+  if (!p) return;
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(p.x, p.y, Math.max(0.5, rx), Math.max(0.5, ry), 0, 0, Math.PI * 2); ctx.fill();
+}
+
+// 화면 점들을 감싸는 볼록 다각형. 돌아가는 몸통의 윤곽을 만든다
+function hull(pts) {
+  const p = pts.filter(Boolean).sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [], upper = [];
+  for (const q of p) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+  for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
+const PITCHER_COLOR = { jersey: '#f4f5f9', shade: '#c9cfdb', pants: '#e7e9ef', navy: '#1d2f5c', brim: '#15244a', skin: '#dcae88', glove: '#8a5a2b', pocket: '#6b4320', shoe: '#14161b' };
+
+// 투수는 멀리 있어서 정면 평면 그림으로 충분하다. 포즈는 pitcherPose가 정한다
+function drawPitcher(t, holdingBall) {
+  const pose = pitcherPose(t), C = PITCHER_COLOR;
+  const z = MOUND + pose.z;
+  const P = (j) => project(j[0], 0.25 + j[1], z);
+  const base = P([0, 0]);
+  if (!base) return;
+  const s = base.s, hip = pose.hip, sh = pose.sh;
+  ellipseAt({ x: base.x + 0.1 * s, y: base.y }, 0.6 * s, 0.13 * s, 'rgba(0,0,0,0.3)');
+
+  // 다리: 무릎까지 바지, 그 아래는 남색 스타킹과 검은 신발
+  const leg = (h, k, f) => {
+    segment(P(h), P(k), 0.18 * s, 0.12 * s, C.pants);
+    segment(P(k), P(f), 0.11 * s, 0.075 * s, C.navy);
+    ellipseAt(P([f[0] + 0.02, f[1] + 0.02]), 0.085 * s, 0.04 * s, C.shoe);
+  };
+  const rHip = [hip[0] - 0.09, hip[1]], lHip = [hip[0] + 0.09, hip[1]];
+  leg(rHip, [(rHip[0] + pose.rfoot[0]) / 2 - 0.06, (rHip[1] + pose.rfoot[1]) / 2 + 0.02], pose.rfoot);
+  leg(lHip, pose.lknee, pose.lfoot);
+  smoothShape([P([hip[0] - 0.17, hip[1] + 0.1]), P([hip[0] + 0.17, hip[1] + 0.1]), P([hip[0] + 0.15, hip[1] - 0.1]), P([hip[0] - 0.15, hip[1] - 0.1])], C.pants);
+
+  // 팔: 반소매 유니폼 아래로 남색 언더셔츠
+  const arm = (shoulder, hand, out) => {
+    const el = [(shoulder[0] + hand[0]) / 2 + out, (shoulder[1] + hand[1]) / 2 - 0.06];
+    segment(P(shoulder), P(el), 0.12 * s, 0.085 * s, C.navy);
+    segment(P(shoulder), P([lerp(shoulder[0], el[0], 0.55), lerp(shoulder[1], el[1], 0.55)]), 0.14 * s, 0.11 * s, C.jersey);
+    segment(P(el), P(hand), 0.085 * s, 0.065 * s, C.navy);
+    ellipseAt(P(hand), 0.05 * s, 0.05 * s, C.skin);
+  };
+  const rSh = [sh[0] - 0.2, sh[1] - 0.03], lSh = [sh[0] + 0.2, sh[1] - 0.03];
+  const armBehind = t > 0.45 && t < 0.9;   // 팔을 뒤로 젖힐 때는 몸 뒤에 그린다
+  if (armBehind) arm(rSh, pose.hand, -0.14);
+
+  // 몸통: 어깨가 넓고 허리가 좁다. 조명이 왼쪽 위에서 와서 오른쪽이 조금 어둡다
+  const torso = [P([sh[0] - 0.07, sh[1] + 0.04]), P([sh[0] - 0.24, sh[1] - 0.01]), P([hip[0] - 0.16, hip[1] + 0.08]),
+    P([hip[0] + 0.16, hip[1] + 0.08]), P([sh[0] + 0.24, sh[1] - 0.01]), P([sh[0] + 0.07, sh[1] + 0.04])];
+  const g = ctx.createLinearGradient(torso[1].x, 0, torso[4].x, 0);
+  g.addColorStop(0, C.jersey); g.addColorStop(1, C.shade);
+  smoothShape(torso, g);
+  smoothShape([P([hip[0] - 0.165, hip[1] + 0.12]), P([hip[0] + 0.165, hip[1] + 0.12]), P([hip[0] + 0.165, hip[1] + 0.07]), P([hip[0] - 0.165, hip[1] + 0.07])], C.navy);
+  const num = P([sh[0] + 0.09, sh[1] - 0.17]);
+  if (0.14 * s >= 7) text('18', num.x, num.y, { size: 0.14 * s, weight: 900, color: C.navy });
+
+  arm(lSh, pose.glove, 0.12);
+  const gp = P(pose.glove);
+  ellipseAt(gp, 0.12 * s, 0.14 * s, C.glove);
+  ellipseAt({ x: gp.x - 0.02 * s, y: gp.y + 0.02 * s }, 0.06 * s, 0.08 * s, C.pocket);
+  if (!armBehind) arm(rSh, pose.hand, -0.14);
+  const hd = P(pose.hand);
+  if (holdingBall) ellipseAt({ x: hd.x, y: hd.y - 0.03 * s }, 0.045 * s, 0.045 * s, '#ffffff');
+
+  // 목, 얼굴, 모자
+  const head = P(pose.head);
+  segment(P(sh), head, 0.1 * s, 0.09 * s, C.skin);
+  ellipseAt(head, 0.105 * s, 0.12 * s, C.skin);
+  ctx.fillStyle = C.navy;
+  ctx.beginPath(); ctx.ellipse(head.x, head.y - 0.03 * s, 0.115 * s, 0.1 * s, 0, Math.PI, 0); ctx.fill();
+  ellipseAt({ x: head.x, y: head.y - 0.03 * s }, 0.15 * s, 0.03 * s, C.brim);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(head.x - 0.1 * s, head.y - 0.01 * s, 0.2 * s, 0.035 * s);
+}
+
+// ===== 스트라이크 존과 공 =====
+function drawZone(alpha) {
+  const tl = project(ZONE.left, ZONE.top, 0), br = project(ZONE.right, ZONE.bottom, 0);
+  if (!tl || !br) return;
+  const w = br.x - tl.x, h = br.y - tl.y;
+  ctx.strokeStyle = `rgba(255,255,255,${0.55 * alpha})`; ctx.lineWidth = 2;
+  ctx.strokeRect(tl.x, tl.y, w, h);
+  ctx.strokeStyle = `rgba(255,255,255,${0.16 * alpha})`; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < 3; i++) {
+    ctx.moveTo(tl.x + w * i / 3, tl.y); ctx.lineTo(tl.x + w * i / 3, br.y);
+    ctx.moveTo(tl.x, tl.y + h * i / 3); ctx.lineTo(br.x, tl.y + h * i / 3);
+  }
+  ctx.stroke();
+}
+
+const SPIN = { fastball: -32, slider: 26, curve: 30, change: -18, fork: 3 };   // 실밥이 도는 빠르기(라디안/초). 포크는 거의 안 돈다
+
+function drawBall(pos, { alpha = 1, spin = 0, scale = 1.5, shadow = true, glow = false } = {}) {
+  const p = project(pos.x, pos.y, pos.z);
+  if (!p) return;
+  const r = Math.max(glow ? 2.5 : 1.6, BALL_R * scale * p.s);
+  if (shadow && pos.y > 0.05) {
+    const sp = project(pos.x, 0, pos.z);
+    if (sp) {
+      ctx.fillStyle = `rgba(0,0,0,${0.28 * alpha})`;
+      ctx.beginPath(); ctx.ellipse(sp.x, sp.y, r * 1.1, r * 0.35, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  if (glow) {
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 4);
+    g.addColorStop(0, 'rgba(255,255,255,0.6)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r * 4, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.fillStyle = '#fbfaf5';
+  ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+  if (r > 3.5) {
+    ctx.clip();
+    ctx.translate(p.x, p.y); ctx.rotate(spin);
+    ctx.strokeStyle = '#d23b3b'; ctx.lineWidth = Math.max(1, r * 0.13);
+    ctx.beginPath(); ctx.arc(-r * 1.35, 0, r * 0.95, -0.9, 0.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(r * 1.35, 0, r * 0.95, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// 다시 보기: 점은 실제 궤적, 점선은 휘지 않았다면 갔을 길
+function drawTrail(p, uEnd) {
+  const def = PITCHES[p.type];
+  const a = project(RELEASE.x, RELEASE.y, RELEASE.z), b = project(p.tx - def.brk.x, p.ty - def.brk.y, 0);
+  if (a && b && p.type !== 'fastball') {
+    ctx.save(); ctx.setLineDash([6, 6]); ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
+  }
+  ctx.fillStyle = def.color;
+  for (let u = 0.03; u <= uEnd + 1e-6; u += 0.035) {
+    const q = ballPos(p, u), s = project(q.x, q.y, q.z);
+    if (!s) continue;
+    ctx.globalAlpha = 0.3 + 0.6 * u;
+    ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(1.4, BALL_R * 0.7 * s.s), 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ===== 타자와 배트 =====
+const BATTER_X = -1.0, BATTER_Z = 0.3, BAT_LEN = 0.86, SWING_TIME = 0.28;
+
+// tau: 스윙 뒤 지난 시간(초), null이면 준비 자세. 누른 순간을 맞는 순간으로 보여 준다
+// yaw는 배트 끝 방향(도): -90 포수 쪽, 0 1루 쪽(플레이트 위), 90 투수 쪽
+function batPose(tau) {
+  let yaw, pitch, hand;
+  if (tau == null) { yaw = -100; pitch = 55; hand = [-0.84, 1.48, 0.04]; }
+  else {
+    const e = easeOut(tau / SWING_TIME);
+    yaw = lerp(5, 185, e); pitch = lerp(-8, 35, e);
+    hand = [lerp(-0.5, -0.82, e), lerp(1.02, 1.45, e), lerp(0.3, 0.45, e)];
+  }
+  const c = Math.cos(pitch * DEG);
+  const tip = [hand[0] + BAT_LEN * c * Math.cos(yaw * DEG), hand[1] + BAT_LEN * Math.sin(pitch * DEG), hand[2] + BAT_LEN * c * Math.sin(yaw * DEG)];
+  return { hand, tip, yaw };
+}
+
+const BATTER_COLOR = {
+  jersey: '#8b93a6', shade: '#6c7487', pants: '#a0a7b7', pantsShade: '#7f8696', accent: '#74182a', belt: '#1b1d24',
+  skin: '#c18f69', shoe: '#121418', glove: '#e9e9ec', bat: '#c8955a', batEnd: '#8a5e32', rim: 'rgba(225,232,245,0.6)',
+};
+
+// 타자 뼈대(3D). 준비 자세에서는 어깨가 투수 쪽으로 닫혀 있고, 스윙하면 엉덩이가 먼저, 어깨가 뒤따라 돈다
+function batterSkeleton(tau) {
+  const swinging = tau != null, e = swinging ? easeOut(tau / SWING_TIME) : 0;
+  const shTurn = swinging ? lerp(55, 105, e) : 0, hipTurn = swinging ? lerp(65, 88, e) : 0;
+  const at = (x, y, z) => [BATTER_X + x, y, BATTER_Z + z];
+  const left = (deg) => [-Math.sin(deg * DEG), 0, Math.cos(deg * DEG)];    // 타자의 왼쪽(처음엔 투수 쪽)
+  const facing = (deg) => [Math.cos(deg * DEG), 0, Math.sin(deg * DEG)];   // 가슴이 보는 쪽(처음엔 홈플레이트)
+  const pelvis = at(-0.02 + 0.05 * e, 0.86, 0), chest = at(0.06 + 0.05 * e, 1.38, 0);
+  const hips = { l: V.add(pelvis, V.mul(left(hipTurn), 0.12)), r: V.add(pelvis, V.mul(left(hipTurn), -0.12)) };
+  const shoulders = { l: V.add(chest, V.mul(left(shTurn), 0.2)), r: V.add(chest, V.mul(left(shTurn), -0.2)) };
+  const feet = { l: at(0.03, 0.06, 0.4), r: at(-0.06 + 0.08 * e, 0.06 + 0.1 * e, -0.36) };   // 스윙하면 뒷발 뒤꿈치가 들린다
+  const knees = { l: bendJoint(hips.l, feet.l, 0.46, 0.45, [1, 0, 0]), r: bendJoint(hips.r, feet.r, 0.46, 0.45, [1, 0, 0]) };
+  const { hand, tip, yaw } = batPose(tau);
+  const elbows = { r: bendJoint(shoulders.r, hand, 0.3, 0.29, [-0.3, -0.7, -0.6]), l: bendJoint(shoulders.l, hand, 0.3, 0.29, [0.3, -1, 0.3]) };
+  return { e, shTurn, hipTurn, pelvis, chest, hips, shoulders, feet, knees, elbows, hand, tip, yaw, left, facing, head: V.add(chest, [0.04, 0.24, 0.02]) };
+}
+
+// 한 번은 빛 테두리 색으로 조금 위에, 한 번은 제 색으로 그려서 조명을 등진 윤곽을 만든다
+function drawBatterFigure(k, col, dy) {
+  const P = (p) => { const q = project(p[0], p[1], p[2]); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
+  const seg = (a, b, wa, wb, c) => { const pa = P(a), pb = P(b); if (pa && pb) segment(pa, pb, wa * pa.s, wb * pb.s, col(c)); };
+  const ring = (c, l, f, rw, rd, y) => Array.from({ length: 12 }, (_, i) => {
+    const a = i / 12 * Math.PI * 2;
+    return P(V.add(V.add(c, [0, y, 0]), V.add(V.mul(l, rw * Math.cos(a)), V.mul(f, rd * Math.sin(a)))));
+  });
+  const lc = k.left(k.shTurn), fc = k.facing(k.shTurn), lp = k.left(k.hipTurn), fp = k.facing(k.hipTurn);
+  const parts = [];
+  for (const side of ['l', 'r']) {
+    const far = side === 'l';   // 왼쪽 팔다리가 카메라에서 먼 쪽이라 조금 어둡다
+    parts.push({ depth: k.knees[side][2], draw: () => {
+      seg(k.hips[side], k.knees[side], 0.19, 0.13, far ? 'pantsShade' : 'pants');
+      seg(k.knees[side], k.feet[side], 0.12, 0.08, 'accent');
+      const f = P(k.feet[side]);
+      if (f) ellipseAt({ x: f.x + 0.05 * f.s, y: f.y }, 0.12 * f.s, 0.045 * f.s, col('shoe'));
+    } });
+    parts.push({ depth: k.elbows[side][2], draw: () => {
+      seg(k.shoulders[side], k.elbows[side], 0.12, 0.095, far ? 'shade' : 'jersey');
+      seg(k.elbows[side], k.hand, 0.09, 0.07, 'accent');
+    } });
+  }
+  parts.push({ depth: k.chest[2], draw: () => {
+    smoothShape(hull([...ring(k.chest, lc, fc, 0.21, 0.12, 0), ...ring(k.chest, lc, fc, 0.13, 0.09, 0.07), ...ring(k.pelvis, lp, fp, 0.16, 0.11, 0.1)]), col('jersey'));
+    smoothShape(hull([...ring(k.pelvis, lp, fp, 0.165, 0.115, 0.1), ...ring(k.pelvis, lp, fp, 0.15, 0.11, -0.06)]), col('pants'));
+    smoothShape(hull([...ring(k.pelvis, lp, fp, 0.167, 0.117, 0.115), ...ring(k.pelvis, lp, fp, 0.167, 0.117, 0.085)]), col('belt'));
+    seg(V.add(k.chest, [0.02, 0.05, 0]), V.add(k.head, [0, -0.08, 0]), 0.1, 0.09, 'skin');
+    // 헬멧: 챙은 투수 쪽을 향해 머리 뒤로 조금만 보인다
+    const brim = P(V.add(k.head, [0.03, -0.04, 0.12])), h = P(k.head);
+    if (brim) ellipseAt(brim, 0.1 * brim.s, 0.035 * brim.s, col('accent'));
+    if (h) {
+      ellipseAt(h, 0.13 * h.s, 0.125 * h.s, col('accent'));
+      if (dy === 0) ellipseAt({ x: h.x - 0.04 * h.s, y: h.y - 0.06 * h.s }, 0.045 * h.s, 0.025 * h.s, 'rgba(255,255,255,0.28)');
+    }
+  } });
+  parts.push({ depth: Math.min(k.hand[2], k.tip[2]) - 0.01, draw: () => {
+    const hp = P(k.hand), tp = P(k.tip), h2 = P(V.add(k.hand, V.mul(V.sub(k.tip, k.hand), 0.1)));
+    if (!hp || !tp) return;
+    segment(hp, tp, 0.034 * hp.s, 0.068 * tp.s, col('bat'));
+    ellipseAt(tp, 0.034 * tp.s, 0.034 * tp.s, col('batEnd'));
+    ellipseAt(hp, 0.05 * hp.s, 0.05 * hp.s, col('glove'));
+    if (h2) ellipseAt(h2, 0.05 * h2.s, 0.05 * h2.s, col('glove'));
+  } });
+  parts.sort((a, b) => b.depth - a.depth).forEach((p) => p.draw());
+}
+
+function drawBatter(tau) {
+  const k = batterSkeleton(tau);
+  // 스윙 잔상
+  if (tau != null && tau < 0.16) {
+    const band = [];
+    for (let a = -80; a <= k.yaw; a += 10) band.push([k.hand[0] + BAT_LEN * Math.cos(a * DEG), k.hand[2] + BAT_LEN * Math.sin(a * DEG), 0.98]);
+    for (let a = k.yaw; a >= -80; a -= 10) band.push([k.hand[0] + 0.4 * Math.cos(a * DEG), k.hand[2] + 0.4 * Math.sin(a * DEG), 1.0]);
+    if (band.length > 2) fill3d(band, `rgba(255,255,255,${0.22 * (1 - tau / 0.16)})`);
+  }
+  drawBatterFigure(k, () => BATTER_COLOR.rim, -2);
+  drawBatterFigure(k, (name) => BATTER_COLOR[name], 0);
+}
+
+// ===== 맞은 공 =====
+function flightDuration(r) {
+  if (r.kind === 'hr') return 2.4;
+  if (r.type === 'ground') return clamp(r.dist / 32, 0.6, 2.0);
+  if (r.type === 'pop') return 1.6;
+  if (r.type === 'foul') return 1.0;
+  return clamp(0.6 + r.dist / 85, 0.8, 1.9);
+}
+
+function flightPos(r, t) {
+  const tau = clamp(t / flightDuration(r), 0, 1);
+  const a = r.spray * DEG;
+  let s, y;
+  if (r.type === 'ground') {
+    s = r.dist * (1 - Math.pow(1 - tau, 1.6));
+    y = 0.04 + Math.abs(Math.sin(tau * Math.PI * 4)) * 0.7 * (1 - tau);
+  } else {
+    const H = r.dist * Math.tan(Math.max(r.la, 8) * DEG) / 4 * 1.3;
+    s = (r.type === 'pop' || r.type === 'foul') ? r.dist * tau : r.dist * (1 - Math.pow(1 - tau, 1.35));
+    y = 1 + 4 * H * tau * (1 - tau) - tau;
+  }
+  return { x: s * Math.sin(a), y: Math.max(0.04, y), z: 0.3 + s * Math.cos(a), tau, s };
+}
+
+// 공이 화면 밖으로 나가지 않게 카메라를 따라 돌린다(전체를 평행 이동)
+function followBall(pos, dt) {
+  const p = project(pos.x, pos.y, pos.z);
+  let tx = 0, ty = 0;
+  if (p) {
+    const bx = p.x - view.panX, by = p.y - view.panY;
+    const mx = view.w * 0.18, my = view.h * 0.2;
+    if (bx < mx) tx = mx - bx; else if (bx > view.w - mx) tx = view.w - mx - bx;
+    if (by < my) ty = my - by;
+  }
+  const k = Math.min(1, dt * 5);
+  view.panX += (tx - view.panX) * k;
+  view.panY += (ty - view.panY) * k;
+}
+
+// ===== 화면 위 정보 =====
+const KIND_COLOR = { hr: '#ff6b4a', double: '#4ade80', single: '#4ade80', ball: '#facc15', out: '#9aa3b2', whiff: '#9aa3b2', foul: '#9aa3b2', strike: '#9aa3b2' };
+// 10구 전광판 불: 안타(2루타·홈런 포함)는 초록, 참아서 골라낸 볼은 노랑, 나머지는 빨강
+const LIGHT = { hit: '#3ddc6e', ball: '#facc15', miss: '#ff4d4d' };
+const lightColor = (r) => (r.hit ? LIGHT.hit : r.kind === 'ball' ? LIGHT.ball : LIGHT.miss);
+
+function drawLight(x, y, radius, color) {
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = radius * 1.8;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function text(str, x, y, { size = 16, weight = 700, color = '#fff', align = 'center', shadow = false } = {}) {
+  ctx.font = font(size, weight); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  if (shadow) { ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 10; }
+  ctx.fillText(str, x, y);
+  ctx.shadowBlur = 0;
+}
+
+function pill(str, x, y, { size = 14, bg = 'rgba(0,0,0,0.45)', color = '#fff' } = {}) {
+  ctx.font = font(size, 700);
+  const w = ctx.measureText(str).width + 22, h = size + 12;
+  roundRect(x - w / 2, y - h / 2, w, h, h / 2); ctx.fillStyle = bg; ctx.fill();
+  text(str, x, y + 1, { size, color });
+}
+
+function panel(r) { roundRect(r.x, r.y, r.w, r.h, 12); ctx.fillStyle = 'rgba(6,14,28,0.72)'; ctx.fill(); }
+
+function hudLayout() {
+  const m = view.mobile, pad = m ? 12 : 22;
+  const cardW = m ? (view.w - pad * 3) / 2 : 236, cardH = m ? 132 : 150;
+  const cardY = view.h - pad - cardH;
+  const btnW = m ? (view.w - pad * 3) / 2 : 150, btnY = m ? cardY - 56 : view.h - pad - 50;
+  return {
+    pad, cardY,
+    info: { x: pad, y: cardY, w: cardW, h: cardH },
+    map: { x: view.w - pad - cardW, y: cardY, w: cardW, h: cardH },
+    replay: { x: m ? pad : view.w / 2 - btnW - 8, y: btnY, w: btnW, h: 46 },
+    next: { x: m ? pad * 2 + btnW : view.w / 2 + 8, y: btnY, w: btnW, h: 46 },
+  };
+}
+
+function button(r, label, primary) {
+  roundRect(r.x, r.y, r.w, r.h, 23);
+  ctx.fillStyle = primary ? '#f2c94c' : 'rgba(255,255,255,0.14)'; ctx.fill();
+  text(label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 16, color: primary ? '#1b1405' : '#fff' });
+}
+
+const inRect = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+function drawTopBar() {
+  const m = view.mobile, pad = m ? 14 : 22, y = m ? 26 : 32;
+  text('walkoff', pad, y, { size: m ? 18 : 22, weight: 800, align: 'left' });
+  text(game.score.toLocaleString(), view.w - pad, y, { size: m ? 18 : 22, weight: 800, align: 'right' });
+  text('점수', view.w - pad, y + (m ? 17 : 20), { size: m ? 10 : 12, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'right' });
+  const gap = m ? 19 : 26, x0 = view.w / 2 - gap * 4.5;
+  for (let i = 0; i < 10; i++) {
+    const res = game.results[i], cx = x0 + i * gap, now = i === game.i && game.state !== 'over' && game.state !== 'title';
+    if (res) drawLight(cx, y, now ? 7 : 5.5, lightColor(res));
+    else { ctx.beginPath(); ctx.arc(cx, y, now ? 7 : 5.5, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill(); }
+    if (now && !res) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); }
+    else if (i === 9 && !res) { ctx.strokeStyle = 'rgba(242,201,76,0.85)'; ctx.lineWidth = 1.5; ctx.stroke(); }   // 끝내기 공 자리
+  }
+  const p = game.seq[game.i];
+  if (p && p.last && game.state !== 'over' && game.state !== 'title') {
+    pill('9회말 2아웃 · 끝내기 찬스 · 점수 2배', view.w / 2, y + (m ? 32 : 40), { size: m ? 12 : 14, bg: 'rgba(200,40,40,0.85)' });
+  }
+}
+
+// 타이밍 막대: 가운데 금색이 정타, 초록이 앞으로 가는 타구, 회색이 파울
+function drawTimingBar(x, y, w, dt) {
+  const toX = (ms) => x + (clamp(ms, -FOUL_MS, FOUL_MS) + FOUL_MS) / (2 * FOUL_MS) * w;
+  const seg = (a, b, c) => { ctx.fillStyle = c; ctx.fillRect(toX(a), y - 3, toX(b) - toX(a), 6); };
+  seg(-FOUL_MS, -FAIR_MS, 'rgba(255,255,255,0.25)'); seg(-FAIR_MS, FAIR_MS, 'rgba(74,222,128,0.6)');
+  seg(-PERFECT_MS, PERFECT_MS, '#f2c94c'); seg(FAIR_MS, FOUL_MS, 'rgba(255,255,255,0.25)');
+  const mx = toX(dt);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(mx, y - 4); ctx.lineTo(mx - 6, y - 13); ctx.lineTo(mx + 6, y - 13); ctx.closePath(); ctx.fill();
+  text('빠름', x - 8, y + 1, { size: 11, weight: 600, color: 'rgba(255,255,255,0.65)', align: 'right', shadow: true });
+  text('늦음', x + w + 8, y + 1, { size: 11, weight: 600, color: 'rgba(255,255,255,0.65)', align: 'left', shadow: true });
+}
+
+function pillRow(items, y, size) {
+  ctx.font = font(size, 700);
+  const widths = items.map(([s]) => ctx.measureText(s).width + 22), gap = 8;
+  let x = view.w / 2 - (widths.reduce((a, b) => a + b, 0) + gap * (items.length - 1)) / 2;
+  items.forEach(([s, bg, color], i) => { pill(s, x + widths[i] / 2, y, { size, bg, color }); x += widths[i] + gap; });
+}
+
+function drawResultCard() {
+  const r = game.outcome;
+  if (!r || game.resultT < game.revealAt) return;
+  // 투수 머리 위까지만 쓴다
+  const m = view.mobile, k = easeOut((game.resultT - game.revealAt) / 0.25), cx = view.w / 2, hr = r.kind === 'hr';
+  ctx.globalAlpha = k;
+  let y = (m ? 78 : 86) + (1 - k) * 10;
+  text(hr ? '홈런!' : r.name, cx, y, { size: (m ? 32 : 44) * (hr ? 1.3 : 1), weight: 900, color: KIND_COLOR[r.kind], shadow: true });
+  y += hr ? (m ? 38 : 48) : (m ? 32 : 40);
+  if (hr) { text(`${r.name} · ${Math.round(r.dist)}m`, cx, y, { size: m ? 15 : 18, shadow: true }); y += m ? 28 : 30; }
+  const chips = [];
+  if (!r.took) {
+    const label = r.perfect ? '정타!' : Math.abs(r.dt) <= PERFECT_MS ? '타이밍 정확' : `${Math.abs(r.dt)}ms ${r.dt < 0 ? '빠름' : '늦음'}`;
+    chips.push(r.perfect ? [label, '#f2c94c', '#1b1405'] : [label, 'rgba(0,0,0,0.5)', '#fff']);
+  }
+  if (game.gained > 0) chips.push([`+${game.gained.toLocaleString()}${game.seq[game.i].last ? ' (2배)' : ''}`, 'rgba(0,0,0,0.5)', '#f2c94c']);
+  if (chips.length) { pillRow(chips, y, m ? 13 : 14); y += m ? 30 : 32; }
+  if (!r.took) { const bw = m ? 180 : 240; drawTimingBar(cx - bw / 2, y, bw, r.dt); y += m ? 22 : 24; }
+  if (r.ev) { text(`타구 ${r.ev}km/h · 발사각 ${r.la}° · ${Math.round(r.dist)}m`, cx, y, { size: m ? 12 : 14, weight: 600, shadow: true }); y += m ? 20 : 21; }
+  text(r.reason, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.82)', shadow: true });
+  ctx.globalAlpha = 1;
+}
+
+function drawPitchInfo(rect) {
+  const p = game.seq[game.i], def = PITCHES[p.type];
+  panel(rect);
+  const m = view.mobile, pad = 12;
+  text(`${p.n}구 · ${def.name}`, rect.x + pad, rect.y + 20, { size: m ? 14 : 16, align: 'left', color: def.color });
+  text(`${p.kmh}km/h`, rect.x + rect.w - pad, rect.y + 20, { size: m ? 13 : 15, align: 'right' });
+  // 작은 존: 가로 -0.6~0.6m, 세로 0~1.5m
+  const box = { x: rect.x + pad, y: rect.y + 38, w: m ? 64 : 76, h: rect.h - 50 };
+  const sx = (x) => box.x + (x + 0.6) / 1.2 * box.w, sy = (y) => box.y + box.h - y / 1.5 * box.h;
+  ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(box.x, box.y, box.w, box.h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(sx(ZONE.left), sy(ZONE.top), sx(ZONE.right) - sx(ZONE.left), sy(ZONE.bottom) - sy(ZONE.top));
+  ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(sx(clamp(p.tx, -0.58, 0.58)), sy(clamp(p.ty, 0.03, 1.47)), 5, 0, Math.PI * 2); ctx.fill();
+  const tx = box.x + box.w + 12, inZone = zoneMiss(p) === 0;
+  text(inZone ? '스트라이크 존' : '존 밖', tx, box.y + 10, { size: 13, align: 'left', color: inZone ? '#fff' : '#facc15' });
+  const cm = (v) => Math.round(Math.abs(v) * 100);
+  const lines = [];
+  if (cm(def.brk.x) >= 5) lines.push(`${def.brk.x > 0 ? '→' : '←'}${cm(def.brk.x)}cm`);
+  if (cm(def.brk.y) >= 5) lines.push(`${def.brk.y > 0 ? '↑' : '↓'}${cm(def.brk.y)}cm`);
+  text('휜 정도', tx, box.y + 34, { size: 12, weight: 600, align: 'left', color: 'rgba(255,255,255,0.6)' });
+  text(lines.join(' ') || '거의 안 휨', tx, box.y + 54, { size: m ? 12 : 13, align: 'left' });
+  text(`도착 ${Math.round(p.T * 1000)}ms`, tx, box.y + 76, { size: 12, weight: 600, align: 'left', color: 'rgba(255,255,255,0.6)' });
+}
+
+function drawMiniMap(rect) {
+  panel(rect);
+  const r = game.outcome, ox = rect.x + rect.w / 2, oy = rect.y + rect.h - 12;
+  const k = (rect.h - 30) / 125;
+  const P = (a, d) => ({ x: ox + d * Math.sin(a * DEG) * k, y: oy - d * Math.cos(a * DEG) * k });
+  ctx.beginPath(); ctx.moveTo(ox, oy);
+  for (let a = -45; a <= 45; a += 5) { const q = P(a, fenceDist(a)); ctx.lineTo(q.x, q.y); }
+  ctx.closePath(); ctx.fillStyle = '#1d6b3a'; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(ox, oy);
+  for (let a = -45; a <= 45; a += 9) { const q = P(a, 36); ctx.lineTo(q.x, q.y); }
+  ctx.closePath(); ctx.fillStyle = '#9a6b45'; ctx.fill();
+  const fielders = [...INFIELDERS, ...OUTFIELDERS];
+  const fl = r && !r.took ? flightPos(r, game.flightT) : null;
+  for (const f of fielders) {
+    let q = P(f.a, f.d);
+    if (fl && r.fielder === f) { const b = P(r.spray, fl.s); q = { x: lerp(q.x, b.x, fl.tau), y: lerp(q.y, b.y, fl.tau) }; }
+    ctx.fillStyle = r && r.fielder === f ? '#ff6b4a' : 'rgba(255,255,255,0.85)';
+    ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill();
+  }
+  if (fl && r.kind !== 'whiff') {
+    const end = P(r.spray, fl.s);
+    ctx.strokeStyle = '#f2c94c'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(end.x, end.y); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(end.x, end.y, 4, 0, Math.PI * 2); ctx.fill();
+  }
+  text('타구 방향', rect.x + 12, rect.y + 16, { size: 12, weight: 600, align: 'left', color: 'rgba(255,255,255,0.6)' });
+}
+
+function dim(alpha) { ctx.fillStyle = `rgba(4,9,18,${alpha})`; ctx.fillRect(0, 0, view.w, view.h); }
+
+function drawTitle(time) {
+  dim(0.6);
+  const m = view.mobile, cy = view.h * 0.38;
+  text('끝내기', view.w / 2, cy - (m ? 70 : 92), { size: m ? 16 : 20, weight: 700, color: '#f2c94c' });
+  text('walkoff', view.w / 2, cy - (m ? 30 : 40), { size: m ? 52 : 76, weight: 900, shadow: true });
+  const lines = ['투수가 던지는 공 10개를 타이밍만 맞춰 쳐 내세요.', '구종마다 빠르기가 달라요. 존 밖 공은 참으면 보너스예요.', '10구째는 9회말 끝내기 찬스, 점수 2배예요.'];
+  lines.forEach((l, i) => text(l, view.w / 2, cy + (m ? 28 : 36) + i * (m ? 24 : 30), { size: m ? 13 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' }));
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
+  pill(m ? '탭해서 시작' : '스페이스바 · 클릭으로 시작', view.w / 2, cy + (m ? 130 : 160), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
+  ctx.globalAlpha = 1;
+}
+
+function gameSummary() {
+  const c = (k) => game.results.filter((r) => r.kind === k).length;
+  const far = Math.max(0, ...game.results.filter((r) => r.hit).map((r) => Math.round(r.dist)));
+  const rank = game.score >= 4000 ? '끝내기 영웅' : game.score >= 2500 ? '클러치 히터' : game.score >= 1200 ? '주전 타자' : '내일 다시 도전';
+  return { hr: c('hr'), hits: c('single') + c('double'), balls: c('ball'), far, rank };
+}
+
+function drawGameOver() {
+  dim(0.7);
+  const m = view.mobile, cy = view.h * 0.36, s = gameSummary();
+  text('경기 끝', view.w / 2, cy - (m ? 92 : 118), { size: m ? 18 : 22, color: 'rgba(255,255,255,0.7)' });
+  text(game.score.toLocaleString(), view.w / 2, cy - (m ? 46 : 58), { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
+  text(s.rank, view.w / 2, cy + (m ? 2 : 6), { size: m ? 18 : 22 });
+  const gap = m ? 30 : 36;   // 10구 결과를 전광판과 같은 색 불로 한 줄에
+  game.results.forEach((r, i) => drawLight(view.w / 2 + (i - 4.5) * gap, cy + (m ? 44 : 56), m ? 10 : 12, lightColor(r)));
+  text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, view.w / 2, cy + (m ? 82 : 100), { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
+  const r = game.btnRestart = { x: view.w / 2 - 90, y: cy + (m ? 112 : 136), w: 180, h: 48 };
+  button(r, '다시 하기', true);
+}
+
+// ===== 게임 진행 =====
+// title → windup(투수 와인드업) → pitch(공이 날아옴) → result → 다음 공 … → over
+const game = {
+  state: 'title', seq: [], i: 0, score: 0, results: [], seed: 0,
+  t: 0,              // 와인드업 시작부터 흐른 시간(초). 맞는 순간 멈춤 동안은 흐르지 않는다
+  clockAt: 0,        // t를 마지막으로 올린 시각(performance.now 기준)
+  swingAt: null,     // 공을 놓은 뒤 몇 초에 휘둘렀는지
+  outcome: null, gained: 0, resultT: 0, revealAt: 0, flightT: 0,
+  hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null, btnRestart: null,
+};
+
+function seedFromUrl() {
+  const s = Number(new URLSearchParams(location.search).get('seed'));
+  return Number.isFinite(s) && s > 0 ? s : (Date.now() % 2147483647);
+}
+
+function startGame() {
+  game.seed = seedFromUrl();
+  game.seq = makeSequence(game.seed);
+  game.i = 0; game.score = 0; game.results = [];
+  startPitch();
+}
+
+function startPitch() {
+  Object.assign(game, { state: 'windup', t: -0.5, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, mittDone: false, replay: null });
+}
+
+const ballTime = () => game.t - WINDUP;
+
+function swing(eventTime) {
+  const p = game.seq[game.i];
+  const bt = ballTime() + Math.max(0, (eventTime - game.clockAt) / 1000);
+  game.swingAt = bt;
+  const dtMs = Math.round((bt - p.T) * 1000);
+  const r = judgeSwing(p, dtMs);
+  if (r.kind === 'whiff') Sound.whoosh();
+  else {
+    game.contactPos = ballPos(p, bt / p.T);
+    game.hitstop = r.kind === 'hr' ? 0.14 : 0.09;
+    game.flash = 1;
+    view.shake = r.kind === 'hr' ? 12 : r.kind === 'foul' ? 3 : 3 + r.ev / 45;
+    if (r.kind === 'foul') Sound.foul(); else Sound.crack(clamp((r.ev - 80) / 100, 0, 1));
+    if (r.kind === 'hr') setTimeout(() => Sound.cheer(2.6), 250);
+    else if (r.hit) setTimeout(() => Sound.cheer(1.1), 300);
+  }
+  finish(r);
+}
+
+function finish(r) {
+  const p = game.seq[game.i];
+  const base = r.points + (r.perfect ? PERFECT_BONUS : 0);
+  game.gained = base * (p.last ? 2 : 1);
+  game.score += game.gained;
+  game.results[game.i] = r;
+  game.outcome = r;
+  game.state = 'result';
+  game.resultT = 0; game.flightT = 0;
+  game.revealAt = r.took ? 0.15 : r.kind === 'whiff' ? 0.3 : Math.min(0.3 + flightDuration(r) * 0.6, 1.6);
+  if (r.kind === 'ball') setTimeout(() => Sound.ding(), 150);
+}
+
+function next() {
+  if (game.i >= 9) { game.state = 'over'; game.t = 0; game.resultT = 0; return; }
+  game.i++;
+  startPitch();
+}
+
+function startReplay() { if (game.outcome) game.replay = 0; }
+
+function hasBattedBall() { const r = game.outcome; return r && !r.took && r.kind !== 'whiff'; }
+
+function update(dt) {
+  const now = performance.now();
+  view.shake = Math.max(0, view.shake - dt * 45);
+  game.flash = Math.max(0, game.flash - dt * 8);
+  if (game.hitstop > 0) { game.hitstop -= dt; game.clockAt = now; return; }
+  game.t += dt; game.clockAt = now;
+  const p = game.seq[game.i];
+
+  if (game.state === 'windup' && ballTime() >= 0) { game.state = 'pitch'; Sound.release(); }
+  if (game.state === 'pitch' && game.swingAt == null && ballTime() > p.T + FOUL_MS / 1000) finish(judgeTake(p));
+  if ((game.state === 'pitch' || game.state === 'result') && !hasBattedBall() && !game.mittDone && ballTime() > p.T * 1.05) {
+    game.mittDone = true; Sound.mitt();
+  }
+  if (game.state === 'result') {
+    game.resultT += dt;
+    game.flightT += dt;
+    if (game.replay != null) { game.replay += dt * 0.5; if (game.replay > p.T * 1.08) game.replay = null; }
+  }
+  if (game.state === 'over' || game.state === 'title') game.resultT += dt;
+
+  if (game.state === 'result' && hasBattedBall()) followBall(flightPos(game.outcome, game.flightT), dt);
+  else { const k = Math.min(1, dt * 4); view.panX -= view.panX * k; view.panY -= view.panY * k; }
+}
+
+// ===== 입력: 스페이스바, 클릭, 탭 =====
+function primaryAction(eventTime, x, y) {
+  Sound.init();
+  if (game.state === 'title') { startGame(); return; }
+  if (game.state === 'pitch' && game.swingAt == null) { swing(eventTime); return; }
+  if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) {
+    if (x != null && inRect(hudLayout().replay, x, y)) startReplay(); else next();
+    return;
+  }
+  if (game.state === 'over' && game.resultT > 0.6) startGame();
+}
+
+canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); primaryAction(e.timeStamp, e.clientX, e.clientY); });
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'Enter') {
+    e.preventDefault();
+    if (!e.repeat) primaryAction(e.timeStamp);
+  } else if (e.code === 'KeyR' && game.state === 'result') startReplay();
+});
+window.addEventListener('resize', resize);
+
+// ===== 그리기 =====
+function render(time) {
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  ctx.save();
+  if (view.shake > 0) ctx.translate((Math.random() * 2 - 1) * view.shake, (Math.random() * 2 - 1) * view.shake);
+  drawField();
+
+  const playing = game.state === 'windup' || game.state === 'pitch' || game.state === 'result';
+  const p = game.seq[game.i], r = game.outcome;
+  const bt = ballTime();
+  drawPitcher(playing ? game.t : 0, playing && game.t > 0.35 && bt < 0);
+
+  if (hasBattedBall()) {
+    const fp = flightPos(r, game.flightT);
+    if (fp.z > MOUND) drawBall(fp, { glow: true, scale: 2 });
+  }
+  drawZone(game.state === 'result' ? 0.6 : 0.9);
+  if (game.state === 'result' && game.resultT > game.revealAt) drawTrail(p, game.replay != null ? game.replay / p.T : 1.0);
+  if (playing && bt >= 0) {
+    const u = (game.replay != null ? game.replay : bt) / p.T;
+    const hiddenByHit = hasBattedBall() && game.replay == null;
+    if (!hiddenByHit && u <= 1.06) drawBall(ballPos(p, u), { spin: (game.replay ?? bt) * SPIN[p.type] });
+  }
+  if (hasBattedBall()) {
+    const fp = flightPos(r, game.flightT);
+    if (fp.z <= MOUND) drawBall(fp, { glow: true, scale: 2 });
+  }
+  const tau = game.swingAt != null && playing ? Math.max(0, bt - game.swingAt) : null;
+  drawBatter(tau);
+  if (game.flash > 0 && game.contactPos) {
+    const c = project(game.contactPos.x, game.contactPos.y, game.contactPos.z);
+    if (c) {
+      const R = 120 * game.flash + 30;
+      const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, R);
+      g.addColorStop(0, `rgba(255,255,240,${0.9 * game.flash})`); g.addColorStop(1, 'rgba(255,255,240,0)');
+      ctx.fillStyle = g; ctx.fillRect(c.x - R, c.y - R, R * 2, R * 2);
+    }
+  }
+  ctx.restore();
+
+  if (game.state === 'title') { drawTitle(time); return; }
+  if (game.state === 'over') { drawGameOver(); drawTopBar(); return; }
+  drawTopBar();
+  const L = hudLayout();
+  if (game.i === 0 && game.state !== 'result') {
+    text(view.mobile ? '공이 존에 올 때 탭' : '공이 존에 올 때 스페이스바 · 클릭', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 15 : 17, color: 'rgba(255,255,255,0.75)', shadow: true });
+  }
+  if (game.state === 'result') {
+    drawResultCard();
+    if (game.resultT > game.revealAt) {
+      drawPitchInfo(L.info);
+      if (hasBattedBall()) drawMiniMap(L.map);
+      const m = view.mobile;
+      button(L.replay, m ? '다시 보기' : '다시 보기 (R)', false);
+      button(L.next, game.i >= 9 ? '결과 보기' : m ? '다음 공' : '다음 공 (Space)', true);
+    }
+  }
+}
+
+let lastFrame = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+  lastFrame = now;
+  update(dt);
+  render(now / 1000);
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+
+// 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
+window.walkoff = { game, judgeSwing, judgeTake, makeSequence, ballTime, PITCHES };
+</script>
+</body>
+</html>
