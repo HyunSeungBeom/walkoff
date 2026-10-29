@@ -633,6 +633,25 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('파울 뒤 다시 보기를 누르면 화면이 타석으로 돌아오고, 다시 보기가 끝나도 파울공을 다시 따라가지 않는다', async ({ page, isMobile }) => {
+    const errors = await open(page);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await page.evaluate(() => new Promise((resolve) => {   // 115ms 늦게 휘두르면 파울(90~140ms)
+      const g = walkoff.game, p = g.seq[g.i], now = walkoff.ballTime() + (performance.now() - g.clockAt) / 1000;
+      setTimeout(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' })); resolve(); }, Math.max(0, (p.T - now) * 1000 + 115));
+    }));
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    expect(await page.evaluate(() => walkoff.game.outcome.kind)).toBe('foul');
+    await page.waitForFunction(() => Math.hypot(walkoff.view.panX, walkoff.view.panY) > 300, null, { timeout: 5000 });   // 화면이 파울공을 따라 돌아갔다
+    await tap(page, isMobile ? '다시 보기' : '다시 보기 (R)');
+    expect(await page.evaluate(() => [walkoff.game.replay != null, walkoff.view.panX, walkoff.view.panY])).toEqual([true, 0, 0]);
+    await page.waitForFunction(() => walkoff.game.replay == null, null, { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => Math.hypot(walkoff.view.panX, walkoff.view.panY))).toBeLessThan(1);   // 다시 보기가 끝나도 타석에 머문다
+    expect(errors).toEqual([]);
+  });
+
   test('등번호는 두 자리여도 등 폭 안에 들어간다(몸이 돌아도, 우타·좌타)', async ({ page }) => {
     const errors = await open(page);
     let seen = 0;

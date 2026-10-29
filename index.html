@@ -2475,7 +2475,7 @@ const game = {
   clockAt: 0,        // t를 마지막으로 올린 시각(performance.now 기준)
   swingAt: null,     // 공을 놓은 뒤 몇 초에 휘둘렀는지
   outcome: null, gained: 0, resultT: 0, revealAt: 0, flightT: 0,
-  hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null,
+  hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null, replayed: false,
   toast: null, firstDaily: false, newBest: false, best: 0,
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
   opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
@@ -2512,7 +2512,7 @@ function startGame(mode) {
 }
 
 function startPitch() {
-  Object.assign(game, { state: 'windup', t: -0.5, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, mittDone: false, replay: null });
+  Object.assign(game, { state: 'windup', t: -0.5, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, mittDone: false, replay: null, replayed: false });
   game.lastChance = game.mode !== 'scenario' && game.left === 1;
 }
 
@@ -2610,7 +2610,9 @@ function showDailyRecord() {
   loadMyRank();
 }
 
-function startReplay() { if (game.outcome) game.replay = 0; }
+// 다시 보기는 타석 시점에서 본다. 전에는 파울공을 따라 돌아간 화면 그대로 재생해서 공이 안 보였다(2026-10-29 사용자 제보).
+// 한 번 다시 보면 그 타구는 다시 따라가지 않는다
+function startReplay() { if (game.outcome) { game.replay = 0; game.replayed = true; view.panX = view.panY = 0; } }
 
 function hasBattedBall() { const r = game.outcome; return r && !r.took && r.kind !== 'whiff'; }
 
@@ -2634,7 +2636,7 @@ function update(dt) {
   }
   if (game.state === 'over' || game.state === 'title') game.resultT += dt;
 
-  if (game.state === 'result' && hasBattedBall()) followBall(flightPos(game.outcome, game.flightT), dt);
+  if (game.state === 'result' && hasBattedBall() && !game.replayed) followBall(flightPos(game.outcome, game.flightT), dt);
   else { const k = Math.min(1, dt * 4); view.panX -= view.panX * k; view.panY -= view.panY * k; }
 }
 
@@ -2701,7 +2703,7 @@ function render(time) {
   drawPitcher(playing ? game.t : 0, playing && game.t > 0.35 && bt < 0, playing && p ? !!p.lefty : game.throws === 'L');
   if (game.state === 'windup' && p && (game.i === 0 || !!game.seq[game.i - 1].lefty !== !!p.lefty)) drawPitcherTag(p);
 
-  if (hasBattedBall()) {
+  if (hasBattedBall() && game.replay == null) {   // 다시 보기 동안 날아간 타구는 감춘다
     const fp = flightPos(r, game.flightT);
     if (fp.z > MOUND) { drawBallTrail(r, game.flightT); drawBall(fp, { glow: true, scale: 2 }); }
   }
@@ -2713,11 +2715,13 @@ function render(time) {
     const seen = game.replay == null && hardMatchup(p) ? clamp((u - 0.12) / 0.05, 0, 1) : 1;   // 좌타 대 좌완이면 처음 12%는 안 보인다
     if (!hiddenByHit && u <= 1.06 && seen > 0) drawBall(ballPos(p, u), { spin: (game.replay ?? bt) * SPIN[p.type] * (p.lefty ? -1 : 1), alpha: seen });
   }
-  if (hasBattedBall()) {
+  if (hasBattedBall() && game.replay == null) {
     const fp = flightPos(r, game.flightT);
     if (fp.z <= MOUND) { drawBallTrail(r, game.flightT); drawBall(fp, { glow: true, scale: 2 }); }
   }
-  const tau = game.swingAt != null && playing ? Math.max(0, bt - game.swingAt) : null;
+  // 다시 보기 동안에는 타자도 공에 맞춰 다시 휘두른다(휘두르기 전에는 준비 자세)
+  const tb = game.replay ?? bt;
+  const tau = game.swingAt != null && playing && (game.replay == null || tb >= game.swingAt) ? Math.max(0, tb - game.swingAt) : null;
   drawBatter(tau);
   if (game.flash > 0 && game.contactPos) {
     const c = project(game.contactPos.x, game.contactPos.y, game.contactPos.z);
@@ -2779,7 +2783,7 @@ requestAnimationFrame(frame);
 syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view };
 </script>
 </body>
 </html>
