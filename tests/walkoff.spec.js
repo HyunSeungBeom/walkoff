@@ -161,7 +161,7 @@ test.describe('판정 계산', () => {
       nextDay: walkoff.dailySeed('2026-10-28') !== walkoff.dailySeed('2026-10-29'),
       dayOne: walkoff.dayNumber('2026-10-28'),
     }));
-    expect(r).toEqual({ sameSeed: true, length: 15, sameDay: true, nextDay: true, dayOne: 1 });
+    expect(r).toEqual({ sameSeed: true, length: 40, sameDay: true, nextDay: true, dayOne: 1 });   // 볼은 기회를 안 써서 공을 40개 미리 만든다
   });
 
   test('끝내기 상황: 밀어내기, 희생플라이, 2스트라이크 파울, 끝내기 홈런', async ({ page }) => {
@@ -233,13 +233,18 @@ test.describe('판정 계산', () => {
 test.describe('한 판 끝까지', () => {
   test.skip(({ isMobile }) => isMobile, '오래 걸려서 PC에서만 본다');
 
-  test('10구 도전: 볼을 골라내면 기회가 늘고, 추가 기회는 5번까지다', async ({ page }) => {
+  test('10구 도전: 볼을 골라내면 기회를 쓰지 않고, 늘어나는 기회에 상한이 없다', async ({ page }) => {
     test.slow();
-    const errors = await open(page, '?seed=2');   // 처음 15개 중 존 밖 공이 7개 넘는 시드
+    const errors = await open(page, '?seed=2');   // 존 밖 공이 많은 시드(예전 상한 5번을 넘는다)
     await page.evaluate(() => walkoff.startGame('challenge'));
-    await playUntilOver(page, null);
-    const end = await page.evaluate(() => ({ pitches: walkoff.game.results.length, extra: walkoff.game.extra, left: walkoff.game.left }));
-    expect(end).toEqual({ pitches: 15, extra: 5, left: 0 });
+    await playUntilOver(page, null);   // 한 번도 치지 않는다: 존 안 공은 스트라이크(기회 -1), 존 밖 공은 볼(기회 그대로)
+    const end = await page.evaluate(() => ({
+      pitches: walkoff.game.results.length, extra: walkoff.game.extra, left: walkoff.game.left,
+      balls: walkoff.game.results.filter((r) => r.kind === 'ball').length, lights: walkoff.game.summary.lights,
+    }));
+    expect(end.extra).toBeGreaterThan(5);
+    expect(end).toMatchObject({ left: 0, balls: end.extra, pitches: 10 + end.extra });
+    expect(end.lights).toHaveLength(10 + end.extra);   // 서버 검사 규칙(전광판 칸 수 = 10 + 볼 수)과 맞는다
     expect(errors).toEqual([]);
   });
 
