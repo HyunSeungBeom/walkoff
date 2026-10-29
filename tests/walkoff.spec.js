@@ -675,7 +675,7 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.crowd.people.length > 0);
     const look = (team) => page.evaluate((team) => {
       const c = walkoff.crowd, main = walkoff.teamById(team).main, share = (arr) => arr.filter((q) => q.shirt === main).length / arr.length;
-      return { n: c.people.length, center: c.people.filter((q) => Math.abs(q.a) < 6).length, home: share(c.people.filter((q) => q.a > 0)), away: share(c.people.filter((q) => q.a < 0)), builds: c.builds };
+      return { n: c.people.length, center: c.people.filter((q) => Math.abs(q.a) < 4).length, home: share(c.people.filter((q) => q.a > 0)), away: share(c.people.filter((q) => q.a < 0)), builds: c.builds };
     }, team);
     const lg = await look('lg');
     expect(lg.n).toBeGreaterThan(2000);

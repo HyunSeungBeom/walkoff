@@ -486,7 +486,7 @@ function drawField() {
 // 투수 바로 뒤(가운데 ±CROWD_EYE도)는 실제 구장의 배터스 아이처럼 비운다. 공을 놓는 높이가 관중석과 겹쳐서 관중이 있으면 공이 묻힌다.
 // 수천 명을 매 화면 그리면 폰이 버거워서, 앉은 모습과 일어나 손을 든 모습을 한 번씩 따로 그려 두고(화면 크기·팀이 바뀔 때만 다시) 붙인다.
 // 안타·홈런·끝내기 때는 세로 띠마다 조금씩 다르게 일어났다 앉고, 홈런·끝내기에는 카메라 플래시가 터진다
-const CROWD_ROWS = 22, CROWD_EYE = 6;   // 관중석 줄 수, 가운데 비우는 각도(±도)
+const CROWD_ROWS = 22, CROWD_EYE = 4;   // 관중석 줄 수, 가운데 비우는 각도(±도). 공을 놓는 곳이 ±1.6도라 ±4도면 공이 관중에 묻히지 않는다(±6도는 폰에서 화면 폭의 40%가 검었다)
 const crowd = { key: '', sit: null, stand: null, res: 1, x0: 0, y0: 0, people: [], builds: 0, at: 0, dur: 0, power: 0 };
 
 function crowdPalette(teamId) {
