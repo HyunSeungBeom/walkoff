@@ -36,7 +36,10 @@ test.describe('버전 표시', () => {
   test('오른쪽 아래 커밋 번호 위를 눌러도 캔버스가 받아 경기가 시작된다', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    await page.addInitScript(() => localStorage.setItem('walkoff.team', 'lg'));   // 팀을 고른 사람 기준(처음 온 사람은 팀 고르기부터 나온다)
+    await page.addInitScript(() => {   // 팀을 고르고 오늘은 로그인을 미룬 사람 기준(아니면 팀 고르기나 로그인 권유가 먼저 나온다)
+      localStorage.setItem('walkoff.team', 'lg');
+      localStorage.setItem('walkoff.loginLater', new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10));
+    });
     await page.goto(PAGE + '?seed=42');
     await page.waitForFunction(() => !!window.walkoff);
     const label = page.locator('#build');

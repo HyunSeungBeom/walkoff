@@ -73,7 +73,9 @@ async function loginReturn(page, query, n, { error } = {}) {
   await page.waitForFunction(() => !!window.walkoff);
 }
 
+// 버튼은 그릴 때마다 다시 모으므로, 화면이 막 바뀌었으면 다음 그림에서 나타날 때까지 잠깐 기다린다
 const tap = async (page, label) => {
+  await page.waitForFunction((l) => walkoff.ui.buttons.some((b) => b.label === l), label, { timeout: 3000 }).catch(() => {});
   const r = await page.evaluate((l) => walkoff.ui.buttons.find((b) => b.label === l)?.r, label);
   if (!r) throw new Error(`버튼이 없다: ${label}`);
   await page.mouse.click(r.x + r.w / 2, r.y + r.h / 2);
@@ -264,7 +266,32 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.state === 'title' && walkoff.ui.buttons.some((b) => b.label === '좌타'));
     const vp = page.viewportSize();
     await page.mouse.click(20, vp.height - 20);   // 버튼이 없는 왼쪽 아래 빈 곳
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');   // 로그인 안 했으면 오늘의 10구 전에 로그인을 권한다
+    await tap(page, '나중에 하기');
     expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인 안 한 사람은 오늘의 10구 전에 하루 한 번 카카오 로그인을 권한다', async ({ page }) => {
+    const errors = await open(page);
+    await page.keyboard.press('Space');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '나중에 하기'));
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).sort())).toEqual(['나중에 하기', '카카오로 로그인']);
+    await page.keyboard.press('Escape');   // 닫으면 시작 화면. 다시 시작하면 또 묻는다
+    await page.keyboard.press('Space');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
+    await tap(page, '나중에 하기');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    await page.keyboard.press('Space');   // 나중에 하기를 누른 날은 다시 묻지 않는다
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('windup');
+    await page.evaluate(() => { walkoff.store.set('loginLater', '2000-01-01'); walkoff.goTitle(); });   // 다른 날이 되면 다시 묻는다
+    await page.keyboard.press('Space');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
+    await tap(page, '카카오로 로그인');
+    expect((await kakaoStart(errors)).pid).toMatch(/^[a-z0-9-]{8,40}$/);
     expect(errors).toEqual([]);
   });
 
@@ -284,14 +311,14 @@ test.describe('화면', () => {
     const nick = page.locator('input[aria-label="닉네임"]');
     expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');   // 누르지 않아도 팀 고르기부터
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 시작'));
-    await tap(page, '로그인 없이 하기 · 랭킹 제외');   // 팀을 안 고르면 넘어가지 않는다
+    await tap(page, '나중에 로그인하기');   // 팀을 안 고르면 넘어가지 않는다
     expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
     await tap(page, '한화 이글스');
     expect(await page.evaluate(() => walkoff.batterColors().accent)).toBe('#1b1b1b');   // 고르는 중에도 유니폼을 미리 입혀 본다
     await nick.fill('명은');
     await nick.press('Enter');   // 처음 화면에서 엔터는 키보드만 닫는다(카카오 로그인으로 넘어가지 않는다)
     expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
-    await tap(page, '로그인 없이 하기 · 랭킹 제외');
+    await tap(page, '나중에 로그인하기');
     expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick })))
       .toEqual({ state: 'title', team: 'hanwha', nick: '명은' });   // 시작 화면에서 규칙과 좌타·우타를 보고 시작한다
     await expect(nick).toBeHidden();
