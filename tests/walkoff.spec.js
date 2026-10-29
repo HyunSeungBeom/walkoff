@@ -22,9 +22,13 @@ const SAMPLE_RANKING = {
 
 // 테스트가 실제 랭킹 서버에 닿지 않도록 서버 주소를 가로채 가짜로 답한다. 받은 요청은 돌려주는 배열에 쌓인다.
 // account: 로그인한 계정에 이미 있는 팀·닉네임(다른 기기에서 쓰던 계정을 흉내 낸다).
-// scoreReply: 'best'(보낸 점수가 이번 주 최고 기록) | 'lower'(이번 주에 더 높은 기록이 있다). 테스트 중에 바꿀 수 있게 요청 때 읽는다
+// scoreReply: 'best'(보낸 점수가 이번 주 최고 기록) | 'lower'(이번 주에 더 높은 기록이 있다). 테스트 중에 바꿀 수 있게 요청 때 읽는다.
+// 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
+  const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
+  const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
+  const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
   const calls = [];
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
@@ -36,11 +40,29 @@ async function mockApi(page, opts = {}) {
       return new Promise((done) => setTimeout(done, 300)).then(() => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>kakao</title>' }));
     }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
-    if ((url.pathname === '/me' || url.pathname === '/scores') && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
-    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null } : { ok: true });
+    if (['/me', '/scores', '/shop/buy', '/shop/equip'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet() } : { ok: true });
     if (url.pathname === '/scores') {
-      const score = JSON.parse(req.postData() || '{}').score, lower = opts.scoreReply === 'lower';
-      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best: lower ? score + 1000 : score, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5 });
+      const { score, mode } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
+      const earned = opts.earned ?? Math.floor(score / 100) * (mode === 'daily' ? 2 : 1);
+      shop.coins += earned;
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best: lower ? score + 1000 : score, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, coins: shop.coins, earned, bonus: mode === 'daily' });
+    }
+    if (url.pathname === '/shop/buy') {
+      const it = ITEMS.find((i) => i.id === JSON.parse(req.postData() || '{}').item);
+      if (!it || it.price === 0) return reply({ ok: false, error: it ? 'free_item' : 'unknown_item' }, 400);
+      if (shop.owned.includes(it.id)) return reply({ ok: false, error: 'already_owned', ...wallet() }, 400);
+      if (shop.coins < it.price) return reply({ ok: false, error: 'not_enough_coins', ...wallet() }, 400);
+      shop.coins -= it.price; shop.owned.push(it.id);
+      return reply({ ok: true, ...wallet() });
+    }
+    if (url.pathname === '/shop/equip') {
+      const b = JSON.parse(req.postData() || '{}'), it = ITEMS.find((i) => i.id === b.item);
+      if (!it || (it.price > 0 && !shop.owned.includes(it.id))) return reply({ ok: false, error: 'not_owned' }, 400);
+      if (it.id === 'number-on' && !(Number.isInteger(b.number) && b.number >= 0 && b.number <= 99)) return reply({ ok: false, error: 'bad_number' }, 400);
+      shop.look[it.slot] = it.id;
+      if (it.id === 'number-on') shop.look.no = b.number;
+      return reply({ ok: true, ...wallet() });
     }
     return reply(rankings);
   });
@@ -268,7 +290,7 @@ test.describe('한 판 끝까지', () => {
     await expect.poll(() => sentScores(errors).length).toBe(1);
     const sent = sentScores(errors)[0], today = await page.evaluate(() => walkoff.today());
     expect(sent.auth).toBe(`Bearer ${SESSION}`);
-    expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights });   // 사람 ID는 서버가 로그인 표에서 꺼낸다
+    expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights, mode: 'daily' });   // 사람 ID는 서버가 로그인 표에서 꺼낸다. mode는 코인 2배 판단용
     await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
     await page.keyboard.press('Escape');
@@ -423,7 +445,7 @@ test.describe('화면', () => {
       return page.evaluate(() => ({ score: walkoff.game.score, labels: walkoff.ui.buttons.map((b) => b.label) }));
     };
     const first = await endChallenge();
-    expect(sentScores(errors).map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg', day: await page.evaluate(() => walkoff.today()), score: first.score, lights: expect.stringMatching(/^[GYR]$/) }]);
+    expect(sentScores(errors).map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg', day: await page.evaluate(() => walkoff.today()), score: first.score, lights: expect.stringMatching(/^[GYR]$/), mode: 'challenge' }]);
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('이번 주')));
     expect((await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label)))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
     api.scoreReply = 'lower';   // 이번에는 이번 주에 더 높은 기록이 있다
@@ -489,6 +511,73 @@ test.describe('화면', () => {
     await tap(page, '메뉴');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '기록'));
     expect((await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).some((l) => l.startsWith('진동'))).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인 안 하면 상점은 구경만 한다: 미리 입어 보고, 로그인을 권한다', async ({ page }) => {
+    const errors = await open(page);
+    await page.evaluate(() => walkoff.openShop('shop'));
+    await tap(page, '금색');   // 배트 칸이 먼저 열린다
+    expect(await page.evaluate(() => walkoff.batterColors().bat)).toBe('#eebf2c');   // 고른 배트를 미리 입힌다
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 로그인'));
+    expect((await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).some((l) => l.startsWith('사기'))).toBe(false);
+    await tap(page, '닫기');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, bat: walkoff.batterColors().bat }))).toEqual({ state: 'title', bat: '#c8955a' });   // 닫으면 원래 배트
+    expect(errors.calls.filter((c) => c.path.startsWith('/shop'))).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('상점: 사면 바로 입고, 내 물건에서 바꿔 입는다. 등번호는 사고 번호를 골라 단다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 500 } } });
+    await page.waitForFunction(() => walkoff.wallet.coins === 500);
+    await page.evaluate(() => walkoff.openShop('shop'));
+    await tap(page, '빨강');
+    await tap(page, '사기 · 150코인');
+    await expect.poll(() => page.evaluate(() => ({ coins: walkoff.wallet.coins, bat: walkoff.wallet.look.bat }))).toEqual({ coins: 350, bat: 'bat-red' });
+    expect(errors.calls.filter((c) => c.path.startsWith('/shop')).map((c) => [c.path, c.body])).toEqual([['/shop/buy', { item: 'bat-red' }], ['/shop/equip', { item: 'bat-red' }]]);
+    await tap(page, '닫기');
+    expect(await page.evaluate(() => walkoff.batterColors().bat)).toBe('#c8202c');   // 상점을 닫아도 입은 배트
+
+    await page.evaluate(() => walkoff.openShop('shop'));
+    await tap(page, '내 물건');
+    await page.waitForFunction(() => walkoff.game.shop.view === 'inventory');
+    const items = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).filter((l) => walkoff.SHOP_ITEMS.some((i) => i.slot === 'bat' && i.name === l)));
+    expect(items).toEqual(['원목', '빨강']);   // 가진 것만
+    await tap(page, '원목');
+    await tap(page, '착용하기');
+    await expect.poll(() => page.evaluate(() => walkoff.wallet.look.bat)).toBe('bat-wood');
+
+    await tap(page, '상점');
+    await tap(page, '등번호');
+    await tap(page, '등번호 달기');
+    await tap(page, '사기 · 300코인');
+    await expect.poll(() => page.evaluate(() => walkoff.wallet.coins)).toBe(50);
+    const no = page.locator('input[aria-label="등번호"]');
+    await expect(no).toBeVisible();
+    await no.fill('23');
+    await no.press('Enter');
+    await expect.poll(() => page.evaluate(() => [walkoff.wallet.look.number, walkoff.wallet.look.no])).toEqual(['number-on', 23]);
+    await tap(page, '배트');
+    await tap(page, '금색');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '코인이 모자라요'));   // 50코인으로는 금색 배트(1,000)를 못 산다
+
+    await reloadUntil(page, () => walkoff.wallet.coins === 50);   // 다시 열어도 서버에서 지갑과 착용을 받는다
+    expect(await page.evaluate(() => ({ bat: walkoff.wallet.look.bat, no: walkoff.wallet.look.no, owned: walkoff.wallet.owned }))).toEqual({ bat: 'bat-wood', no: 23, owned: ['bat-red', 'number-on'] });
+    expect(errors).toEqual([]);
+  });
+
+  test('끝 화면에 받은 코인이 붙고, 꾸민 공 꼬리·타격음·등번호로 쳐도 문제없다', async ({ page }) => {
+    const look = { trail: 'trail-fire', sound: 'sound-metal', number: 'number-on', no: 9, helmet: 'helmet-gold', uniform: 'uniform-home' };
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 0, owned: ['trail-fire', 'sound-metal', 'number-on', 'helmet-gold', 'uniform-home'], look }, earned: 64 } });
+    await page.waitForFunction(() => walkoff.wallet.look.trail === 'trail-fire');
+    expect(await page.evaluate(() => ({ helmet: walkoff.batterColors().helmet, jersey: walkoff.batterColors().jersey, accent: walkoff.batterColors().accent })))
+      .toEqual({ helmet: '#e3b322', jersey: '#eceef2', accent: '#a50034' });   // 홈 유니폼은 흰 바탕에 소매·스타킹은 팀 색(LG)
+    await page.evaluate(() => { walkoff.startGame('daily'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    const o = await playPitch(page, 0);
+    expect(o.kind).not.toBe('whiff');
+    await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.game.rankInfo?.status === 'ok');
+    expect(await page.evaluate(() => ({ note: walkoff.coinNote(), coins: walkoff.wallet.coins }))).toEqual({ note: ' · +64코인(2배)', coins: 64 });
+    expect(sentScores(errors)[0].body.mode).toBe('daily');
     expect(errors).toEqual([]);
   });
 
@@ -620,6 +709,14 @@ test.describe('결과 공유', () => {
 
 test.describe('랭킹 규칙', () => {
   test.skip(({ isMobile }) => isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+
+  test('게임과 서버가 같은 상점 목록(id·종류·가격)을 쓴다', async ({ page }) => {
+    const shop = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
+    await open(page);
+    const game = await page.evaluate(() => ({ items: walkoff.SHOP_ITEMS.map(({ id, slot, price }) => ({ id, slot, price })), slots: walkoff.SHOP_SLOTS.map(([s]) => s) }));
+    expect(game.items).toEqual(shop.ITEMS);
+    expect(game.slots).toEqual(shop.SLOTS);
+  });
 
   test('게임과 랭킹 서버가 같은 팀 목록과 주 계산(한국 시간 월요일 시작)을 쓴다', async ({ page }) => {
     const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
