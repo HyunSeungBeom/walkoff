@@ -4,6 +4,7 @@
 import { kstDay, weekStart, addDays, validateSubmission, validateProfile, aggregate } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
 import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
+import { validateEvent, recordEvent } from './stats.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -118,6 +119,13 @@ export default {
       }
       if (url.pathname === '/auth/kakao/start' && method === 'GET') return await loginStart(url, env, now);
       if (url.pathname === '/auth/kakao/callback' && method === 'GET') return await loginCallback(url, env, now);
+      // 이용 통계(stats.js). 게임은 sendBeacon으로 보내서 본문이 text/plain으로 온다. 로그인은 보지 않는다
+      if (url.pathname === '/events' && method === 'POST') {
+        const checked = validateEvent(await request.text().then((t) => JSON.parse(t)).catch(() => null));
+        if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
+        await recordEvent(env.DB, checked.value, kstDay(now));
+        return new Response(null, { status: 204, headers: HEADERS });
+      }
 
       const acct = ['/scores', '/me', '/shop/buy', '/shop/equip'].includes(url.pathname) ? await account(request, env, now) : null;
       if (url.pathname === '/scores' && method === 'POST') {

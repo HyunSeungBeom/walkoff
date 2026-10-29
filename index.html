@@ -1387,6 +1387,7 @@ function finishScenario() {
   game.summary = { end: s.end, away: s.away, home: s.home, pa: s.pa.join(''), pitches: game.seq.length, label: s.label, bats: settings.bats };
   const ss = store.get('scnStats', { plays: 0, wins: 0 });
   store.set('scnStats', { plays: ss.plays + 1, wins: ss.wins + (s.end === 'win' ? 1 : 0) });
+  track('end');
 }
 
 // 상단: 점수, 볼·스트라이크·아웃 불(실제 전광판처럼 초록·노랑·빨강), 주자 마름모
@@ -1637,6 +1638,27 @@ const fmtMD = (day) => `${Number(day.slice(5, 7))}월 ${Number(day.slice(8, 10))
 function untilNextWeek(week) {
   const ms = Date.parse(`${addDay(week, 7)}T00:00:00+09:00`) - Date.now();
   return ms > 864e5 ? `새 주까지 ${Math.ceil(ms / 864e5)}일` : `새 주까지 ${Math.max(1, Math.ceil(ms / 3600e3))}시간`;
+}
+
+// ===== 이용 통계 =====
+// 하루에 몇 판, 몇 명이 하는지만 센다(2026-10-29 사용자 결정, 서버는 worker/src/stats.js). 기기에 저장한 무작위 번호,
+// 모드, 시작·끝, 터치 기기인지만 보내고 랭킹 ID·닉네임·카카오 계정과는 잇지 않는다. 실제 사이트에서 사람이 친 판만 센다:
+// 자동 브라우저(테스트, navigator.webdriver)와 이 컴퓨터에서 연 게임은 빼고, ?api=로 서버를 바꿔 열면 그 서버로 보낸다.
+// 결과는 worker 폴더에서 npm run stats
+const STATS_ON = !navigator.webdriver && (location.hostname === 'hyunseungbeom.github.io' || new URLSearchParams(location.search).has('api'));
+function ensureDeviceId() {
+  const saved = String(store.get('device', ''));
+  if (/^[a-z0-9-]{8,40}$/.test(saved)) return saved;
+  const id = globalThis.crypto?.randomUUID?.() ?? `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  store.set('device', id);
+  return id;
+}
+function track(type) {
+  if (!STATS_ON) return;
+  try {
+    const body = JSON.stringify({ device: ensureDeviceId(), mode: game.mode, type, mobile: matchMedia('(pointer: coarse)').matches });
+    navigator.sendBeacon(`${RANKING_API}/events`, body);
+  } catch { /* 통계를 못 보내도 게임은 그대로 */ }
 }
 
 async function postScore(body) {
@@ -2290,6 +2312,7 @@ function drawMenu() {
   if (dailyRecord()) items.unshift(['오늘의 10구 결과 보기', showDailyRecord]);
   for (const [label, fn] of items) { addButton({ x: cx - bw / 2, y, w: bw, h: bh }, label, 'secondary', fn); y += bh + (m ? 10 : 12); }
   addButton({ x: cx - 70, y: y + 2, w: 140, h: 36 }, '닫기', 'link', goTitle);
+  text('판 수만 익명으로 세고, 이름·계정은 보내지 않아요', cx, y + 58, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.45)' });   // 이용 통계(track) 안내
 }
 
 // [좌타 | 우타] 고르기. cy는 버튼 세로 가운데
@@ -2386,6 +2409,7 @@ function startGame(mode) {
     game.seq.push(nextPracticePitch());
   } else game.seq = makeSequence(game.seed, game.throws === 'L');
   startPitch();
+  track('start');
 }
 
 function startPitch() {
@@ -2473,6 +2497,7 @@ function finishGame() {
     if (game.newBest) store.set('best', game.score);
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
+  track('end');
 }
 
 // 오늘 이미 친 기록을 끝 화면으로 다시 보여 준다

@@ -8,7 +8,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 execute walkoff --local --file=schema.sql",
-    "db:remote": "wrangler d1 execute walkoff --remote --file=schema.sql"
+    "db:remote": "wrangler d1 execute walkoff --remote --file=schema.sql",
+    "stats": "node scripts/stats.mjs"
   },
   "devDependencies": {
     "wrangler": "4.151.0"

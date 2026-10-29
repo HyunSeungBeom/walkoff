@@ -26,3 +26,19 @@ CREATE TABLE IF NOT EXISTS accounts (
   coin_at INTEGER NOT NULL DEFAULT 0,            -- 마지막으로 코인을 준 시각(ms)
   daily_bonus_day TEXT NOT NULL DEFAULT ''       -- 오늘의 10구 2배를 준 날(하루 한 번)
 );
+
+-- 하루 이용 통계(2026-10-29, src/stats.js). 이미 있던 DB에는 migrations/0003_stats.sql로 더했다
+CREATE TABLE IF NOT EXISTS play_stats (
+  day TEXT NOT NULL,                             -- 한국 시간 날짜 YYYY-MM-DD
+  mode TEXT NOT NULL,                            -- daily, challenge, scenario, practice
+  starts INTEGER NOT NULL DEFAULT 0,             -- 시작한 판
+  ends INTEGER NOT NULL DEFAULT 0,               -- 끝낸 판(연습은 끝이 없다)
+  PRIMARY KEY (day, mode)
+);
+CREATE TABLE IF NOT EXISTS play_devices (
+  day TEXT NOT NULL,
+  device TEXT NOT NULL,                          -- 게임이 기기에 저장한 무작위 번호. 랭킹 ID·계정과 잇지 않는다
+  mobile INTEGER NOT NULL DEFAULT 0,             -- 터치 기기면 1
+  events INTEGER NOT NULL DEFAULT 0,             -- 그날 받은 신호 수(EVENT_CAP까지만 센다)
+  PRIMARY KEY (day, device)
+);

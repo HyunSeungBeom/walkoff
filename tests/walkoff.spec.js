@@ -3,7 +3,8 @@ const { test, expect } = require('@playwright/test');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
-const PAGE = 'http://127.0.0.1:4173/index.html';   // playwright.config.js의 webServer(scripts/serve.js)
+const HOST = `127.0.0.1:${process.env.WALKOFF_PORT || 4173}`;
+const PAGE = `http://${HOST}/index.html`;   // playwright.config.js의 webServer(scripts/serve.js)
 const API = 'https://walkoff-api.walkoff-api.workers.dev';
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, authorization', 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS' };
 const SESSION = 'test-session';         // 가짜 서버가 받아 주는 로그인 표
@@ -74,13 +75,13 @@ async function open(page, query = '?seed=42', { team = 'lg', login = false, api 
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   const calls = await mockApi(page, api ?? {});
-  await page.addInitScript(({ team, login, session }) => {
-    if (location.host !== '127.0.0.1:4173') return;   // 게임 페이지에서만(로그인 흉내 중에 지나가는 빈 페이지·서버 페이지는 빼고)
+  await page.addInitScript(({ team, login, session, host }) => {
+    if (location.host !== host) return;   // 게임 페이지에서만(로그인 흉내 중에 지나가는 빈 페이지·서버 페이지는 빼고)
     if (localStorage.getItem('walkoff.seeded')) return;   // 새로고침해도 처음 값으로 되돌리지 않는다
     localStorage.setItem('walkoff.seeded', '1');
     if (team) { localStorage.setItem('walkoff.team', team); localStorage.setItem('walkoff.nick', '테스트'); }
     if (login) localStorage.setItem('walkoff.session', session);
-  }, { team, login, session: SESSION });
+  }, { team, login, session: SESSION, host: HOST });
   await page.goto(PAGE + query);
   await page.waitForFunction(() => !!window.walkoff);
   Object.defineProperty(errors, 'calls', { value: calls });   // expect(errors).toEqual([])에 걸리지 않게 숨긴 속성으로 둔다
@@ -725,5 +726,57 @@ test.describe('랭킹 규칙', () => {
     const game = await page.evaluate((days) => ({ ids: walkoff.TEAMS.map((t) => t.id), weeks: days.map((d) => walkoff.weekStartOf(d)) }), days);
     expect(game.ids).toEqual(rules.TEAM_IDS);
     expect(game.weeks).toEqual(days.map((d) => rules.weekStart(d)));
+  });
+});
+
+test.describe('이용 통계', () => {
+  test.skip(({ isMobile }) => isMobile, '보내는 내용은 화면 크기와 상관없어서 PC에서만 본다');
+
+  // 게임이 보낸 신호를 window.__beacons에 남긴다. human이면 사람이 연 브라우저처럼 navigator.webdriver를 끈다
+  async function catchBeacons(page, { human }) {
+    await page.addInitScript((human) => {
+      if (human) Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      window.__beacons = [];
+      navigator.sendBeacon = (url, body) => { window.__beacons.push({ url, body: JSON.parse(body) }); return true; };
+    }, human);
+  }
+
+  test('사람이 친 판은 시작과 끝을 보내고, 기기 번호·모드·시작끝·터치 여부 말고는 보내지 않는다', async ({ page }) => {
+    const { MODES } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
+    await catchBeacons(page, { human: true });
+    const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝나게
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    for (const mode of ['daily', 'scenario', 'practice']) await page.evaluate((m) => walkoff.startGame(m), mode);   // 다른 모드는 시작만
+    const beacons = await page.evaluate(() => window.__beacons);
+    expect(beacons.map((b) => [b.url, b.body.mode, b.body.type])).toEqual([
+      [`${API}/events`, 'challenge', 'start'], [`${API}/events`, 'challenge', 'end'],
+      [`${API}/events`, 'daily', 'start'], [`${API}/events`, 'scenario', 'start'], [`${API}/events`, 'practice', 'start'],
+    ]);
+    for (const b of beacons) {
+      expect(Object.keys(b.body).sort()).toEqual(['device', 'mobile', 'mode', 'type']);
+      expect(MODES).toContain(b.body.mode);   // 서버(worker/src/stats.js)가 받는 모드만 보낸다
+    }
+    const ids = await page.evaluate(() => ({ device: localStorage.getItem('walkoff.device'), player: walkoff.settings.playerId }));
+    expect(ids.device).toMatch(/^[a-z0-9-]{8,40}$/);
+    expect(beacons.every((b) => b.body.device === ids.device)).toBe(true);
+    expect(ids.device).not.toBe(ids.player);   // 랭킹 ID와 다른 번호라 통계와 랭킹이 이어지지 않는다
+    expect(errors).toEqual([]);
+  });
+
+  test('자동 브라우저(테스트, 봇)는 세지 않는다', async ({ page }) => {
+    await catchBeacons(page, { human: false });
+    await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    expect(await page.evaluate(() => window.__beacons)).toEqual([]);
+  });
+
+  test('이 컴퓨터에서 연 게임(?api 없이)은 세지 않는다', async ({ page }) => {
+    await catchBeacons(page, { human: true });
+    await open(page);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    expect(await page.evaluate(() => window.__beacons)).toEqual([]);
   });
 });
