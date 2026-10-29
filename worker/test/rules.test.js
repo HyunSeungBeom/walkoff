@@ -28,7 +28,9 @@ test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
   assert.equal(check({ day: '2026-10-26' }).ok, true);                         // 이틀 전까지 받는다
   assert.equal(check({ day: '2026-10-29' }).ok, true);                         // 기기 시계가 조금 빨라도 받는다
   assert.equal(check({ lights: 'GGGGGGGGGGY', score: 1000 }).ok, true);        // 볼 1개면 11칸
-  assert.equal(check({ lights: 'YYYYYYGGGGGGGGG', score: 1000 }).ok, true);    // 볼이 5개를 넘어도 15칸까지
+  assert.equal(check({ lights: 'YYYYYYGGGGGGGGGG', score: 1000 }).ok, true);   // 볼 6개면 16칸(볼은 기회를 안 쓴다)
+  assert.equal(check({ lights: `${'Y'.repeat(12)}${'G'.repeat(10)}`, score: 1000 }).ok, true);   // 볼 12개, 22칸
+  assert.equal(check({ lights: 'YYYYYYGGGGGGGGG', score: 1000 }).ok, true);    // 예전 게임(볼 5개까지만 기회가 늘던 때)의 15칸
   assert.equal(check({ nick: '가나다라마바사아자차' }).ok, true);                // 한글 10자
   assert.equal(check({ nick: '  공백  ' }).value?.nick, '공백');
 });
@@ -44,6 +46,8 @@ test('규칙상 나올 수 없는 값은 거절한다', () => {
   for (const [error, patch] of Object.entries(cases)) assert.deepEqual(check(patch), { ok: false, error }, error);
   assert.equal(check({ day: '2026-10-30' }).error, 'stale_day');   // 이틀 뒤
   assert.equal(check({ lights: 'GGGGGGGGGX' }).error, 'bad_lights');
+  assert.equal(check({ lights: 'YYYYYYGGGGGGGGGGG' }).error, 'bad_lights');   // 볼 6개인데 17칸(어느 규칙에도 안 맞는다)
+  assert.equal(check({ lights: `${'Y'.repeat(31)}${'G'.repeat(10)}` }).error, 'bad_lights');   // 41칸
   assert.equal(check({ score: 10.5 }).error, 'bad_score');
   assert.equal(check({ score: -1 }).error, 'bad_score');
   assert.equal(check({ nick: '' }).error, 'bad_nick');

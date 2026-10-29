@@ -39,9 +39,10 @@ export function validateSubmission(b, nowMs, playerId) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, error: 'bad_day' };
   const today = kstDay(nowMs);
   if (day < addDays(today, -2) || day > addDays(today, 1)) return { ok: false, error: 'stale_day' };   // 늦게 보낸 기록은 이틀까지 받는다
-  if (!/^[GYR]{10,15}$/.test(lights)) return { ok: false, error: 'bad_lights' };
+  if (!/^[GYR]{10,40}$/.test(lights)) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
+  // 기회 10번 + 볼 수. 볼은 기회를 쓰지 않는다(2026-10-29부터). 그 전 게임은 볼 5개까지만 기회가 늘어서, 열어 둔 탭을 위해 그 규칙도 받는다
   const balls = lights.split('').filter((c) => c === 'Y').length;
-  if (lights.length !== 10 + Math.min(balls, 5)) return { ok: false, error: 'bad_lights' };   // 볼을 골라낼 때마다 기회 +1, 최대 +5
+  if (lights.length !== 10 + balls && lights.length !== 10 + Math.min(balls, 5)) return { ok: false, error: 'bad_lights' };
   if (!Number.isInteger(score) || score < 0 || score > maxScoreFor(lights)) return { ok: false, error: 'bad_score' };
   return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights } };
 }
