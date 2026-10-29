@@ -1314,11 +1314,64 @@ function shareText(s, mode = 'daily') {
   ].join('\n');
 }
 
-// 모바일은 공유 창을 띄우고, 안 되면 클립보드에 복사한다
+// 결과 그림 카드(1080x1080). 끝 화면의 큰 줄을 옮겨 그리고 맨 아래에 주소를 새긴다.
+// 2026-10-29 카톡 시험(share-test.html)에서 그림과 공유 글을 함께 보내면 둘 다 갔다(사용자 확인)
+function drawShareCard(s, mode) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1080;
+  const g = c.getContext('2d');
+  const sky = g.createLinearGradient(0, 0, 0, 1080);
+  sky.addColorStop(0, '#07111f'); sky.addColorStop(1, '#16304f');
+  g.fillStyle = sky; g.fillRect(0, 0, 1080, 1080);
+  const t = (str, y, size, weight, color) => {
+    g.font = font(size, weight); g.fillStyle = color; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(str, 540, y, 1000);   // 너무 길면 가로로 줄여 카드 안에 넣는다
+  };
+  const scn = mode === 'scenario', bats = s.bats === 'L' ? '좌타' : '우타';
+  t('끝내기', 110, 40, 700, '#f2c94c');
+  t('walkoff', 195, 112, 900, '#fff');
+  t(`${scn ? '끝내기 상황' : mode === 'challenge' ? '10구 도전' : `오늘의 10구 #${s.day}`} · ${bats}`, 320, 44, 600, 'rgba(255,255,255,0.75)');
+  if (scn) {
+    const [away, home] = sideNames();
+    t(scenarioEndText(s.end), 455, 150, 900, s.end === 'win' ? '#f2c94c' : '#fff');
+    t(`${away} ${s.away} : ${s.home} ${home} · 9회말`, 605, 52, 700, '#fff');
+  } else {
+    const streak = mode === 'daily' ? dailyStreak() : 0;
+    t(s.score.toLocaleString(), 465, 200, 900, '#f2c94c');
+    t(`${mode === 'challenge' && s.newBest ? '새 최고 기록!' : rankOf(s.score)}${streak >= 2 ? ` · ${streak}일 연속` : ''}`, 605, 52, 700, '#fff');
+  }
+  const codes = (scn ? s.pa : s.lights).split(''), gap = Math.min(72, 900 / Math.max(1, codes.length - 1));
+  codes.forEach((ch, i) => {
+    g.beginPath(); g.arc(540 + (i - (codes.length - 1) / 2) * gap, 715, Math.min(24, gap * 0.36), 0, Math.PI * 2);
+    g.fillStyle = LIGHT_BY_CODE[ch]; g.fill();
+  });
+  const cnt = (ch) => codes.filter((x) => x === ch).length;
+  t(scn ? `타석 ${codes.length} · 안타 ${cnt('G')} · 볼넷 ${cnt('Y')} · 투구 ${s.pitches}개` : `홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`,
+    810, 40, 600, 'rgba(255,255,255,0.88)');
+  t('walkoff · hyunseungbeom.github.io/walkoff', 980, 36, 600, 'rgba(255,255,255,0.6)');
+  return c;
+}
+
+// 끝 화면이 뜰 때 카드 그림을 미리 만들어 둔다. 아이폰은 누른 그 순간에 공유를 불러야 해서 누른 뒤에 만들면 늦다.
+// 그림 공유를 쓰는 곳(모바일 공유 창)에서만 만든다
+function prepareShareCard() {
+  game.shareCard = null;
+  if (!view.mobile || !navigator.canShare || !game.summary || !['daily', 'challenge', 'scenario'].includes(game.mode)) return;
+  const card = { file: null };
+  game.shareCard = card;
+  try {
+    drawShareCard(game.summary, game.mode).toBlob((blob) => { if (blob) card.file = new File([blob], 'walkoff.png', { type: 'image/png' }); }, 'image/png');
+  } catch { /* 그림을 못 만들면 글만 보낸다 */ }
+}
+
+// 모바일은 공유 창을 띄우고(그림 공유가 되면 카드 그림과 글을 함께), 안 되면 클립보드에 복사한다
 async function shareResult() {
+  if (game.sharing) return;   // 공유 창이 떠 있는 동안 또 누르면 무시한다(안드로이드 크롬은 InvalidStateError를 낸다)
   const text = shareText(game.summary, game.mode);
   if (navigator.share && view.mobile) {
-    try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+    const file = game.shareCard?.file, data = file && navigator.canShare?.({ files: [file], text }) ? { files: [file], text } : { text };
+    game.sharing = true;
+    try { await navigator.share(data); return; } catch (e) { if (e && e.name === 'AbortError') return; } finally { game.sharing = false; }
   }
   try { await navigator.clipboard.writeText(text); toast('복사했어요. 단톡방에 붙여 넣으세요'); return; } catch { /* 아래 방법으로 한 번 더 */ }
   const ta = document.createElement('textarea');
@@ -1407,6 +1460,7 @@ function finishScenario() {
   game.summary = { end: s.end, away: s.away, home: s.home, pa: s.pa.join(''), pitches: game.seq.length, label: s.label, bats: settings.bats };
   const ss = store.get('scnStats', { plays: 0, wins: 0 });
   store.set('scnStats', { plays: ss.plays + 1, wins: ss.wins + (s.end === 'win' ? 1 : 0) });
+  prepareShareCard();
   track('end');
 }
 
@@ -2520,6 +2574,7 @@ function finishGame() {
     if (game.newBest) store.set('best', game.score);
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
+  prepareShareCard();
   track('end');
 }
 
@@ -2529,6 +2584,7 @@ function showDailyRecord() {
   if (!s) return;
   const results = s.lights.split('').map((c) => ({ hit: c === 'G', kind: c === 'G' ? 'single' : c === 'Y' ? 'ball' : 'out' }));
   Object.assign(game, { state: 'over', mode: 'daily', summary: s, results, score: s.score, i: results.length - 1, left: 0, t: 0, resultT: 1, firstDaily: false, outcome: null, swingAt: null });
+  prepareShareCard();
   loadMyRank();
 }
 
@@ -2701,7 +2757,7 @@ requestAnimationFrame(frame);
 syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard };
 </script>
 </body>
 </html>

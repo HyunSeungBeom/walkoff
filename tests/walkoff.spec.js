@@ -771,6 +771,54 @@ test.describe('결과 공유', () => {
       expect(errors).toEqual([]);
     });
   }
+
+  test('모바일에서 그림 공유가 되면 결과 카드 그림(1080x1080)과 공유 글을 함께 보낸다. 안 되면 글만 보내고, 공유 창이 떠 있는 동안 또 눌러도 한 번만 연다', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '모바일만 공유 창을 쓴다(PC는 클립보드에 복사)');
+    await page.addInitScript(() => {
+      window.__calls = []; window.__filesOk = true; window.__close = null;
+      navigator.canShare = (d) => !d.files || window.__filesOk;
+      navigator.share = (data) => { window.__calls.push(data); return new Promise((resolve) => { window.__close = resolve; }); };   // 공유 창은 닫을 때까지 떠 있다
+    });
+    const errors = await open(page);
+    await endAfterOnePitch(page, 'daily');
+    await page.waitForFunction(() => walkoff.game.shareCard?.file != null);
+    await tap(page, '결과 공유하기');
+    await tap(page, '결과 공유하기');   // 공유 창이 떠 있는 동안 또 누른다
+    expect(await page.evaluate(() => window.__calls.length)).toBe(1);
+    const sent = await page.evaluate(async () => {
+      const d = window.__calls[0], f = d.files?.[0], img = f && await createImageBitmap(f);
+      return { files: d.files?.length ?? 0, type: f?.type, w: img?.width, h: img?.height, text: d.text };
+    });
+    expect(sent).toMatchObject({ files: 1, type: 'image/png', w: 1080, h: 1080 });
+    expect(sent.text.split('\n')[0]).toMatch(/^walkoff 오늘의 10구 #\d+ \(우타\)$/);
+    expect(sent.text.split('\n').at(-1)).toBe('https://hyunseungbeom.github.io/walkoff/');
+    // 그림 공유가 안 되는 브라우저는 예전처럼 글만 보낸다
+    await page.evaluate(() => { window.__close(); window.__filesOk = false; });
+    await expect.poll(() => page.evaluate(() => walkoff.game.sharing)).toBe(false);
+    await tap(page, '결과 공유하기');
+    expect(await page.evaluate(() => ({ n: window.__calls.length, files: window.__calls[1].files ?? null, same: window.__calls[1].text === window.__calls[0].text })))
+      .toEqual({ n: 2, files: null, same: true });
+    expect(errors).toEqual([]);
+  });
+
+  test('결과 카드에는 끝 화면의 큰 줄과 주소가 들어간다(오늘의 10구는 연속 일수, 10구 도전은 새 최고 기록, 끝내기 상황은 결과)', async ({ page }) => {
+    const errors = await open(page);
+    // 카드를 그릴 때 쓴 글자를 차례대로 모은다
+    const cardTexts = (s, mode) => page.evaluate(({ s, mode }) => {
+      const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, seen = [];
+      proto.fillText = function (str, ...rest) { seen.push(String(str)); return fill.call(this, str, ...rest); };
+      try { walkoff.drawShareCard(s, mode); } finally { proto.fillText = fill; }
+      return seen;
+    }, { s, mode });
+    await setPlayedDays(page, [0, 1, 2]);
+    const day = await page.evaluate(() => walkoff.dayNumber(walkoff.today()));
+    const base = { score: 2350, hr: 1, hits: 3, balls: 2, far: 118, lights: 'GRYGRRYGRRRR', bats: 'R', day };
+    expect(await cardTexts(base, 'daily')).toEqual(['끝내기', 'walkoff', `오늘의 10구 #${day} · 우타`, '2,350', '주전 타자 · 3일 연속', '홈런 1 · 안타 3 · 볼 2 · 가장 멀리 118m', 'walkoff · hyunseungbeom.github.io/walkoff']);
+    expect((await cardTexts({ ...base, bats: 'L', newBest: true }, 'challenge')).slice(2, 5)).toEqual(['10구 도전 · 좌타', '2,350', '새 최고 기록!']);
+    const scn = await cardTexts({ end: 'win', away: 3, home: 4, pa: 'RGYG', pitches: 9, label: '2아웃 만루', bats: 'R' }, 'scenario');
+    expect(scn.slice(2, 6)).toEqual(['끝내기 상황 · 우타', '끝내기 승리!', expect.stringMatching(/^\S+ 3 : 4 \S+ · 9회말$/), '타석 4 · 안타 2 · 볼넷 1 · 투구 9개']);
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('랭킹 규칙', () => {
