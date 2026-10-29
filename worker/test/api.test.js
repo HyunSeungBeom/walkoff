@@ -91,15 +91,17 @@ test('로그인 실패: 취소, 카카오 오류, 망가진 확인 표', async (
   assert.match(forged.headers.get('content-type'), /text\/html/);
 });
 
-test('점수는 로그인해야 받고, 사람 ID는 로그인 표에서 꺼낸다', async () => {
+test('점수는 로그인해야 받고, 사람 ID는 로그인 표에서 꺼낸다. 그날 가장 높은 판만 남는다', async () => {
   assert.equal((await call('POST', '/scores', { body: score({ playerId: 'someone-else' }) })).status, 401);
   assert.equal((await call('POST', '/scores', { body: score(), token: 'forged.token' })).status, 401);
   const token = (await login('c1', 'p-device-0001')).hash.login;
   const res = await (await call('POST', '/scores', { body: score({ playerId: 'someone-else' }), token })).json();
   assert.equal(res.accepted, true);
-  assert.deepEqual(res.me, { rank: 1, total: 3000, days: 1, team: 'lg' });
-  assert.equal((await (await call('POST', '/scores', { body: score({ score: 5000 }), token })).json()).accepted, false);   // 그날 두 번째 판은 무시
-  assert.deepEqual(env.DB.rows('SELECT player_id, score FROM daily_scores'), [{ player_id: 'p-device-0001', score: 3000 }]);
+  assert.deepEqual(res.me, { rank: 1, best: 3000, total: 3000, days: 1, team: 'lg' });
+  assert.equal((await (await call('POST', '/scores', { body: score({ score: 2000 }), token })).json()).accepted, false);   // 더 낮은 판은 그대로
+  const higher = await (await call('POST', '/scores', { body: score({ score: 5000 }), token })).json();   // 더 높은 판은 바로 갱신
+  assert.deepEqual([higher.accepted, higher.me], [true, { rank: 1, best: 5000, total: 5000, days: 1, team: 'lg' }]);
+  assert.deepEqual(env.DB.rows('SELECT player_id, score FROM daily_scores'), [{ player_id: 'p-device-0001', score: 5000 }]);
   assert.deepEqual(await me(token), { ok: true, playerId: 'p-device-0001', nick: '민성', team: 'lg' });   // 다른 기기에서 이어 줄 팀·닉네임
 });
 
@@ -110,6 +112,7 @@ test('팀·닉네임 바꾸기와 기록 지우기', async () => {
   assert.equal((await call('PUT', '/me', { token, body: { nick: '새이름', team: 'comets' } })).status, 400);
   const ranking = await (await call('GET', '/rankings?player=p-device-0001')).json();
   assert.deepEqual(ranking.players.map((p) => [p.nick, p.team]), [['새이름', 'lg']]);   // 이름은 바로 바뀌고, 그날 친 팀은 그대로
+  assert.deepEqual([ranking.players[0].best, ranking.players[0].total, ranking.me.total], [3000, 3000, 3000]);   // 예전 게임이 읽는 total도 같은 값
   assert.equal((await call('DELETE', '/me', { token })).status, 200);
   assert.equal(env.DB.rows('SELECT * FROM daily_scores').length, 0);
   assert.equal(env.DB.rows('SELECT * FROM accounts').length, 0);

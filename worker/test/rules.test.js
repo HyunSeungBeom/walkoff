@@ -53,18 +53,19 @@ test('규칙상 나올 수 없는 값은 거절한다', () => {
   assert.equal(validateSubmission(null, NOW, PID).error, 'bad_body');
 });
 
-test('주간 순위: 같은 점수는 같은 등수, 팀 점수는 그날 팀으로', () => {
+test('주간 순위: 이번 주 최고 기록으로 줄 세우고, 같은 점수는 같은 등수, 팀 점수는 팀원 최고 기록의 합', () => {
   const rows = [
     { player_id: 'a', day: '2026-10-26', nick: '처음이름', team: 'lotte', score: 3000 },
-    { player_id: 'a', day: '2026-10-27', nick: '바꾼이름', team: 'lg', score: 2000 },
+    { player_id: 'a', day: '2026-10-27', nick: '바꾼이름', team: 'lg', score: 2000 },   // 더 낮은 판은 순위에 안 들어간다
     { player_id: 'b', day: '2026-10-26', nick: '비', team: 'lotte', score: 5000 },
     { player_id: 'c', day: '2026-10-27', nick: '씨', team: 'lg', score: 4000 },
+    { player_id: 'd', day: '2026-10-28', nick: '디', team: 'kt', score: 4000 },
   ];
   const r = aggregate(rows, 'a');
-  assert.deepEqual(r.players.map((p) => [p.rank, p.nick, p.team, p.total]), [[1, '바꾼이름', 'lg', 5000], [1, '비', 'lotte', 5000], [3, '씨', 'lg', 4000]]);
-  assert.deepEqual(r.teams.map((t) => [t.rank, t.team, t.total, t.players]), [[1, 'lotte', 8000, 2], [2, 'lg', 6000, 2]]);
-  assert.deepEqual(r.me, { rank: 1, total: 5000, days: 2, team: 'lg' });
-  assert.deepEqual(r.myTeam, { rank: 2, total: 6000, team: 'lg' });
+  assert.deepEqual(r.players.map((p) => [p.rank, p.nick, p.team, p.best]), [[1, '비', 'lotte', 5000], [2, '씨', 'lg', 4000], [2, '디', 'kt', 4000], [4, '바꾼이름', 'lotte', 3000]]);
+  assert.deepEqual(r.teams.map((t) => [t.rank, t.team, t.total, t.players]), [[1, 'lotte', 8000, 2], [2, 'lg', 4000, 1], [2, 'kt', 4000, 1]]);   // a의 최고 기록은 롯데 때 낸 것
+  assert.deepEqual(r.me, { rank: 4, best: 3000, days: 2, team: 'lotte' });
+  assert.deepEqual(r.myTeam, { rank: 1, total: 8000, team: 'lotte' });
   assert.equal(r.players.some((p) => 'id' in p), false);   // 사람 ID는 밖으로 내보내지 않는다
   assert.deepEqual(aggregate([], null), { players: [], teams: [], count: 0, me: null, myTeam: null });
 });

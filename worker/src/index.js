@@ -1,5 +1,5 @@
-// walkoff 랭킹 서버(Cloudflare Workers + D1). 오늘의 10구 하루 첫 판 점수를 받아
-// 이번 주(한국 시간 월~일) 개인·팀 순위를 돌려준다. 점수는 카카오로 로그인한 사람만 낼 수 있다(2026-10-28 사용자 결정).
+// walkoff 랭킹 서버(Cloudflare Workers + D1). 10구 판(오늘의 10구 첫 판, 10구 도전) 점수를 받아
+// 이번 주(한국 시간 월~일) 최고 기록으로 개인·팀 순위를 돌려준다. 점수는 카카오로 로그인한 사람만 낼 수 있다(2026-10-28 사용자 결정).
 // 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다)
 import { kstDay, weekStart, addDays, validateSubmission, validateProfile, aggregate } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
@@ -19,11 +19,17 @@ async function weekRows(db, week) {
   return results;
 }
 
+// 합계 방식이던 예전 게임(fa4649a까지)은 사람 점수를 total로 읽는다. 열어 둔 탭까지 다 바뀔 때까지 같은 값을 total로도 보낸다
+const withTotal = (p) => (p ? { ...p, total: p.best } : null);
+
 // 이번 주 순위와 지난주 1등(사람, 팀)
 async function rankings(db, week, playerId) {
   const [rows, lastRows] = await Promise.all([weekRows(db, week), weekRows(db, addDays(week, -7))]);
   const now = aggregate(rows, playerId), last = aggregate(lastRows, null);
-  return { week, nextWeek: addDays(week, 7), ...now, lastWeek: { player: last.players[0] ?? null, team: last.teams[0] ?? null } };
+  return {
+    week, nextWeek: addDays(week, 7), ...now, players: now.players.map(withTotal), me: withTotal(now.me),
+    lastWeek: { player: withTotal(last.players[0]), team: last.teams[0] ?? null },
+  };
 }
 
 // ===== 카카오 로그인 =====
@@ -99,9 +105,12 @@ export default {
         const checked = validateSubmission(await request.json().catch(() => null), now, acct.player_id);
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const s = checked.value;
-        // 같은 사람·같은 날은 첫 판만 남긴다. 계정에는 마지막으로 쓴 닉네임·팀을 적어 둔다
+        // 같은 사람·같은 날은 그날 가장 높은 판만 남긴다(주간 순위는 이번 주 최고 기록). accepted는 그날 기록이 새로 생기거나 올랐다는 뜻.
+        // 계정에는 마지막으로 쓴 닉네임·팀을 적어 둔다
         const [res] = await env.DB.batch([
-          env.DB.prepare('INSERT OR IGNORE INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          env.DB.prepare(`INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (player_id, day) DO UPDATE SET score = excluded.score, lights = excluded.lights, nick = excluded.nick, team = excluded.team
+            WHERE excluded.score > daily_scores.score`)
             .bind(s.playerId, s.day, s.week, s.nick, s.team, s.score, s.lights),
           env.DB.prepare('UPDATE accounts SET nick = ?, team = ? WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
         ]);

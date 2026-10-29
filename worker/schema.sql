@@ -1,4 +1,4 @@
--- 오늘의 10구 점수. 한 사람이 하루에 한 줄(첫 판)만 남긴다
+-- 10구 판 점수. 한 사람이 하루에 한 줄(그날 가장 높은 판)만 남긴다
 CREATE TABLE IF NOT EXISTS daily_scores (
   player_id TEXT NOT NULL,                       -- 계정 ID(accounts.player_id)
   day TEXT NOT NULL,                             -- 한국 시간 날짜 YYYY-MM-DD
