@@ -670,6 +670,48 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('관중: 외야 관중석을 채우고 투수 뒤 가운데는 비운다. 1루 쪽은 내 팀 색이 많고, 그림은 화면·팀이 바뀔 때만 다시 만든다', async ({ page }) => {
+    const errors = await open(page);   // LG를 고른 상태
+    await page.waitForFunction(() => walkoff.crowd.people.length > 0);
+    const look = (team) => page.evaluate((team) => {
+      const c = walkoff.crowd, main = walkoff.teamById(team).main, share = (arr) => arr.filter((q) => q.shirt === main).length / arr.length;
+      return { n: c.people.length, center: c.people.filter((q) => Math.abs(q.a) < 6).length, home: share(c.people.filter((q) => q.a > 0)), away: share(c.people.filter((q) => q.a < 0)), builds: c.builds };
+    }, team);
+    const lg = await look('lg');
+    expect(lg.n).toBeGreaterThan(2000);
+    expect(lg.center).toBe(0);   // 공을 놓는 곳 뒤는 비운다(관중에 공이 묻히지 않게)
+    expect(lg.home).toBeGreaterThan(0.25);   // 1루 쪽(오른쪽)은 내 팀 옷
+    expect(lg.away).toBeLessThan(0.05);
+    await page.waitForTimeout(500);
+    expect((await look('lg')).builds).toBe(lg.builds);   // 매 화면 다시 만들지 않는다
+    await page.evaluate(() => { walkoff.settings.team = 'kia'; });
+    await expect.poll(async () => (await look('kia')).builds).toBe(lg.builds + 1);   // 팀을 바꾸면 한 번 다시 만든다
+    expect((await look('kia')).home).toBeGreaterThan(0.25);
+    expect(errors).toEqual([]);
+  });
+
+  test('관중은 안타·홈런에 일어나 환호하고, 파울에는 그대로다', async ({ page }) => {
+    const errors = await open(page);
+    const swingAt = (dt) => page.evaluate((dt) => new Promise((resolve) => {
+      const g = walkoff.game, p = g.seq[g.i], now = walkoff.ballTime() + (performance.now() - g.clockAt) / 1000;
+      setTimeout(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' })); resolve(); }, Math.max(0, (p.T - now) * 1000 + dt));
+    }), dt);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await swingAt(115);   // 115ms 늦으면 파울
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    expect(await page.evaluate(() => [walkoff.game.outcome.kind, walkoff.crowd.power])).toEqual(['foul', 0]);
+    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.4);
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await swingAt(0);   // 정타(seed 42의 두 번째 공은 가운데라 앞으로 날아간다)
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    const r = await page.evaluate(() => ({ kind: walkoff.game.outcome.kind, hit: walkoff.game.outcome.hit, power: walkoff.crowd.power }));
+    expect(r.hit).toBe(true);
+    expect(r.power).toBe(r.kind === 'hr' ? 2 : 1);
+    expect(errors).toEqual([]);
+  });
+
   test('등번호는 두 자리여도 등 폭 안에 들어간다(몸이 돌아도, 우타·좌타)', async ({ page }) => {
     const errors = await open(page);
     let seen = 0;

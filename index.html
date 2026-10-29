@@ -426,6 +426,9 @@ function drawField() {
     path3d(arcPoints(-58, 58, 4, (a) => [...polar(a, fenceDist(a) + 2 + 43 * k / 6), 3 + 21 * k / 6]), false);
     ctx.stroke();
   }
+  // 투수 뒤 가운데는 관중 없이 어둡게(배터스 아이)
+  fill3d([...arcPoints(-CROWD_EYE, CROWD_EYE, 1, (a) => [...polar(a, fenceDist(a) + 2), 3]), ...arcPoints(CROWD_EYE, -CROWD_EYE, 1, (a) => [...polar(a, fenceDist(a) + 45), 24])], '#07120d');
+  drawCrowd();
   // 조명탑
   for (const a of [-42, -15, 15, 42]) {
     const [x, z] = polar(a, fenceDist(a) + 55);
@@ -476,6 +479,92 @@ function drawField() {
   ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = Math.max(1.5, view.f * 0.0016);
   for (const s of [-1, 1]) { path3d([[s * 0.36, -0.95], [s * 1.5, -0.95], [s * 1.5, 0.85], [s * 0.36, 0.85]]); ctx.stroke(); }
   fill3d([[-0.216, 0], [0.216, 0], [0.216, -0.216], [0, -0.43], [-0.216, -0.216]], '#f7f5ef');
+}
+
+// ===== 관중 =====
+// 외야 관중석(담장 뒤 띠)을 사람으로 채운다(2026-10-29 사용자 요청). 1루 쪽(화면 오른쪽)은 내 팀, 3루 쪽은 상대 팀 색 옷이 많다.
+// 투수 바로 뒤(가운데 ±CROWD_EYE도)는 실제 구장의 배터스 아이처럼 비운다. 공을 놓는 높이가 관중석과 겹쳐서 관중이 있으면 공이 묻힌다.
+// 수천 명을 매 화면 그리면 폰이 버거워서, 앉은 모습과 일어나 손을 든 모습을 한 번씩 따로 그려 두고(화면 크기·팀이 바뀔 때만 다시) 붙인다.
+// 안타·홈런·끝내기 때는 세로 띠마다 조금씩 다르게 일어났다 앉고, 홈런·끝내기에는 카메라 플래시가 터진다
+const CROWD_ROWS = 22, CROWD_EYE = 6;   // 관중석 줄 수, 가운데 비우는 각도(±도)
+const crowd = { key: '', sit: null, stand: null, res: 1, x0: 0, y0: 0, people: [], builds: 0, at: 0, dur: 0, power: 0 };
+
+function crowdPalette(teamId) {
+  const t = teamById(teamId), plain = ['#eceef2', '#c9ced8', '#1c2130', '#2c3650', '#6f7b90'];   // 흰 옷, 회색, 검정·남색
+  return t ? [t.main, t.main, t.main, t.main, t.accent, ...plain] : ['#c8504a', '#3a6db0', '#d9b44a', '#3d8b58', ...plain];
+}
+
+function buildCrowd(key) {
+  const pan = [view.panX, view.panY];
+  view.panX = view.panY = 0;   // 공을 따라가는 화면 이동은 붙일 때 더한다
+  const rnd = mulberry32(20261029), home = crowdPalette(settings.team), away = crowdPalette(game.opponent), people = [];
+  for (let k = CROWD_ROWS - 1; k >= 0; k--) {   // 뒷줄(화면 위)부터 그려서 앞줄 머리가 뒷줄 몸을 가린다
+    const t = (k + 0.5) / CROWD_ROWS, y = 3 + 21 * t;
+    for (let a = -57; a <= 57;) {
+      const d = fenceDist(a) + 2 + 43 * t, step = 0.9 / d / DEG;   // 자리 간격 0.9m
+      if (Math.abs(a) >= CROWD_EYE && rnd() > 0.12) {   // 12%는 빈자리
+        const [x, z] = polar(a + (rnd() - 0.5) * step * 0.4, d), p = project(x, y, z), pal = a > 0 ? home : away;
+        if (p) people.push({ a, x: p.x, y: p.y, s: p.s, shirt: pal[Math.floor(rnd() * pal.length)], head: rnd() < 0.25 ? pal[0] : rnd() < 0.5 ? '#d6a57f' : '#b98a66' });
+      }
+      a += step;
+    }
+  }
+  [view.panX, view.panY] = pan;
+  Object.assign(crowd, { key, people, sit: null, stand: null, builds: crowd.builds + 1 });
+  if (!people.length) return;
+  const minX = Math.min(...people.map((q) => q.x - q.s)), maxX = Math.max(...people.map((q) => q.x + q.s));
+  const minY = Math.min(...people.map((q) => q.y - 1.8 * q.s)), maxY = Math.max(...people.map((q) => q.y + 1));
+  const res = Math.min(view.dpr, 1.5, 4096 / (maxX - minX));   // 사람이 1~2px이라 1.5배면 충분하다(폰 메모리를 아낀다)
+  const paint = (standing) => {
+    const c = document.createElement('canvas');
+    c.width = Math.ceil((maxX - minX) * res); c.height = Math.ceil((maxY - minY) * res);
+    const g = c.getContext('2d');
+    g.setTransform(res, 0, 0, res, -minX * res, -minY * res);
+    for (const q of people) {
+      const bw = 0.46 * q.s, bh = 0.6 * q.s, hr = Math.max(0.5, 0.13 * q.s), top = q.y - bh - (standing ? 0.3 * q.s : 0);
+      g.fillStyle = q.shirt; g.fillRect(q.x - bw / 2, top, bw, q.y - top);
+      if (standing) {   // 손을 든 팔
+        const aw = Math.max(0.5, 0.1 * q.s), al = 0.45 * q.s;
+        g.fillRect(q.x - bw / 2 - aw * 0.3, top - al, aw, al); g.fillRect(q.x + bw / 2 - aw * 0.7, top - al, aw, al);
+      }
+      g.fillStyle = q.head; g.beginPath(); g.arc(q.x, top - hr * 0.9, hr, 0, Math.PI * 2); g.fill();
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);   // 밤 관중석이라 멀수록(위로 갈수록) 어둡게
+    g.globalCompositeOperation = 'source-atop';
+    const dark = g.createLinearGradient(0, 0, 0, c.height);
+    dark.addColorStop(0, 'rgba(4,8,18,0.6)'); dark.addColorStop(1, 'rgba(4,8,18,0.22)');
+    g.fillStyle = dark; g.fillRect(0, 0, c.width, c.height);
+    return c;
+  };
+  Object.assign(crowd, { res, x0: minX, y0: minY, sit: paint(false), stand: paint(true) });
+}
+
+// power 1 안타, 2 홈런, 3 끝내기. delay초 뒤 일어나 dur초 동안 환호한다
+function cheerCrowd(power, dur, delay = 0) { Object.assign(crowd, { at: performance.now() / 1000 + delay, dur, power }); }
+
+function drawCrowd() {
+  if (!view.w) return;
+  const key = [view.w, view.h, view.dpr, sceneShift(), settings.team, game.opponent].join('|');
+  if (crowd.key !== key) buildCrowd(key);
+  if (!crowd.sit) return;
+  const now = performance.now() / 1000, u = (now - crowd.at) / crowd.dur, res = crowd.res;
+  const ox = crowd.x0 + view.panX, oy = crowd.y0 + view.panY, H = crowd.sit.height / res;
+  if (!(u >= 0 && u < 1)) { ctx.drawImage(crowd.sit, ox, oy, crowd.sit.width / res, H); return; }
+  const env = Math.min(1, u * 6, (1 - u) * 3), N = 40, sw = crowd.sit.width / N;   // 빨리 일어나고 천천히 앉는다
+  for (let i = 0; i < N; i++) {
+    const lift = env * (0.5 + 0.5 * Math.sin(now * (7 + crowd.power) + i * 1.7 + (i % 3)));
+    const img = lift > 0.2 ? crowd.stand : crowd.sit;
+    ctx.drawImage(img, i * sw, 0, sw, img.height, ox + i * sw / res, oy - lift * (1 + crowd.power) * 1.6, sw / res + 0.5, H);
+  }
+  if (crowd.power >= 2) {   // 홈런·끝내기에는 카메라 플래시
+    ctx.fillStyle = '#fffbe6';
+    for (let n = 0; n < 6 * crowd.power; n++) {
+      const q = crowd.people[Math.floor(Math.random() * crowd.people.length)];
+      ctx.globalAlpha = env * (0.4 + 0.6 * Math.random());
+      ctx.fillRect(q.x + view.panX - 1, q.y - 0.8 * q.s + view.panY - 1, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+  }
 }
 
 // ===== 투수 =====
@@ -2547,8 +2636,8 @@ function swing(eventTime) {
     game.flash = 1;
     view.shake = r.kind === 'hr' ? 12 : r.kind === 'foul' ? 3 : 3 + r.ev / 45;
     if (r.kind === 'foul') { Sound.foul(); buzz(15); } else { Sound.crack(clamp((r.ev - 80) / 100, 0, 1), currentLook().sound); buzz(r.kind === 'hr' ? [50, 40, 110] : 30); }
-    if (r.kind === 'hr') setTimeout(() => Sound.cheer(2.6), 250);
-    else if (r.hit) setTimeout(() => Sound.cheer(1.1), 300);
+    if (r.kind === 'hr') { setTimeout(() => Sound.cheer(2.6), 250); cheerCrowd(2, 3, 0.25); }
+    else if (r.hit) { setTimeout(() => Sound.cheer(1.1), 300); cheerCrowd(1, 1.6, 0.3); }
   }
   finish(r);
 }
@@ -2562,7 +2651,7 @@ function finish(r) {
   } else if (game.mode === 'scenario') {
     game.gained = 0;
     game.scnEvent = applyScenario(game.scn, r);
-    if (game.scn.end === 'win') setTimeout(() => Sound.cheer(3), 300);
+    if (game.scn.end === 'win') { setTimeout(() => Sound.cheer(3), 300); cheerCrowd(3, 3.5, 0.3); }
   } else {
     game.gained = (r.points + (r.perfect ? PERFECT_BONUS : 0)) * (game.lastChance ? 2 : 1);
     game.score += game.gained;
@@ -2797,7 +2886,7 @@ requestAnimationFrame(frame);
 syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd };
 </script>
 </body>
 </html>
