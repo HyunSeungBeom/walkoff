@@ -347,6 +347,23 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('타자 몸이 화면 안에 보인다(폭이 좁은 폰, 우타·좌타)', async ({ page }) => {
+    const errors = await open(page);
+    const check = async (label) => {
+      for (const bats of ['R', 'L']) {
+        await page.evaluate((b) => walkoff.setBats(b), bats);
+        const sp = await page.evaluate(() => walkoff.batterSpan());
+        expect(sp.min, `${label} ${bats} 왼쪽`).toBeGreaterThanOrEqual(0);
+        expect(sp.max, `${label} ${bats} 오른쪽`).toBeLessThanOrEqual(sp.w);
+      }
+    };
+    await check(String(page.viewportSize().width));
+    await page.setViewportSize({ width: 360, height: 780 });   // 폭이 좁은 폰(예전에는 타자가 거의 화면 밖이었다)
+    await page.waitForFunction(() => walkoff.batterSpan().w === 360);
+    await check('360');
+    expect(errors).toEqual([]);
+  });
+
   test('좌타/우타는 눌러도 경기가 시작되지 않고, 새로고침해도 남는다', async ({ page }) => {
     const errors = await open(page);
     const left = await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '좌타').r);

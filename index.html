@@ -371,7 +371,7 @@ function resize() {
   view.w = window.innerWidth; view.h = window.innerHeight;
   canvas.width = Math.round(view.w * view.dpr); canvas.height = Math.round(view.h * view.dpr);
   view.mobile = view.w < 640;
-  view.f = Math.min(1.45 * view.h, 2.3 * view.w);
+  view.f = Math.min(1.45 * view.h, (view.mobile ? MOBILE_FOV_W : 2.3) * view.w);
   view.cx = view.w / 2;
   view.cy = view.h * (view.mobile ? 0.31 : 0.34);
 }
@@ -380,7 +380,7 @@ function project(x, y, z) {
   const d = z - cam.z;
   if (d < 0.1) return null;
   const s = view.f / d;
-  return { x: view.cx + view.panX + (x - cam.x) * s, y: view.cy + view.panY - (y - cam.y) * s, s };
+  return { x: view.cx + sceneShift() + view.panX + (x - cam.x) * s, y: view.cy + view.panY - (y - cam.y) * s, s };
 }
 
 // points: [x, z, y = 0] 목록. close면 닫힌 도형
@@ -706,6 +706,17 @@ function drawTrail(p, uEnd) {
 
 // ===== 타자와 배트 =====
 const BATTER_X = -1.0, BATTER_Z = 0.3, BAT_LEN = 0.86, SWING_TIME = 0.28;
+// 모바일(세로 화면)은 가로가 좁아 타자(홈플레이트에서 1m 옆)가 화면 밖으로 나갔다(2026-10-29, 390폭에서 거의 안 보임).
+// 타자 그림만 홈플레이트 쪽으로 0.4m 당기고, 장면 전체를 타자 반대쪽으로 화면 폭의 5% 밀고, 조금 넓게 본다.
+// 판정은 타이밍만 봐서 그림에만 영향이 있다. PC와 가로 화면은 그대로
+const MOBILE_BATTER_SHIFT = 0.4, MOBILE_SCENE_SHIFT = 0.05, MOBILE_FOV_W = 2.15;
+const batterShift = () => (view.mobile ? MOBILE_BATTER_SHIFT : 0);
+const sceneShift = () => (view.mobile ? batSide() * view.w * MOBILE_SCENE_SHIFT : 0);
+const batterPoint = (p) => project(batSide() * (p[0] + batterShift()), p[1], p[2]);   // 타자 뼈대의 한 점을 화면으로
+function batterSpan() {   // 테스트용: 칠 준비 자세의 몸(머리·손·무릎·발)이 화면에서 차지하는 가로 범위
+  const k = batterSkeleton(null), xs = [k.head, k.hand, k.knees.l, k.knees.r, k.feet.l, k.feet.r, k.chest].map((p) => batterPoint(p).x);
+  return { min: Math.min(...xs), max: Math.max(...xs), w: view.w };
+}
 
 // tau: 스윙 뒤 지난 시간(초), null이면 준비 자세. 누른 순간을 맞는 순간으로 보여 준다
 // yaw는 배트 끝 방향(도): -90 포수 쪽, 0 1루 쪽(플레이트 위), 90 투수 쪽
@@ -798,7 +809,7 @@ function batterSkeleton(tau) {
 // 한 번은 빛 테두리 색으로 조금 위에, 한 번은 제 색으로 그려서 조명을 등진 윤곽을 만든다
 function drawBatterFigure(k, col, dy) {
   // 뼈대는 우타 기준으로 만들고, 좌타는 그릴 때 좌우만 뒤집는다
-  const P = (p) => { const q = project(batSide() * p[0], p[1], p[2]); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
+  const P = (p) => { const q = batterPoint(p); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
   const seg = (a, b, wa, wb, c) => { const pa = P(a), pb = P(b); if (pa && pb) segment(pa, pb, wa * pa.s, wb * pb.s, col(c)); };
   const ring = (c, l, f, rw, rd, y) => Array.from({ length: 12 }, (_, i) => {
     const a = i / 12 * Math.PI * 2;
@@ -850,8 +861,9 @@ function drawBatter(tau) {
   if (tau != null && tau < 0.16) {
     const band = [];
     const m = batSide();
-    for (let a = -80; a <= k.yaw; a += 10) band.push([m * (k.hand[0] + BAT_LEN * Math.cos(a * DEG)), k.hand[2] + BAT_LEN * Math.sin(a * DEG), 0.98]);
-    for (let a = k.yaw; a >= -80; a -= 10) band.push([m * (k.hand[0] + 0.4 * Math.cos(a * DEG)), k.hand[2] + 0.4 * Math.sin(a * DEG), 1.0]);
+    const hx = k.hand[0] + batterShift();
+    for (let a = -80; a <= k.yaw; a += 10) band.push([m * (hx + BAT_LEN * Math.cos(a * DEG)), k.hand[2] + BAT_LEN * Math.sin(a * DEG), 0.98]);
+    for (let a = k.yaw; a >= -80; a -= 10) band.push([m * (hx + 0.4 * Math.cos(a * DEG)), k.hand[2] + 0.4 * Math.sin(a * DEG), 1.0]);
     if (band.length > 2) fill3d(band, `rgba(255,255,255,${0.22 * (1 - tau / 0.16)})`);
   }
   drawBatterFigure(k, () => BATTER_COLOR.rim, -2);
@@ -2031,7 +2043,7 @@ function drawBackNumber(k, P, col) {
   if (look.number !== 'number-on' || !Number.isInteger(look.no)) return;
   const fc = k.facing(k.shTurn), at = V.add(k.chest, [-fc[0] * 0.14, -0.2, -fc[2] * 0.14]), q = P(at);   // 등 가운데 아래(팔에 덜 가린다)
   if (!q) return;
-  const wx = batSide() * at[0], d = [cam.x - wx, cam.y - at[1], cam.z - at[2]], len = V.len(d);
+  const wx = batSide() * (at[0] + batterShift()), d = [cam.x - wx, cam.y - at[1], cam.z - at[2]], len = V.len(d);
   const vis = (batSide() * -fc[0] * d[0] - fc[2] * d[2]) / len;   // 등 방향과 카메라 방향이 얼마나 같은지(0~1)
   if (vis <= 0.2) return;
   const light = isLight(col('jersey')), t = teamById(settings.team);
@@ -2171,7 +2183,7 @@ function drawShopPreview(box) {
   const g = ctx.createLinearGradient(0, box.y, 0, box.y + box.h);
   g.addColorStop(0, 'rgba(20,40,70,0.9)'); g.addColorStop(0.62, 'rgba(26,74,48,0.9)'); g.addColorStop(1, 'rgba(120,86,52,0.9)');
   ctx.fillStyle = g; ctx.fill();
-  const pts = [k.head, k.tip, k.hand, k.feet.l, k.feet.r, k.knees.l, k.knees.r].map((p) => project(batSide() * p[0], p[1], p[2])).filter(Boolean);
+  const pts = [k.head, k.tip, k.hand, k.feet.l, k.feet.r, k.knees.l, k.knees.r].map(batterPoint).filter(Boolean);
   if (pts.length < 3) return;
   const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
   const minY = Math.min(...pts.map((p) => p.y)) - 20, maxY = Math.max(...pts.map((p) => p.y)) + 12;
@@ -2678,7 +2690,7 @@ requestAnimationFrame(frame);
 syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan };
 </script>
 </body>
 </html>
