@@ -3,7 +3,7 @@ const { test, expect } = require('@playwright/test');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
-const PAGE = pathToFileURL(path.join(__dirname, '..', 'index.html')).href;
+const PAGE = 'http://127.0.0.1:4173/index.html';   // playwright.config.js의 webServer(scripts/serve.js)
 const API = 'https://walkoff-api.walkoff-api.workers.dev';
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, authorization', 'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS' };
 const SESSION = 'test-session';         // 가짜 서버가 받아 주는 로그인 표
@@ -31,7 +31,10 @@ async function mockApi(page, opts = {}) {
     const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
     calls.push({ method: req.method(), path: url.pathname, query: Object.fromEntries(url.searchParams), auth, body: req.postData() ? JSON.parse(req.postData()) : null });
-    if (url.pathname.startsWith('/auth/')) return route.abort();   // 카카오로 가는 길. 돌아오는 것은 loginReturn으로 흉내 낸다
+    if (url.pathname.startsWith('/auth/')) {   // 카카오로 가는 길. 실제 서버처럼 조금 있다 빈 페이지로 답하고, 돌아오는 것은 loginReturn으로 흉내 낸다
+      // 0초에 요청을 끊으면 게임이 방금 저장한 확인값이 브라우저에 넘어가기 전에 페이지가 닫혀 값이 사라질 때가 있었다(CI)
+      return new Promise((done) => setTimeout(done, 300)).then(() => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>kakao</title>' }));
+    }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
     if ((url.pathname === '/me' || url.pathname === '/scores') && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
     if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null } : { ok: true });
@@ -50,7 +53,7 @@ async function open(page, query = '?seed=42', { team = 'lg', login = false, api 
   page.on('pageerror', (e) => errors.push(e.message));
   const calls = await mockApi(page, api ?? {});
   await page.addInitScript(({ team, login, session }) => {
-    if (location.protocol !== 'file:') return;   // 로그인 흉내 중에 지나가는 빈 페이지에서는 저장소를 못 쓴다
+    if (location.host !== '127.0.0.1:4173') return;   // 게임 페이지에서만(로그인 흉내 중에 지나가는 빈 페이지·서버 페이지는 빼고)
     if (localStorage.getItem('walkoff.seeded')) return;   // 새로고침해도 처음 값으로 되돌리지 않는다
     localStorage.setItem('walkoff.seeded', '1');
     if (team) { localStorage.setItem('walkoff.team', team); localStorage.setItem('walkoff.nick', '테스트'); }
@@ -63,15 +66,18 @@ async function open(page, query = '?seed=42', { team = 'lg', login = false, api 
 }
 const sentScores = (errors) => errors.calls.filter((c) => c.method === 'POST' && c.path === '/scores');
 
-// 게임이 카카오 로그인으로 떠난 요청(서버 /auth/kakao/start)을 기다려 그 값을 돌려준다
-async function kakaoStart(errors) {
+// 게임이 카카오 로그인으로 떠난 요청(서버 /auth/kakao/start)을 기다려 그 값을 돌려준다. 그 페이지가 다 열린 뒤에 돌려줘서
+// 다음 페이지 이동과 부딪히지 않게 한다
+async function kakaoStart(errors, page) {
   await expect.poll(() => errors.calls.some((c) => c.path === '/auth/kakao/start')).toBe(true);
+  await page.waitForURL(/\/auth\/kakao\/start/, { timeout: 10_000 });
   return errors.calls.find((c) => c.path === '/auth/kakao/start').query;
 }
 
 // 카카오 로그인을 마치고 게임으로 돌아온 것처럼 연다. n은 돌려줄 확인값, stored는 게임이 적어 뒀어야 할 확인값.
 // 크롬은 저장소에 쓴 값을 새로 연 페이지에 조금 늦게 알릴 때가 있어서(느린 CI에서 실패했다), 새 페이지에서 그 값이 보인 뒤에 돌아온다
 async function loginReturn(page, query, n, { error, stored = n } = {}) {
+  await page.waitForTimeout(300);   // 테스트가 방금 저장소에 쓴 값이 넘어갈 틈
   await page.goto('about:blank');
   await page.goto(`${PAGE}${query}`);
   await page.waitForFunction((v) => localStorage.getItem('walkoff.loginNonce') === v, stored, { timeout: 10_000 });
@@ -80,8 +86,10 @@ async function loginReturn(page, query, n, { error, stored = n } = {}) {
   await page.waitForFunction(() => !!window.walkoff);
 }
 
-// 저장한 값이 새로고침한 페이지에 보일 때까지 몇 번 새로고침한다. 크롬은 저장소에 쓴 값을 새 페이지에 조금 늦게 알릴 때가 있다
+// 저장한 값이 새로고침한 페이지에 보일 때까지 몇 번 새로고침한다. 크롬은 저장소에 쓴 값을 새 페이지에 조금 늦게 알릴 때가 있고,
+// 쓰자마자 페이지를 닫으면 값이 사라질 때도 있어서 먼저 잠깐 기다린다(사람은 그렇게 빨리 새로고침하지 않는다)
 async function reloadUntil(page, fn) {
+  await page.waitForTimeout(300);
   for (let i = 0; i < 5; i++) {
     await page.reload();
     await page.waitForFunction(() => !!window.walkoff);
@@ -297,23 +305,22 @@ test.describe('화면', () => {
   test('로그인 안 한 사람은 오늘의 10구 전에 하루 한 번 카카오 로그인을 권한다', async ({ page }) => {
     const errors = await open(page);
     await page.keyboard.press('Space');
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
+    await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '나중에 하기'));
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).sort())).toEqual(['나중에 하기', '카카오로 로그인']);
     await page.keyboard.press('Escape');   // 닫으면 시작 화면. 다시 시작하면 또 묻는다
     await page.keyboard.press('Space');
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
+    await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
     await tap(page, '나중에 하기');
-    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
-    await page.reload();
-    await page.waitForFunction(() => !!window.walkoff && walkoff.store.get('loginLater', '') === walkoff.today());   // 다시 열어도 남아 있다(새 페이지에 늦게 보일 때가 있어 기다린다)
+    await expect.poll(() => page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
+    await reloadUntil(page, () => walkoff.store.get('loginLater', '') === walkoff.today());   // 다시 열어도 남아 있다
     await page.keyboard.press('Space');   // 나중에 하기를 누른 날은 다시 묻지 않는다
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('windup');
+    await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('windup');
     await page.evaluate(() => { walkoff.store.set('loginLater', '2000-01-01'); walkoff.goTitle(); });   // 다른 날이 되면 다시 묻는다
     await page.keyboard.press('Space');
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
+    await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
     await tap(page, '카카오로 로그인');
-    expect((await kakaoStart(errors)).pid).toMatch(/^[a-z0-9-]{8,40}$/);
+    expect((await kakaoStart(errors, page)).pid).toMatch(/^[a-z0-9-]{8,40}$/);
     expect(errors).toEqual([]);
   });
 
@@ -360,7 +367,7 @@ test.describe('화면', () => {
     const pid = await page.evaluate(() => walkoff.settings.playerId);
     await tap(page, '두산 베어스');
     await tap(page, '카카오로 시작');
-    const start = await kakaoStart(errors);
+    const start = await kakaoStart(errors, page);
     expect(start).toEqual({ n: expect.stringMatching(/^n[0-9a-f]{32}$/), pid, return: `${PAGE}?seed=42` });
     await loginReturn(page, '?seed=42', start.n);
     await page.waitForFunction(() => walkoff.settings.team === 'lg');
@@ -395,7 +402,7 @@ test.describe('화면', () => {
     expect(sentScores(errors)).toEqual([]);
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 로그인하면 랭킹에 올라가요 ›'));
     await tap(page, '카카오로 로그인하면 랭킹에 올라가요 ›');
-    await loginReturn(page, '?seed=42', (await kakaoStart(errors)).n);
+    await loginReturn(page, '?seed=42', (await kakaoStart(errors, page)).n);
     await expect.poll(() => sentScores(errors).length).toBe(1);
     expect(sentScores(errors)[0]).toMatchObject({ auth: `Bearer ${SESSION}`, body: pending });
     await page.waitForFunction(() => walkoff.store.get('pending', null) === null);

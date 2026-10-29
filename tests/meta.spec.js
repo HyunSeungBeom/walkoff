@@ -2,10 +2,9 @@
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
-const { pathToFileURL } = require('url');
 
 const ROOT = path.join(__dirname, '..');
-const PAGE = pathToFileURL(path.join(ROOT, 'index.html')).href;
+const PAGE = 'http://127.0.0.1:4173/index.html';   // playwright.config.js의 webServer(scripts/serve.js)
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
 
 test.describe('링크 미리보기', () => {
