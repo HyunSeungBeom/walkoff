@@ -448,6 +448,50 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('10구 도전은 공을 보고 처음부터 다시 할 수 있고, 끝내지 않은 판은 보내지 않는다. 오늘의 10구에는 없다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true });
+    const resultShown = () => page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await resultShown();   // 초구를 그냥 보낸다
+    await tap(page, '처음부터');
+    await expect.poll(() => page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode, i: walkoff.game.i, results: walkoff.game.results.length, score: walkoff.game.score })))
+      .toEqual({ state: 'windup', mode: 'challenge', i: 0, results: 0, score: 0 });
+    expect(sentScores(errors)).toEqual([]);
+    await page.evaluate(() => walkoff.startGame('daily'));
+    await resultShown();
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('다음 공')));
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).not.toContain('처음부터');   // 모두 같은 공이라 다시 보고 칠 수 없게
+    expect(errors).toEqual([]);
+  });
+
+  test('진동이 되는 폰(안드로이드)에서는 맞히면 울리고, 메뉴에서 끌 수 있다', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '진동은 터치 화면 폰에서만 쓴다');
+    await page.addInitScript(() => { window.__vibes = []; navigator.vibrate = (p) => { window.__vibes.push(p); return true; }; });
+    const errors = await open(page);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    const o = await playPitch(page, 0);   // 시드 42의 첫 공(가운데 직구)을 정확한 타이밍에 친다
+    expect(o.kind).not.toBe('whiff');
+    expect(await page.evaluate(() => window.__vibes)).toEqual([o.kind === 'hr' ? [50, 40, 110] : o.kind === 'foul' ? 15 : 30]);
+    await page.keyboard.press('Escape');
+    await tap(page, '메뉴');
+    await tap(page, '진동 켜짐');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '진동 꺼짐'));
+    expect(await page.evaluate(() => ({ on: walkoff.settings.vibrate, saved: localStorage.getItem('walkoff.vibrate') }))).toEqual({ on: false, saved: 'false' });
+    await page.evaluate(() => { window.__vibes = []; walkoff.startGame('challenge'); });
+    await playPitch(page, 0);
+    expect(await page.evaluate(() => window.__vibes)).toEqual([]);   // 끄면 울리지 않는다
+    expect(errors).toEqual([]);
+  });
+
+  test('진동이 안 되는 기기(아이폰, PC)에는 메뉴에 진동 항목이 없다', async ({ page, isMobile }) => {
+    if (isMobile) await page.addInitScript(() => { delete Navigator.prototype.vibrate; });   // 아이폰 사파리처럼 진동 함수가 없다
+    const errors = await open(page);
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '기록'));
+    expect((await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).some((l) => l.startsWith('진동'))).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
   test('내 계정: 랭킹 기록 지우기는 한 번 더 묻고, 지우면 로그아웃된다', async ({ page }) => {
     const errors = await open(page, '?seed=42', { login: true });
     await page.waitForFunction(() => walkoff.settings.playerId === 'p-account-0001');
