@@ -1608,32 +1608,41 @@ async function postScore(body) {
   return { status: res.status, data: await res.json().catch(() => ({})) };
 }
 
-// 오늘의 10구 첫 판 점수를 보낸다. 로그인하지 않았거나 네트워크 오류면 남겨 뒀다가 로그인하거나 다음에 열 때 보내고,
-// 서버가 거절한 기록은 버린다(날짜가 지난 기록 등)
-async function submitDaily(s) {
-  if (!settings.team) return;
-  if (!settings.nick) saveTeamAndNick(settings.team, defaultNick());
-  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights };
-  store.set('pending', body);
-  if (!loggedIn()) return;
-  game.rankInfo = { status: 'sending' };
-  try {
-    const { status, data } = await postScore(body);
-    if (status === 401) { logout('expired'); return; }
-    if (status < 500) store.remove('pending');
-    game.rankInfo = status === 200 && data.ok ? { status: 'ok', me: data.me, myTeam: data.myTeam } : { status: 'error' };
-  } catch { game.rankInfo = { status: 'error' }; }
+// 10구 판(오늘의 10구 첫 판, 10구 도전)이 끝나면 점수를 보낸다. 주간 랭킹은 이번 주 최고 기록이라(2026-10-29 사용자 결정)
+// 칠 때마다 보내고, 서버는 그날 가장 높은 판만 남긴다. 로그인하지 않았거나 네트워크 오류면 아직 못 보낸 판 중
+// 가장 높은 판 하나를 남겨 뒀다가 로그인하거나 다음에 열 때 보낸다. 서버가 거절한 기록(날짜가 지난 기록 등)은 버린다
+function keepPending(body) {
+  const old = store.get('pending', null);
+  const stale = !old || typeof old !== 'object' || !(old.score >= 0) || old.day < addDay(today(), -2);   // 서버는 이틀 전 기록까지 받는다
+  if (stale || body.score > old.score) store.set('pending', body);
 }
 
-async function resendPending() {
+// 남겨 둔 판을 보낸다. 받은 응답(내 순위)을 돌려준다
+async function sendPending() {
   const body = store.get('pending', null);
-  if (!body || typeof body !== 'object' || !loggedIn()) return;
+  if (!body || typeof body !== 'object' || !loggedIn()) return null;
   try {
     const { status, data } = await postScore(body);
-    if (status === 401) { logout('expired'); return; }
+    if (status === 401) { logout('expired'); return null; }
     if (status < 500) store.remove('pending');
-    if (data.accepted) toast('오늘의 10구 기록을 랭킹에 올렸어요');
-  } catch { /* 다음에 열 때 다시 보낸다 */ }
+    return status === 200 && data.ok ? data : null;
+  } catch { return null; }
+}
+
+async function submitScore(s) {
+  if (!settings.team) return;
+  if (!settings.nick) saveTeamAndNick(settings.team, defaultNick());
+  keepPending({ nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights });
+  if (!loggedIn()) return;
+  game.rankInfo = { status: 'sending' };
+  const d = await sendPending();
+  game.rankInfo = d ? { status: 'ok', me: d.me, myTeam: d.myTeam, newBest: d.accepted && d.me?.best === s.score } : { status: loggedIn() ? 'error' : 'login' };
+}
+
+// 로그인하거나 다시 열었을 때 남겨 둔 판을 보낸다
+async function resendPending() {
+  const d = await sendPending();
+  if (d?.accepted) toast('기록을 랭킹에 올렸어요');
 }
 
 async function fetchRanking() {
@@ -1659,15 +1668,15 @@ async function loadRanking() {
 }
 function closeRanking() { if (game.rankBack === 'over') game.state = 'over'; else goTitle(); }
 
-// 끝 화면 한 줄: "이번 주 7위 · LG 2위 · 랭킹 보기 ›". 로그인하지 않았으면 로그인하라는 줄
+// 끝 화면 한 줄: "이번 주 최고 기록! 3위 · 랭킹 보기 ›" 또는 "이번 주 최고 4,200점 · 3위 · 랭킹 보기 ›".
+// 로그인하지 않았으면 로그인하라는 줄
 function rankLine() {
   if (!loggedIn()) return '카카오로 로그인하면 랭킹에 올라가요 ›';
   const ri = game.rankInfo;
   if (!ri || ri.status === 'sending') return '이번 주 랭킹을 불러오는 중…';
   if (ri.status === 'error') return '랭킹 서버에 연결하지 못했어요 · 랭킹 보기 ›';
   if (!ri.me) return '이번 주 랭킹 보기 ›';
-  const t = teamById(ri.myTeam?.team);
-  return `이번 주 ${ri.me.rank}위${t ? ` · ${t.short} ${ri.myTeam.rank}위` : ''} · 랭킹 보기 ›`;
+  return ri.newBest ? `이번 주 최고 기록! ${ri.me.rank}위 · 랭킹 보기 ›` : `이번 주 최고 ${(ri.me.best ?? ri.me.total ?? 0).toLocaleString()}점 · ${ri.me.rank}위 · 랭킹 보기 ›`;
 }
 
 function drawRankRow(y, x0, w, cells, highlight) {
@@ -1694,7 +1703,9 @@ function drawRanking() {
     const tab = i ? 'teams' : 'players';
     addButton(r, i ? '팀' : '개인', game.rankTab === tab ? 'chipOn' : 'chip', () => { game.rankTab = tab; });
   });
-  y += 36 + (m ? 24 : 30);
+  y += 36 + (m ? 18 : 22);
+  text(game.rankTab === 'players' ? '이번 주 최고 기록 순위예요' : '팀원들의 이번 주 최고 기록을 더한 순위예요', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  y += m ? 26 : 32;
   const note = (s) => text(s, cx, y + 20, { size: m ? 13 : 15, weight: 500, color: 'rgba(255,255,255,0.75)' });
   if (rk.status === 'loading') note('불러오는 중…');
   else if (rk.status === 'error') {
@@ -1702,13 +1713,13 @@ function drawRanking() {
     addButton({ x: cx - 80, y: y + 44, w: 160, h: 42 }, '다시 시도', 'secondary', loadRanking);
   } else {
     const players = game.rankTab === 'players', rows = players ? d.players : d.teams;
-    if (!rows.length) note('아직 이번 주 기록이 없어요. 오늘의 10구를 쳐서 첫 줄에 올라 보세요');
+    if (!rows.length) note('아직 이번 주 기록이 없어요. 한 판 쳐서 첫 줄에 올라 보세요');
     const shown = rows.slice(0, 10), mine = players ? rows.find((p) => p.me) : rows.find((t) => t.team === d.myTeam?.team);
     if (mine && !shown.includes(mine)) shown.push(null, mine);   // 10위 밖이면 … 아래에 내 줄
     const step = m ? 30 : 34;
     for (const row of shown) {
       if (!row) { text('…', cx, y, { size: 14, color: 'rgba(255,255,255,0.5)' }); y += step; continue; }
-      const total = `${row.total.toLocaleString()}점`;
+      const total = `${((players ? row.best : null) ?? row.total ?? 0).toLocaleString()}점`;   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
       if (players) drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total], row.me);
       else drawRankRow(y, x0, w, [String(row.rank), row.team, teamById(row.team)?.name ?? row.team, `${row.players}명`, total], row === mine);
       y += step;
@@ -1716,7 +1727,7 @@ function drawRanking() {
     const lp = d.lastWeek?.player, lt = d.lastWeek?.team;
     if (lp || lt) {
       y += m ? 8 : 12;
-      text(`지난주 1위 ${lp ? `${lp.nick}(${teamById(lp.team)?.short ?? ''}) ${lp.total.toLocaleString()}점` : '-'} · 팀 1위 ${lt ? teamById(lt.team)?.short ?? lt.team : '-'}`, cx, y,
+      text(`지난주 1위 ${lp ? `${lp.nick}(${teamById(lp.team)?.short ?? ''}) ${(lp.best ?? lp.total ?? 0).toLocaleString()}점` : '-'} · 팀 1위 ${lt ? teamById(lt.team)?.short ?? lt.team : '-'}`, cx, y,
         { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
     }
   }
@@ -1809,8 +1820,8 @@ async function deleteAccount() {
   } catch { toast('지우지 못했어요. 잠시 뒤 다시 해 주세요'); }
 }
 
-// 로그인 안 한 사람이 오늘의 10구를 시작하려고 하면 하루 한 번 카카오 로그인을 권한다(2026-10-29 사용자 요청).
-// "나중에 하기"를 누르면 바로 시작하고 그날은 다시 묻지 않는다. 나중에 로그인해도 그날 기록은 올라간다(submitDaily의 pending)
+// 로그인 안 한 사람이 시작 화면에서 10구 판을 시작하려고 하면 하루 한 번 카카오 로그인을 권한다(2026-10-29 사용자 요청).
+// "나중에 하기"를 누르면 바로 시작하고 그날은 다시 묻지 않는다. 나중에 로그인해도 그날 가장 높은 판은 올라간다(keepPending)
 const askLoginToday = () => !loggedIn() && store.get('loginLater', '') !== today();
 const skipLogin = () => store.set('loginLater', today());
 function drawLoginPrompt() {
@@ -1819,7 +1830,7 @@ function drawLoginPrompt() {
   let y = view.h * (m ? 0.26 : 0.28);
   text('카카오로 로그인할까요?', cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 38 : 46;
-  ['로그인하면 오늘의 10구 점수가 주간 랭킹에 올라가요.', '다른 폰이나 브라우저에서도 이어서 해요.'].forEach((l) => {
+  ['로그인하면 이번 주 최고 기록이 주간 랭킹에 올라가요.', '다른 폰이나 브라우저에서도 이어서 해요.'].forEach((l) => {
     text(l, cx, y, { size: m ? 14 : 16, weight: 600, color: 'rgba(255,255,255,0.85)' });
     y += m ? 22 : 26;
   });
@@ -1827,14 +1838,14 @@ function drawLoginPrompt() {
   addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 로그인', 'kakao', startKakaoLogin);
   y += 48 + (m ? 16 : 20);
   text('카카오에서는 회원번호만 받아요 · 랭킹에만 써요', cx, y, sub);
-  addButton({ x: cx - 80, y: y + 10, w: 160, h: 36 }, '나중에 하기', 'link', () => { skipLogin(); startGame('daily'); });
-  text('나중에 로그인해도 오늘 친 기록은 올라가요', cx, y + 64, sub);
+  addButton({ x: cx - 80, y: y + 10, w: 160, h: 36 }, '나중에 하기', 'link', () => { skipLogin(); startDefault(); });
+  text('나중에 로그인해도 오늘 친 가장 높은 기록은 올라가요', cx, y + 64, sub);
 }
 
 // 내 계정(로그인했을 때) 또는 카카오 로그인 안내(안 했을 때). 개인정보 안내도 여기 둔다
 const PRIVACY = [
   '카카오에서는 회원번호만 받아 알아볼 수 없게 저장해요.',
-  '닉네임·팀·오늘의 10구 점수와 함께 랭킹에만 써요.',
+  '닉네임·팀·점수와 함께 랭킹에만 써요.',
   '랭킹 기록 지우기를 누르면 바로 모두 지워요.',
 ];
 function openAccount() { Object.assign(game, { state: 'account', account: { confirm: false } }); }
@@ -1869,11 +1880,11 @@ function drawAccount() {
 // ===== 시작 화면과 끝 화면 =====
 // 시작 화면에는 "탭해서 시작"과 [좌타 | 우타]만 둔다(2026-10-28 사용자 피드백). 빈 곳 어디를 눌러도 시작한다.
 // 다른 모드와 설정은 오른쪽 위 메뉴에 있다. 오늘의 10구를 아직 안 쳤으면 오늘의 10구, 쳤으면 10구 도전으로 시작한다
-// 로그인 안 한 사람이 오늘의 10구를 시작하면 먼저 카카오 로그인을 권한다(아래 drawLoginPrompt)
+// 로그인 안 한 사람이 10구 판을 시작하면 먼저 카카오 로그인을 권한다(아래 drawLoginPrompt)
 function startDefault() {
   if (!settings.team) { openOnboard('start', true); return; }
   const mode = dailyRecord() ? 'challenge' : 'daily';
-  if (mode === 'daily' && askLoginToday()) game.state = 'loginPrompt';
+  if (askLoginToday()) game.state = 'loginPrompt';
   else startGame(mode);
 }
 
@@ -1890,7 +1901,7 @@ function drawTitle(time) {
   pill(m ? '탭해서 시작' : '스페이스바 · 빈 곳 클릭으로 시작', cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
   ctx.globalAlpha = 1;
   const rec = dailyRecord(), day = dayNumber(today());
-  text(rec ? `오늘의 10구 #${day} ${rec.score.toLocaleString()}점 기록 · 지금은 10구 도전` : `오늘의 10구 #${day} · 하루 첫 판만 기록돼요`, cx, cy + (m ? 196 : 250),
+  text(rec ? `오늘의 10구 #${day} ${rec.score.toLocaleString()}점 기록 · 지금은 10구 도전` : `오늘의 10구 #${day} · 주간 랭킹은 이번 주 최고 기록이에요`, cx, cy + (m ? 196 : 250),
     { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.6)' });
   const s = 40, pad = m ? 8 : 14;
   addButton({ x: view.w - pad - s, y: pad, w: s, h: s }, '메뉴', 'menuIcon', () => { game.state = 'menu'; });
@@ -1958,6 +1969,11 @@ function drawGameOver() {
     const note = game.firstDaily ? ['오늘 기록으로 남았어요.', '내일 0시(한국 시간)에 새 공이 나와요.'] : ['오늘은 이미 쳤어요.', '내일 0시(한국 시간)에 새 공이 나와요.'];
     (m ? note : [note.join(' ')]).forEach((l, i) => text(l, cx, y + i * 20, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.6)' }));
   } else {
+    if (game.mode === 'challenge' && settings.team) {   // 10구 도전도 주간 최고 기록 한 줄
+      const lw = Math.min(view.w - 32, 420);
+      addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
+      y += m ? 30 : 36;
+    }
     drawBatsToggle(y + 19);
     y += 38 + 18;
     drawRetryShareButtons(y, bw, () => startGame(game.mode));
@@ -2084,13 +2100,14 @@ function next() {
 function finishGame() {
   Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
   game.summary = { ...gameSummary(), bats: settings.bats, day: dayNumber(today()), date: today() };
-  if (game.mode === 'daily' && !dailyRecord()) { store.set('daily.' + today(), game.summary); game.firstDaily = true; submitDaily(game.summary); }
+  if (game.mode === 'daily' && !dailyRecord()) { store.set('daily.' + today(), game.summary); game.firstDaily = true; submitScore(game.summary); }
   if (game.mode === 'challenge') {
     const best = store.get('best', 0);
     game.newBest = game.score > best;
     game.summary.newBest = game.newBest;   // 공유 글에 '새 최고 기록'을 붙인다
     game.best = Math.max(best, game.score);
     if (game.newBest) store.set('best', game.score);
+    submitScore(game.summary);   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
 }
 
@@ -2262,7 +2279,7 @@ requestAnimationFrame(frame);
 syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending };
 </script>
 </body>
 </html>

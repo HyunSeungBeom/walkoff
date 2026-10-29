@@ -12,17 +12,19 @@ const EMPTY_RANKING = { week: '2026-10-26', nextWeek: '2026-11-02', players: [],
 const SAMPLE_RANKING = {
   ...EMPTY_RANKING,
   players: [
-    { rank: 1, nick: '명은', team: 'lotte', total: 12300, days: 3, me: false },
-    { rank: 2, nick: '민성', team: 'lg', total: 9100, days: 2, me: true },
+    { rank: 1, nick: '명은', team: 'lotte', best: 12100, days: 3, me: false },
+    { rank: 2, nick: '민성', team: 'lg', best: 9100, days: 2, me: true },
   ],
-  teams: [{ rank: 1, team: 'lotte', total: 12300, players: 1 }, { rank: 2, team: 'lg', total: 9100, players: 1 }],
-  count: 2, me: { rank: 2, total: 9100, days: 2, team: 'lg' }, myTeam: { rank: 2, total: 9100, team: 'lg' },
-  lastWeek: { player: { rank: 1, nick: '명은', team: 'lotte', total: 20000, days: 7, me: false }, team: { rank: 1, team: 'lotte', total: 20000, players: 1 } },
+  teams: [{ rank: 1, team: 'lotte', total: 12100, players: 1 }, { rank: 2, team: 'lg', total: 9100, players: 1 }],
+  count: 2, me: { rank: 2, best: 9100, days: 2, team: 'lg' }, myTeam: { rank: 2, total: 9100, team: 'lg' },
+  lastWeek: { player: { rank: 1, nick: '명은', team: 'lotte', best: 11800, days: 7, me: false }, team: { rank: 1, team: 'lotte', total: 20000, players: 1 } },
 };
 
 // 테스트가 실제 랭킹 서버에 닿지 않도록 서버 주소를 가로채 가짜로 답한다. 받은 요청은 돌려주는 배열에 쌓인다.
-// account: 로그인한 계정에 이미 있는 팀·닉네임(다른 기기에서 쓰던 계정을 흉내 낸다)
-async function mockApi(page, { rankings = EMPTY_RANKING, fail = false, account = {} } = {}) {
+// account: 로그인한 계정에 이미 있는 팀·닉네임(다른 기기에서 쓰던 계정을 흉내 낸다).
+// scoreReply: 'best'(보낸 점수가 이번 주 최고 기록) | 'lower'(이번 주에 더 높은 기록이 있다). 테스트 중에 바꿀 수 있게 요청 때 읽는다
+async function mockApi(page, opts = {}) {
+  const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const calls = [];
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
@@ -34,7 +36,8 @@ async function mockApi(page, { rankings = EMPTY_RANKING, fail = false, account =
     if ((url.pathname === '/me' || url.pathname === '/scores') && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
     if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null } : { ok: true });
     if (url.pathname === '/scores') {
-      return reply({ ok: true, accepted: true, week: '2026-10-26', me: { rank: 3, total: 4200, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5 });
+      const score = JSON.parse(req.postData() || '{}').score, lower = opts.scoreReply === 'lower';
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best: lower ? score + 1000 : score, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5 });
     }
     return reply(rankings);
   });
@@ -45,7 +48,7 @@ async function mockApi(page, { rankings = EMPTY_RANKING, fail = false, account =
 async function open(page, query = '?seed=42', { team = 'lg', login = false, api } = {}) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  const calls = await mockApi(page, api);
+  const calls = await mockApi(page, api ?? {});
   await page.addInitScript(({ team, login, session }) => {
     if (location.protocol !== 'file:') return;   // 로그인 흉내 중에 지나가는 빈 페이지에서는 저장소를 못 쓴다
     if (localStorage.getItem('walkoff.seeded')) return;   // 새로고침해도 처음 값으로 되돌리지 않는다
@@ -240,11 +243,11 @@ test.describe('한 판 끝까지', () => {
     expect(sent.auth).toBe(`Bearer ${SESSION}`);
     expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights });   // 사람 ID는 서버가 로그인 표에서 꺼낸다
     await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
-    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 3위 · LG 2위 · 랭킹 보기 ›');
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
     await page.keyboard.press('Escape');
     await page.keyboard.press('Space');   // 오늘 친 뒤에는 10구 도전으로 시작
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
-    expect(sentScores(errors).length).toBe(1);   // 10구 도전은 랭킹에 보내지 않는다
+    expect(sentScores(errors).length).toBe(1);   // 10구 도전은 판이 끝나야 보낸다
     expect(errors).toEqual([]);
   });
 });
@@ -380,8 +383,44 @@ test.describe('화면', () => {
     expect(sentScores(errors)[0]).toMatchObject({ auth: `Bearer ${SESSION}`, body: pending });
     await page.waitForFunction(() => walkoff.store.get('pending', null) === null);
     expect(await page.evaluate(() => ({ token: walkoff.auth.token, playerId: walkoff.settings.playerId, toast: walkoff.game.toast?.text })))
-      .toEqual({ token: SESSION, playerId: ACCOUNT_ID, toast: '오늘의 10구 기록을 랭킹에 올렸어요' });
+      .toEqual({ token: SESSION, playerId: ACCOUNT_ID, toast: '기록을 랭킹에 올렸어요' });
     expect(errors.calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg' }]);   // 새 계정에 팀·닉네임을 올린다
+    expect(errors).toEqual([]);
+  });
+
+  test('10구 도전도 판이 끝나면 보내고, 이번 주 최고 기록이면 끝 화면에 바로 보인다', async ({ page }) => {
+    const api = { scoreReply: 'best' };
+    const errors = await open(page, '?seed=42', { login: true, api });
+    const endChallenge = async () => {
+      await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝낸다
+      await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+      await page.keyboard.press('Space');
+      await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.game.rankInfo?.status === 'ok');
+      return page.evaluate(() => ({ score: walkoff.game.score, labels: walkoff.ui.buttons.map((b) => b.label) }));
+    };
+    const first = await endChallenge();
+    expect(sentScores(errors).map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg', day: await page.evaluate(() => walkoff.today()), score: first.score, lights: expect.stringMatching(/^[GYR]$/) }]);
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('이번 주')));
+    expect((await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label)))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
+    api.scoreReply = 'lower';   // 이번에는 이번 주에 더 높은 기록이 있다
+    const second = await endChallenge();
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('이번 주 최고 ')));
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain(`이번 주 최고 ${(second.score + 1000).toLocaleString()}점 · 3위 · 랭킹 보기 ›`);
+    expect(sentScores(errors).length).toBe(2);
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인 전에 친 판은 가장 높은 판 하나만 남겨 둔다(이틀 지난 판은 버린다)', async ({ page }) => {
+    const errors = await open(page);
+    const keep = (body) => page.evaluate((b) => { walkoff.keepPending(b); return walkoff.store.get('pending', null)?.score; }, body);
+    const day = await page.evaluate(() => walkoff.today());
+    const old = await page.evaluate(() => new Date(Date.now() + 9 * 3600e3 - 3 * 864e5).toISOString().slice(0, 10));
+    expect(await keep({ nick: '테스트', team: 'lg', day, score: 5000, lights: 'G' })).toBe(5000);
+    expect(await keep({ nick: '테스트', team: 'lg', day, score: 3000, lights: 'G' })).toBe(5000);   // 낮은 판은 남기지 않는다
+    expect(await keep({ nick: '테스트', team: 'lg', day, score: 6000, lights: 'G' })).toBe(6000);
+    await page.evaluate((d) => walkoff.store.set('pending', { nick: '테스트', team: 'lg', day: d, score: 9000, lights: 'G' }), old);
+    expect(await keep({ nick: '테스트', team: 'lg', day, score: 1000, lights: 'G' })).toBe(1000);   // 서버가 안 받는 사흘 전 판은 버린다
+    expect(sentScores(errors)).toEqual([]);   // 로그인하지 않았으면 보내지 않는다
     expect(errors).toEqual([]);
   });
 
@@ -442,6 +481,12 @@ test.describe('화면', () => {
     await page.evaluate(() => walkoff.openRanking('title'));
     await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
     expect(await page.evaluate(() => walkoff.game.ranking.data.players.length)).toBe(0);
+
+    await page.unroute(`${API}/**`);   // 서버가 바뀌기 전의 응답(사람 점수가 total)이어도 그린다
+    await mockApi(page, { rankings: { ...SAMPLE_RANKING, players: SAMPLE_RANKING.players.map(({ best, ...p }) => ({ ...p, total: best })) } });
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok' && walkoff.game.ranking.data.players[0].total === 12100);
+    await page.waitForTimeout(100);   // 한 번 그려 본다
 
     await page.unroute(`${API}/**`);
     await mockApi(page, { fail: true });
