@@ -633,6 +633,22 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('등번호는 두 자리여도 등 폭 안에 들어간다(몸이 돌아도, 우타·좌타)', async ({ page }) => {
+    const errors = await open(page);
+    let seen = 0;
+    for (const bats of ['R', 'L']) {
+      await page.evaluate((b) => walkoff.setBats(b), bats);
+      for (const no of [7, 25, 88]) for (const tau of [0.25, 0.35, 0.45, 0.6]) {
+        const box = await page.evaluate(([no, tau]) => walkoff.backNumberBox(no, tau), [no, tau]);
+        if (!box) continue;   // 등이 카메라를 안 보는 자세
+        seen++;
+        expect(box.textW * box.sx, `${bats} ${no}번 ${tau}초`).toBeLessThanOrEqual(box.backW * 0.8);   // 예전에는 88번이 등보다 넓었다
+      }
+    }
+    expect(seen).toBeGreaterThan(6);   // 등이 보이는 자세를 실제로 봤다
+    expect(errors).toEqual([]);
+  });
+
   test('끝 화면에 받은 코인이 붙고, 꾸민 공 꼬리·타격음·등번호로 쳐도 문제없다', async ({ page }) => {
     const look = { trail: 'trail-fire', sound: 'sound-metal', number: 'number-on', no: 9, helmet: 'helmet-gold', uniform: 'uniform-home' };
     const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 0, owned: ['trail-fire', 'sound-metal', 'number-on', 'helmet-gold', 'uniform-home'], look }, earned: 64 } });

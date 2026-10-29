@@ -538,16 +538,20 @@ function segment(a, b, wa, wb, color) {
   ctx.beginPath(); ctx.arc(b.x, b.y, wb / 2, 0, Math.PI * 2); ctx.fill();
 }
 
-// 점들을 부드럽게 이은 닫힌 도형
-function smoothShape(pts, fill) {
+// 점들을 부드럽게 이은 닫힌 경로. 점이 모자라면 false
+function smoothPath(pts) {
   pts = pts.filter(Boolean);
-  if (pts.length < 3) return;
+  if (pts.length < 3) return false;
   const n = pts.length, mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
   const m0 = mid(pts[n - 1], pts[0]);
   ctx.beginPath(); ctx.moveTo(m0.x, m0.y);
   for (let i = 0; i < n; i++) { const m = mid(pts[i], pts[(i + 1) % n]); ctx.quadraticCurveTo(pts[i].x, pts[i].y, m.x, m.y); }
-  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  ctx.closePath();
+  return true;
 }
+
+// 점들을 부드럽게 이은 닫힌 도형
+function smoothShape(pts, fill) { if (smoothPath(pts)) { ctx.fillStyle = fill; ctx.fill(); } }
 
 function ellipseAt(p, rx, ry, color) {
   if (!p) return;
@@ -831,10 +835,11 @@ function drawBatterFigure(k, col, dy) {
     } });
   }
   parts.push({ depth: k.chest[2], draw: () => {
-    smoothShape(hull([...ring(k.chest, lc, fc, 0.21, 0.12, 0), ...ring(k.chest, lc, fc, 0.13, 0.09, 0.07), ...ring(k.pelvis, lp, fp, 0.16, 0.11, 0.1)]), col('jersey'));
+    const jersey = hull([...ring(k.chest, lc, fc, 0.21, 0.12, 0), ...ring(k.chest, lc, fc, 0.13, 0.09, 0.07), ...ring(k.pelvis, lp, fp, 0.16, 0.11, 0.1)]);
+    smoothShape(jersey, col('jersey'));
     smoothShape(hull([...ring(k.pelvis, lp, fp, 0.165, 0.115, 0.1), ...ring(k.pelvis, lp, fp, 0.15, 0.11, -0.06)]), col('pants'));
     smoothShape(hull([...ring(k.pelvis, lp, fp, 0.167, 0.117, 0.115), ...ring(k.pelvis, lp, fp, 0.167, 0.117, 0.085)]), col('belt'));
-    if (dy === 0) drawBackNumber(k, P, col);
+    if (dy === 0) drawBackNumber(k, P, col, jersey);
     seg(V.add(k.chest, [0.02, 0.05, 0]), V.add(k.head, [0, -0.08, 0]), 0.1, 0.09, 'skin');
     // 헬멧: 챙은 투수 쪽을 향해 머리 뒤로 조금만 보인다
     const brim = P(V.add(k.head, [0.03, -0.04, 0.12])), h = P(k.head);
@@ -2100,21 +2105,38 @@ function lookPalette(base, t, look) {
 // 등번호: 몸통 등 쪽 점에 그리고, 등이 카메라를 향한 만큼만 보인다. 칠 준비 자세에서는 등이 3루 쪽이라 안 보이고,
 // 스윙하면 몸이 돌아 보인다. 등 쪽으로 기울어진 만큼 가로로 줄여서 몸에 붙은 것처럼 보이게 한다
 const isLight = (hex) => { const n = parseInt(String(hex).slice(1), 16); return ((n >> 16) * 0.3 + ((n >> 8) & 255) * 0.59 + (n & 255) * 0.11) > 160; };
-function drawBackNumber(k, P, col) {
-  const look = currentLook();
-  if (look.number !== 'number-on' || !Number.isInteger(look.no)) return;
-  const fc = k.facing(k.shTurn), at = V.add(k.chest, [-fc[0] * 0.14, -0.2, -fc[2] * 0.14]), q = P(at);   // 등 가운데 아래(팔에 덜 가린다)
-  if (!q) return;
+// 등번호 자리와 크기. 등 가운데 아래(팔에 덜 가린다)에 키 0.26m로 두고, 숫자 폭이 그 높이의 등 폭(몸이 돌면 좁아 보인다)의
+// 78%(한 자리는 50%)를 넘지 않게 가로로 줄인다. 전에는 키 0.3m에 폭을 안 봐서 두 자리면 등 밖으로 넘쳤다(2026-10-29 사용자 제보)
+function backNumberFit(k, P, str) {
+  const fc = k.facing(k.shTurn), lc = k.left(k.shTurn), at = V.add(k.chest, [-fc[0] * 0.14, -0.2, -fc[2] * 0.14]), q = P(at);
+  if (!q) return null;
   const wx = batSide() * (at[0] + batterShift()), d = [cam.x - wx, cam.y - at[1], cam.z - at[2]], len = V.len(d);
   const vis = (batSide() * -fc[0] * d[0] - fc[2] * d[2]) / len;   // 등 방향과 카메라 방향이 얼마나 같은지(0~1)
-  if (vis <= 0.2) return;
+  if (vis <= 0.2) return null;
+  const a = P(V.add(at, V.mul(lc, 0.18))), b = P(V.add(at, V.mul(lc, -0.18)));   // 그 높이의 등 양 끝(상의 폭 0.36m)
+  if (!a || !b) return null;
+  const size = Math.max(10, 0.26 * q.s), backW = Math.abs(a.x - b.x);
+  ctx.font = font(size, 900);
+  const textW = ctx.measureText(str).width;
+  return { x: (a.x + b.x) / 2, y: q.y, s: q.s, size, backW, textW, sx: Math.min(vis, backW * (str.length > 1 ? 0.78 : 0.5) / textW) };
+}
+
+// 테스트용: 스윙 뒤 tau초 자세에서 등번호 no가 차지하는 자리와 등 폭
+const backNumberBox = (no, tau) => backNumberFit(batterSkeleton(tau), batterPoint, String(no));
+
+function drawBackNumber(k, P, col, jersey) {
+  const look = currentLook();
+  if (look.number !== 'number-on' || !Number.isInteger(look.no)) return;
+  const str = String(look.no), fit = backNumberFit(k, P, str);
+  if (!fit) return;
   const light = isLight(col('jersey')), t = teamById(settings.team);
   ctx.save();
-  ctx.translate(q.x, q.y); ctx.scale(vis, 1);
-  ctx.font = font(Math.max(10, 0.3 * q.s), 900); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(2, 0.025 * q.s);
-  ctx.strokeStyle = light ? '#ffffff' : 'rgba(0,0,0,0.55)'; ctx.strokeText(String(look.no), 0, 0);
-  ctx.fillStyle = light ? (t ? t.main : '#1b1d24') : '#ffffff'; ctx.fillText(String(look.no), 0, 0);
+  if (jersey && smoothPath(jersey)) ctx.clip();   // 상의 밖으로는 그리지 않는다
+  ctx.translate(fit.x, fit.y); ctx.scale(fit.sx, 1);
+  ctx.font = font(fit.size, 900); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(2, 0.022 * fit.s);
+  ctx.strokeStyle = light ? '#ffffff' : 'rgba(0,0,0,0.55)'; ctx.strokeText(str, 0, 0);
+  ctx.fillStyle = light ? (t ? t.main : '#1b1d24') : '#ffffff'; ctx.fillText(str, 0, 0);
   ctx.restore();
 }
 
@@ -2757,7 +2779,7 @@ requestAnimationFrame(frame);
 syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox };
 </script>
 </body>
 </html>
