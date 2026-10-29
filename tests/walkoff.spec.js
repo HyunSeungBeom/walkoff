@@ -607,8 +607,9 @@ test.describe('화면', () => {
     await page.evaluate(() => walkoff.openShop('shop'));
     await tap(page, '내 물건');
     await page.waitForFunction(() => walkoff.game.shop.view === 'inventory');
-    const items = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).filter((l) => walkoff.SHOP_ITEMS.some((i) => i.slot === 'bat' && i.name === l)));
-    expect(items).toEqual(['원목', '빨강']);   // 가진 것만
+    // 버튼 목록은 다음 그림에서 바뀌어서, 바로 읽으면 상점 탭의 배트가 그대로 보일 때가 있다(CI에서 실패)
+    const batItems = () => page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).filter((l) => walkoff.SHOP_ITEMS.some((i) => i.slot === 'bat' && i.name === l)));
+    await expect.poll(batItems).toEqual(['원목', '빨강']);   // 가진 것만
     await tap(page, '원목');
     await tap(page, '착용하기');
     await expect.poll(() => page.evaluate(() => walkoff.wallet.look.bat)).toBe('bat-wood');
