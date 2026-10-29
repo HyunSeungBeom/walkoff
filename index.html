@@ -1265,6 +1265,14 @@ const SHARE_URL = 'https://hyunseungbeom.github.io/walkoff/';
 const today = (now = Date.now()) => new Date(now + 9 * 3600e3).toISOString().slice(0, 10);
 const dayNumber = (date) => Math.round((Date.parse(date) - Date.parse(DAILY_START)) / 864e5) + 1;
 const dailyRecord = () => store.get('daily.' + today(), null);
+// 오늘의 10구를 며칠 이어서 쳤는지. 이 브라우저의 날짜별 기록(daily.날짜)으로 세서 기기를 바꾸면 처음부터다(2026-10-29 사용자 결정).
+// 오늘 아직 안 쳤으면 어제까지 이어진 날 수(오늘 치면 이어진다)이고, 하루라도 빠지면 끊긴다
+function dailyStreak(day = today()) {
+  const played = new Set(store.keys('daily.').map((k) => k.slice('daily.'.length)));
+  let n = 0;
+  for (let d = played.has(day) ? day : addDay(day, -1); played.has(d); d = addDay(d, -1)) n++;
+  return n;
+}
 
 function dailySeed(date) {
   let h = 2166136261;
@@ -2293,9 +2301,12 @@ function drawTitle(time) {
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
   pill(m ? '탭해서 시작' : '스페이스바 · 빈 곳 클릭으로 시작', cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
   ctx.globalAlpha = 1;
-  const rec = dailyRecord(), day = dayNumber(today());
-  text(rec ? `오늘의 10구 #${day} ${rec.score.toLocaleString()}점 기록 · 지금은 10구 도전` : `오늘의 10구 #${day} · 주간 랭킹은 이번 주 최고 기록이에요`, cx, cy + (m ? 196 : 250),
-    { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.6)' });
+  const rec = dailyRecord(), day = dayNumber(today()), streak = dailyStreak();
+  const hot = !rec && streak >= 1;   // 이어 친 날이 있는데 오늘 아직 안 쳤으면 노랗게 보여 오늘도 치게 한다
+  const line = rec ? `오늘의 10구 #${day} ${rec.score.toLocaleString()}점 기록${streak >= 2 ? ` · ${streak}일 연속` : ''} · 지금은 10구 도전`
+    : hot ? `오늘의 10구 #${day} · ${streak >= 2 ? `${streak}일 연속 중 · 오늘 치면 ${streak + 1}일` : '오늘 치면 2일 연속'}`
+    : `오늘의 10구 #${day} · 주간 랭킹은 이번 주 최고 기록이에요`;
+  text(line, cx, cy + (m ? 196 : 250), { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
   const s = 40, pad = m ? 8 : 14;
   addButton({ x: view.w - pad - s, y: pad, w: s, h: s }, '메뉴', 'menuIcon', () => { game.state = 'menu'; });
   if (loggedIn() && wallet.coins != null) {   // 메뉴 옆 코인. 누르면 상점
@@ -2346,8 +2357,8 @@ function drawGameOver() {
   y += m ? 54 : 70;
   text(s.score.toLocaleString(), cx, y, { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
   y += m ? 50 : 64;
-  const best = game.mode === 'challenge';
-  text((best ? (game.newBest ? '새 최고 기록!' : `최고 기록 ${game.best.toLocaleString()}점`) : rankOf(s.score)) + coinNote(), cx, y,
+  const best = game.mode === 'challenge', streak = game.mode === 'daily' ? dailyStreak() : 0;   // 오늘의 10구는 이어 친 날 수(2일부터)
+  text((best ? (game.newBest ? '새 최고 기록!' : `최고 기록 ${game.best.toLocaleString()}점`) : rankOf(s.score)) + (streak >= 2 ? ` · ${streak}일 연속` : '') + coinNote(), cx, y,
     { size: m ? 18 : 22, color: best && game.newBest ? '#f2c94c' : '#fff' });
   y += m ? 40 : 50;
   const lights = s.lights.split(''), lg = Math.min(m ? 30 : 36, (m ? view.w - 70 : 520) / Math.max(1, lights.length - 1));

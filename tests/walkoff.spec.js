@@ -129,6 +129,25 @@ const tap = async (page, label) => {
   await page.mouse.click(r.x + r.w / 2, r.y + r.h / 2);
 };
 
+// 지금 화면에 그린 글자들. 캔버스라 DOM에 없어서 다음 그림 세 장 동안 fillText로 그린 글자를 모은다
+const drawnTexts = (page) => page.evaluate(() => new Promise((resolve) => {
+  const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, seen = new Set();
+  proto.fillText = function (s, ...rest) { seen.add(String(s)); return fill.call(this, s, ...rest); };
+  let k = 0;
+  const next = () => { if (++k < 3) requestAnimationFrame(next); else { proto.fillText = fill; resolve([...seen]); } };
+  requestAnimationFrame(next);
+}));
+
+// 오늘의 10구를 친 날을 이 브라우저 기록(daily.날짜)으로 둔다. ago는 며칠 전에 쳤는지(0은 오늘)
+const setPlayedDays = (page, ago) => page.evaluate((ago) => {
+  for (const k of walkoff.store.keys('daily.')) walkoff.store.remove(k);
+  const t = Date.parse(walkoff.today() + 'T00:00:00Z');
+  for (const n of ago) {
+    const date = new Date(t - n * 864e5).toISOString().slice(0, 10);
+    walkoff.store.set('daily.' + date, { score: 1500, hr: 0, hits: 3, balls: 1, far: 82, lights: 'GGRYGRRRRRR', bats: 'R', day: walkoff.dayNumber(date), date });
+  }
+}, ago);
+
 // 공이 홈플레이트에 닿는 시각보다 dt(ms)만큼 빠르게(-)/늦게(+) 스페이스를 보낸다. dt가 null이면 치지 않는다
 async function playPitch(page, dt) {
   await page.waitForFunction(() => ['windup', 'pitch'].includes(walkoff.game.state));
@@ -279,9 +298,10 @@ test.describe('한 판 끝까지', () => {
     expect(errors).toEqual([]);
   });
 
-  test('오늘의 10구: 첫 판만 기록되고, 다시 누르면 기록을 보여 준다', async ({ page }) => {
+  test('오늘의 10구: 첫 판만 기록되고(어제도 쳤으면 2일 연속), 다시 누르면 기록을 보여 준다', async ({ page }) => {
     test.slow();
     const errors = await open(page, '', { login: true });
+    await setPlayedDays(page, [1]);   // 어제도 쳤다
     await page.keyboard.press('Space');   // 오늘 아직 안 쳤으면 오늘의 10구로 시작
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('daily');
     await playUntilOver(page, 0);
@@ -294,6 +314,7 @@ test.describe('한 판 끝까지', () => {
     expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights, mode: 'daily' });   // 사람 ID는 서버가 로그인 표에서 꺼낸다. mode는 코인 2배 판단용
     await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
+    expect((await drawnTexts(page)).some((t) => / · 2일 연속( · |$)/.test(t))).toBe(true);   // 방금 친 판까지 세서 점수 아래 줄(코인 앞)에 붙는다
     await page.keyboard.press('Escape');
     await page.keyboard.press('Space');   // 오늘 친 뒤에는 10구 도전으로 시작
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
@@ -361,6 +382,33 @@ test.describe('화면', () => {
     await page.setViewportSize({ width: 360, height: 780 });   // 폭이 좁은 폰(예전에는 타자가 거의 화면 밖이었다)
     await page.waitForFunction(() => walkoff.batterSpan().w === 360);
     await check('360');
+    expect(errors).toEqual([]);
+  });
+
+  test('오늘의 10구 연속 기록: 시작 화면 아래 줄과 끝 화면에 이어 친 날 수가 나오고, 하루 빠지면 끊긴다', async ({ page }) => {
+    const errors = await open(page, '');
+    const day = await page.evaluate(() => walkoff.dayNumber(walkoff.today()));
+    const titleLine = async () => (await drawnTexts(page)).find((t) => t.startsWith(`오늘의 10구 #${day}`));
+    await setPlayedDays(page, [2, 3]);   // 어제를 걸러서 끊겼다
+    expect(await titleLine()).toBe(`오늘의 10구 #${day} · 주간 랭킹은 이번 주 최고 기록이에요`);
+    await setPlayedDays(page, [1, 3]);
+    expect(await titleLine()).toBe(`오늘의 10구 #${day} · 오늘 치면 2일 연속`);
+    await setPlayedDays(page, [1, 2]);
+    expect(await titleLine()).toBe(`오늘의 10구 #${day} · 2일 연속 중 · 오늘 치면 3일`);
+    await setPlayedDays(page, [0, 1, 2]);
+    expect(await titleLine()).toBe(`오늘의 10구 #${day} 1,500점 기록 · 3일 연속 · 지금은 10구 도전`);
+    // 끝 화면(메뉴의 오늘의 10구 결과 보기)은 점수 아래 줄에 붙는다
+    const streakLine = async () => (await drawnTexts(page)).find((t) => t.includes('일 연속'));
+    await tap(page, '메뉴');
+    await tap(page, '오늘의 10구 결과 보기');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    expect(await streakLine()).toBe('주전 타자 · 3일 연속');
+    // 오늘만 이어졌으면(어제를 걸렀으면) 끝 화면에도 시작 화면에도 없다
+    await setPlayedDays(page, [0, 2]);
+    expect(await streakLine()).toBeUndefined();
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    expect(await titleLine()).toBe(`오늘의 10구 #${day} 1,500점 기록 · 지금은 10구 도전`);
     expect(errors).toEqual([]);
   });
 
