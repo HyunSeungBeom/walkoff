@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#07111f">
+<title>walkoff 공유 시험</title>
+<!-- 결과 그림 카드를 카톡으로 보낼 때 그림과 주소 글이 같이 가는지 폰에서 시험하는 페이지(2026-10-29). 시험이 끝나면 지운다 -->
+<style>
+  body { margin: 0; background: #07111f; color: #e8ecf3; font: 16px/1.5 -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .how { color: #b8c2d3; font-size: 14px; margin: 0 0 14px; }
+  #env { font-size: 13px; color: #b8c2d3; background: rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
+  #card { width: 100%; aspect-ratio: 1; border-radius: 12px; display: block; margin-bottom: 6px; background: #10233d; }
+  .tip { color: #8d9bb0; font-size: 12px; margin: 0 0 14px; }
+  button { display: block; width: 100%; min-height: 52px; margin: 0 0 10px; border: 0; border-radius: 12px; background: #1f2b40; color: #fff; font: inherit; font-weight: 600; text-align: left; padding: 10px 14px; }
+  button small { display: block; font-weight: 400; color: #9fb0c8; font-size: 13px; }
+  button.main { background: #f2c94c; color: #1b1405; }
+  button.main small { color: #5a4a14; }
+  #log { font: 13px/1.6 ui-monospace, Menlo, monospace; white-space: pre-wrap; background: rgba(0,0,0,0.35); border-radius: 10px; padding: 10px 12px; min-height: 60px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>walkoff 공유 시험</h1>
+  <p class="how">버튼을 하나씩 눌러 카톡 '나와의 채팅'에 보내 보고, 채팅방에 그림과 주소 글이 둘 다 왔는지 봐 주세요. 카톡에서 이 페이지 링크를 눌러 카톡 안 브라우저로도 한 번 해 보면 좋아요. 시험이 끝나면 이 페이지는 지웁니다.</p>
+  <div id="env">확인하는 중…</div>
+  <img id="card" alt="결과 그림 카드 예시">
+  <p class="tip">사진 앱에 저장하려면 그림을 길게 누르세요.</p>
+  <button id="b1" class="main">① 그림 + 글(끝에 주소)<small>카드 그림과 지금 공유 글을 함께</small></button>
+  <button id="b2">② 그림 + 글 + 주소 칸<small>주소를 글 끝이 아니라 url 칸으로 따로</small></button>
+  <button id="b3">③ 그림만<small>글 없이 카드 그림만</small></button>
+  <button id="b4">④ 글만(지금 방식)<small>지금 게임의 결과 공유하기와 같음</small></button>
+  <button id="b5">⑤ 그림 저장<small>공유 대신 파일로 내려받기</small></button>
+  <div id="log"></div>
+</main>
+<script>
+const SHARE_URL = 'https://hyunseungbeom.github.io/walkoff/';
+const FONT = "-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif";
+const S = { day: 2, bats: '우타', score: 2350, rank: '주전 타자', streak: 3, hr: 1, hits: 3, balls: 2, far: 118, lights: 'GRYGRRYGRRRR' };
+const EMOJI = { G: '🟢', Y: '🟡', R: '🔴' }, COLOR = { G: '#3ddc6e', Y: '#facc15', R: '#ff4d4d' };
+// 지금 게임의 공유 글(shareText)과 같은 모양. BODY는 주소를 뺀 글
+const BODY = [`walkoff 오늘의 10구 #${S.day} (${S.bats})`, [...S.lights].map((c) => EMOJI[c]).join(''), `${S.score.toLocaleString()}점 · 홈런 ${S.hr} · 최장 ${S.far}m`].join('\n');
+const TEXT = `${BODY}\n${SHARE_URL}`;
+
+const $ = (id) => document.getElementById(id);
+const log = (msg) => { $('log').textContent = `${new Date().toTimeString().slice(0, 8)} ${msg}\n${$('log').textContent}`; };
+
+// 결과 그림 카드 예시(1080x1080). 끝 화면처럼 점수, 연속 기록, 전광판, 주소를 넣는다
+function drawCard() {
+  const c = document.createElement('canvas'); c.width = 1080; c.height = 1080;
+  const g = c.getContext('2d');
+  const sky = g.createLinearGradient(0, 0, 0, 1080); sky.addColorStop(0, '#07111f'); sky.addColorStop(1, '#16304f');
+  g.fillStyle = sky; g.fillRect(0, 0, 1080, 1080);
+  const t = (s, y, size, weight, color) => { g.font = `${weight} ${size}px ${FONT}`; g.fillStyle = color; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(s, 540, y); };
+  t('끝내기', 110, 40, 700, '#f2c94c');
+  t('walkoff', 195, 112, 900, '#ffffff');
+  t(`오늘의 10구 #${S.day} · ${S.bats}`, 320, 44, 600, 'rgba(255,255,255,0.75)');
+  t(S.score.toLocaleString(), 465, 200, 900, '#f2c94c');
+  t(`${S.rank} · ${S.streak}일 연속`, 605, 52, 700, '#ffffff');
+  const L = [...S.lights], gap = Math.min(72, 900 / Math.max(1, L.length - 1));
+  L.forEach((ch, i) => { g.beginPath(); g.arc(540 + (i - (L.length - 1) / 2) * gap, 715, 24, 0, Math.PI * 2); g.fillStyle = COLOR[ch]; g.fill(); });
+  t(`홈런 ${S.hr} · 안타 ${S.hits} · 볼 ${S.balls} · 가장 멀리 ${S.far}m`, 810, 40, 600, 'rgba(255,255,255,0.88)');
+  t('walkoff · hyunseungbeom.github.io/walkoff', 980, 36, 600, 'rgba(255,255,255,0.6)');
+  return c;
+}
+
+let file = null;
+function showEnv() {
+  const ua = navigator.userAgent;
+  const os = /iPhone|iPad|iPod/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : '그 밖의 기기';
+  let files = '모름';
+  try { if (navigator.canShare && file) files = navigator.canShare({ files: [file] }) ? '됨' : '안 됨'; } catch (e) { files = `확인 실패(${e.name})`; }
+  $('env').textContent = `${os}${/KAKAOTALK/i.test(ua) ? ' · 카톡 안 브라우저' : ''} · 공유 기능 ${navigator.share ? '있음' : '없음'} · 그림 공유 ${files}`;
+}
+drawCard().toBlob((blob) => {
+  file = new File([blob], 'walkoff-result.png', { type: 'image/png' });
+  $('card').src = URL.createObjectURL(blob);
+  showEnv();
+}, 'image/png');
+
+// 아이폰은 누른 그 순간에 공유를 불러야 해서, 그림은 미리 만들어 두고 공유 전에 기다리는 일을 두지 않는다
+async function share(label, data) {
+  if (!navigator.share) { log(`${label} 이 브라우저는 공유 기능이 없어요`); return; }
+  try {
+    if (data.files && navigator.canShare && !navigator.canShare(data)) { log(`${label} 이 브라우저는 이 모양으로 그림을 공유하지 못해요`); return; }
+  } catch (e) { log(`${label} 확인 실패 ${e.name}`); return; }
+  try { await navigator.share(data); log(`${label} 공유 창에서 보낼 곳을 골랐어요`); }
+  catch (e) { log(`${label} ${e && e.name === 'AbortError' ? '취소했어요' : `실패 ${e && e.name}: ${e && e.message}`}`); }
+}
+const withFile = (fn) => () => (file ? fn() : log('그림을 아직 만드는 중이에요'));
+$('b1').onclick = withFile(() => share('①', { files: [file], text: TEXT }));
+$('b2').onclick = withFile(() => share('②', { files: [file], text: BODY, url: SHARE_URL }));
+$('b3').onclick = withFile(() => share('③', { files: [file] }));
+$('b4').onclick = () => share('④', { text: TEXT });
+$('b5').onclick = withFile(() => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file); a.download = 'walkoff-result.png';
+  document.body.appendChild(a); a.click(); a.remove();
+  log('⑤ 내려받기를 눌렀어요(카톡 안 브라우저에서는 안 될 수 있어요)');
+});
+</script>
+</body>
+</html>
