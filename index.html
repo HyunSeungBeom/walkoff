@@ -1755,7 +1755,9 @@ function api(path, { method = 'GET', body } = {}) {
 function startKakaoLogin() {
   const n = `n${Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')}`;
   store.set('loginNonce', n);
-  location.href = `${RANKING_API}/auth/kakao/start?${new URLSearchParams({ n, pid: settings.playerId, return: location.href.split('#')[0] })}`;
+  // 저장소에 쓴 확인값이 브라우저에 넘어갈 틈을 주고 떠난다. 바로 떠나면 값이 넘어가기 전에 페이지가 닫힐 수 있다(CI 테스트에서 봤다)
+  const url = `${RANKING_API}/auth/kakao/start?${new URLSearchParams({ n, pid: settings.playerId, return: location.href.split('#')[0] })}`;
+  setTimeout(() => { location.href = url; }, 50);
 }
 
 // 카카오 로그인에서 돌아오면 주소 뒤에 #login=표&n=확인값(실패하면 #login_error=까닭&n=확인값)이 붙는다.
