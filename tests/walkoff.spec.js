@@ -69,11 +69,25 @@ async function kakaoStart(errors) {
   return errors.calls.find((c) => c.path === '/auth/kakao/start').query;
 }
 
-// 카카오 로그인을 마치고 게임으로 돌아온 것처럼 연다. n은 게임이 보낸 확인값
-async function loginReturn(page, query, n, { error } = {}) {
+// 카카오 로그인을 마치고 게임으로 돌아온 것처럼 연다. n은 돌려줄 확인값, stored는 게임이 적어 뒀어야 할 확인값.
+// 크롬은 저장소에 쓴 값을 새로 연 페이지에 조금 늦게 알릴 때가 있어서(느린 CI에서 실패했다), 새 페이지에서 그 값이 보인 뒤에 돌아온다
+async function loginReturn(page, query, n, { error, stored = n } = {}) {
+  await page.goto('about:blank');
+  await page.goto(`${PAGE}${query}`);
+  await page.waitForFunction((v) => localStorage.getItem('walkoff.loginNonce') === v, stored, { timeout: 10_000 });
   await page.goto('about:blank');
   await page.goto(`${PAGE}${query}#${error ? `login_error=${error}` : `login=${SESSION}`}&n=${n}`);
   await page.waitForFunction(() => !!window.walkoff);
+}
+
+// 저장한 값이 새로고침한 페이지에 보일 때까지 몇 번 새로고침한다. 크롬은 저장소에 쓴 값을 새 페이지에 조금 늦게 알릴 때가 있다
+async function reloadUntil(page, fn) {
+  for (let i = 0; i < 5; i++) {
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    if (await page.evaluate(fn)) return;
+    await page.waitForTimeout(300);
+  }
 }
 
 // 버튼은 그릴 때마다 다시 모으므로, 화면이 막 바뀌었으면 다음 그림에서 나타날 때까지 잠깐 기다린다
@@ -287,7 +301,7 @@ test.describe('화면', () => {
     await tap(page, '나중에 하기');
     expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
     await page.reload();
-    await page.waitForFunction(() => !!window.walkoff);
+    await page.waitForFunction(() => !!window.walkoff && walkoff.store.get('loginLater', '') === walkoff.today());   // 다시 열어도 남아 있다(새 페이지에 늦게 보일 때가 있어 기다린다)
     await page.keyboard.press('Space');   // 나중에 하기를 누른 날은 다시 묻지 않는다
     expect(await page.evaluate(() => walkoff.game.state)).toBe('windup');
     await page.evaluate(() => { walkoff.store.set('loginLater', '2000-01-01'); walkoff.goTitle(); });   // 다른 날이 되면 다시 묻는다
@@ -303,8 +317,7 @@ test.describe('화면', () => {
     const left = await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '좌타').r);
     await page.mouse.click(left.x + left.w / 2, left.y + left.h / 2);
     expect(await page.evaluate(() => walkoff.game.state)).toBe('title');   // 버튼을 눌러도 경기는 시작하지 않는다
-    await page.reload();
-    await page.waitForFunction(() => !!window.walkoff);
+    await reloadUntil(page, () => walkoff.settings.bats === 'L');
     expect(await page.evaluate(() => walkoff.settings.bats)).toBe('L');
     expect(errors).toEqual([]);
   });
@@ -329,8 +342,7 @@ test.describe('화면', () => {
     await page.mouse.click(20, vp.height - 20);
     expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
     expect(await page.evaluate(() => walkoff.game.opponent !== 'hanwha' && walkoff.pitcherColors().navy !== '#1d2f5c')).toBe(true);   // 투수는 상대 팀 색
-    await page.reload();
-    await page.waitForFunction(() => !!window.walkoff);
+    await reloadUntil(page, () => walkoff.settings.team === 'hanwha');
     expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick, jersey: walkoff.batterColors().jersey })))
       .toEqual({ state: 'title', team: 'hanwha', nick: '명은', jersey: '#e65c00' });   // 한화 상의 #ff6600을 조명에 맞춰 0.9배
     expect(errors.calls).toEqual([]);   // 로그인하지 않으면 서버에 아무것도 보내지 않는다
@@ -360,7 +372,7 @@ test.describe('화면', () => {
     expect(await page.evaluate(() => ({ token: walkoff.auth.token, toast: walkoff.game.toast?.text, nonce: localStorage.getItem('walkoff.loginNonce') })))
       .toEqual({ token: null, toast: '카카오 로그인을 취소했어요', nonce: null });
     await page.evaluate(() => localStorage.setItem('walkoff.loginNonce', 'nabc12345678'));
-    await loginReturn(page, '?seed=42', 'nother1234567');   // 다른 사람이 만든 로그인 주소
+    await loginReturn(page, '?seed=42', 'nother1234567', { stored: 'nabc12345678' });   // 다른 사람이 만든 로그인 주소
     expect(await page.evaluate(() => ({ token: walkoff.auth.token, session: localStorage.getItem('walkoff.session'), hash: location.hash })))
       .toEqual({ token: null, session: null, hash: '' });
     expect(errors.calls.filter((c) => c.path === '/me')).toEqual([]);
