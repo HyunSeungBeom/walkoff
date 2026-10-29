@@ -652,6 +652,24 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('타자는 팔로스루에서 두 팔꿈치가 몸 앞쪽에 있어 등 위로 팔이 그려지지 않는다', async ({ page }) => {
+    const errors = await open(page);
+    for (const tau of [0.15, 0.22, 0.3, 0.45, 0.7]) {
+      const k = await page.evaluate((tau) => { const k = walkoff.batterSkeleton(tau); return { chest: k.chest[2], l: k.elbows.l[2], r: k.elbows.r[2] }; }, tau);
+      expect(k.r, `${tau}초 뒷팔`).toBeGreaterThan(k.chest);   // 포수 시점에서 몸보다 멀다(예전에는 뒤로 꺾여 아래팔이 등을 가로질렀다)
+      expect(k.l, `${tau}초 앞팔`).toBeGreaterThan(k.chest);
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('투수는 공을 놓는 순간 손이 공이 출발하는 자리에 있다(투구 동작을 바꿔도 공 궤적은 그대로)', async ({ page }) => {
+    const errors = await open(page);
+    const hand = await page.evaluate(() => walkoff.pitcherHandAt(1.0));
+    expect(hand.x).toBeCloseTo(-0.55, 6); expect(hand.y).toBeCloseTo(1.75, 6); expect(hand.z).toBeCloseTo(17.0, 6);   // RELEASE
+    expect(await page.evaluate(() => walkoff.pitcherHandAt(0.8).y)).toBeGreaterThan(1.9);   // 발을 디딜 때 공 쥔 손은 머리 뒤로 올라가 있다
+    expect(errors).toEqual([]);
+  });
+
   test('등번호는 두 자리여도 등 폭 안에 들어간다(몸이 돌아도, 우타·좌타)', async ({ page }) => {
     const errors = await open(page);
     let seen = 0;

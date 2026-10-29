@@ -481,14 +481,20 @@ function drawField() {
 // ===== 투수 =====
 // 포즈는 투수 발밑(마운드 위) 기준 [x, y] 미터. 화면 왼쪽이 투수의 오른팔이다
 const POSES = {
-  set:     { z: 0,     hip: [0, 0.95],    sh: [0, 1.45],     head: [0, 1.68],     hand: [-0.08, 1.18], glove: [0.06, 1.2],  lknee: [0.12, 0.5],  lfoot: [0.15, 0],    rfoot: [-0.15, 0] },
-  lift:    { z: 0,     hip: [0.02, 0.98], sh: [-0.02, 1.47], head: [-0.03, 1.7],  hand: [0, 1.22],     glove: [0.05, 1.24], lknee: [0.24, 0.95], lfoot: [0.14, 0.55], rfoot: [-0.1, 0] },
-  cock:    { z: -0.6,  hip: [0.05, 0.86], sh: [0, 1.36],     head: [0.02, 1.58],  hand: [-0.62, 1.58], glove: [0.45, 1.25], lknee: [0.3, 0.45],  lfoot: [0.42, 0],    rfoot: [-0.25, 0.05] },
-  release: { z: -1.44, hip: [0.05, 0.8],  sh: [-0.02, 1.3],  head: [-0.02, 1.52], hand: [-0.55, 1.5],  glove: [0.3, 1.0],   lknee: [0.3, 0.45],  lfoot: [0.42, 0],    rfoot: [-0.2, 0.15] },
-  follow:  { z: -1.5,  hip: [0.08, 0.74], sh: [0.1, 1.12],   head: [0.12, 1.32],  hand: [0.38, 0.62],  glove: [0.3, 0.95],  lknee: [0.3, 0.4],   lfoot: [0.42, 0],    rfoot: [0.02, 0.35] },
+  set:     { z: 0,     hip: [0, 0.95],    sh: [0, 1.45],     head: [0, 1.68],     hand: [-0.08, 1.18], glove: [0.06, 1.2],  lknee: [0.12, 0.5],  lfoot: [0.15, 0],     rfoot: [-0.15, 0] },
+  lift:    { z: 0,     hip: [0.02, 0.98], sh: [-0.02, 1.47], head: [-0.03, 1.7],  hand: [0, 1.22],     glove: [0.05, 1.24], lknee: [0.2, 1.02],  lfoot: [0.12, 0.62],  rfoot: [-0.08, 0] },
+  break:   { z: -0.3,  hip: [0.03, 0.92], sh: [0, 1.43],     head: [0, 1.66],     hand: [-0.42, 1.02], glove: [0.3, 1.34],  lknee: [0.3, 0.72],  lfoot: [0.3, 0.3],    rfoot: [-0.12, 0] },
+  cock:    { z: -0.85, hip: [0.04, 0.84], sh: [0.02, 1.36],  head: [0.02, 1.6],   hand: [-0.46, 1.74], glove: [0.36, 1.32], lknee: [0.27, 0.42], lfoot: [0.27, -0.04], rfoot: [-0.2, 0.04] },
+  top:     { z: -1.2,  hip: [0.05, 0.8],  sh: [0, 1.32],     head: [0, 1.55],     hand: [-0.38, 1.84], glove: [0.26, 1.18], lknee: [0.28, 0.42], lfoot: [0.28, -0.04], rfoot: [-0.18, 0.1] },
+  release: { z: -1.44, hip: [0.05, 0.78], sh: [0.02, 1.28],  head: [0.03, 1.5],   hand: [-0.55, 1.5],  glove: [0.18, 1.1],  lknee: [0.28, 0.42], lfoot: [0.28, -0.04], rfoot: [-0.16, 0.16] },
+  follow:  { z: -1.5,  hip: [0.08, 0.74], sh: [0.12, 1.12],  head: [0.14, 1.32],  hand: [0.38, 0.62],  glove: [0.3, 0.95],  lknee: [0.3, 0.4],   lfoot: [0.3, -0.04],  rfoot: [0, 0.4] },
 };
 const WINDUP = 1.0;   // 와인드업 시작부터 공을 놓기까지(초)
-const POSE_KEYS = [[0, 'set'], [0.35, 'lift'], [0.75, 'cock'], [WINDUP, 'release'], [1.25, 'follow'], [2.2, 'set']];
+// 다리 들기 → 공 쥔 손을 뒤로 빼며 앞으로 내딛기 → 발이 닿을 때 팔은 머리 뒤로 → 팔이 머리 위로 넘어와 놓기 → 반대쪽 무릎으로 떨어지기.
+// 전에는 발을 옆으로 벌리고 팔을 어깨 높이에서 옆으로 휘둘러서 어색했다(2026-10-29 사용자 제보). 놓는 손은 RELEASE와 같은 자리라 공 궤적은 그대로다
+const POSE_KEYS = [[0, 'set'], [0.35, 'lift'], [0.55, 'break'], [0.78, 'cock'], [0.9, 'top'], [WINDUP, 'release'], [1.25, 'follow'], [2.2, 'set']];
+// 테스트용: t초에 그린 투수 손의 자리(마운드 높이 0.25m 포함). 공을 놓는 순간에는 RELEASE와 같아야 공이 손에서 나간다
+const pitcherHandAt = (t) => { const q = pitcherPose(t); return { x: q.hand[0], y: 0.25 + q.hand[1], z: MOUND + q.z }; };
 
 function pitcherPose(t) {
   if (t <= 0) return POSES.set;
@@ -601,8 +607,13 @@ function drawPitcher(t, holdingBall, lefty) {
     ellipseAt(P(hand), 0.05 * s, 0.05 * s, C.skin);
   };
   const rSh = [sh[0] - 0.2, sh[1] - 0.03], lSh = [sh[0] + 0.2, sh[1] - 0.03];
-  const armBehind = t > 0.45 && t < 0.9;   // 팔을 뒤로 젖힐 때는 몸 뒤에 그린다
-  if (armBehind) arm(rSh, pose.hand, -0.14);
+  const throwArm = () => {   // 공을 쥔 팔. 공도 팔과 같이 그려야 팔이 몸 뒤에 있을 때 공이 몸 위로 비치지 않는다
+    arm(rSh, pose.hand, -0.14);
+    const hd = P(pose.hand);
+    if (holdingBall) ellipseAt({ x: hd.x, y: hd.y - 0.03 * s }, 0.045 * s, 0.045 * s, '#ffffff');
+  };
+  const armBehind = t > 0.45 && t < 0.95;   // 공 쥔 손을 뒤로 뺐다가 머리 위로 넘길 때까지는 몸 뒤에 그린다
+  if (armBehind) throwArm();
 
   // 몸통: 어깨가 넓고 허리가 좁다. 조명이 왼쪽 위에서 와서 오른쪽이 조금 어둡다
   const torso = [P([sh[0] - 0.07, sh[1] + 0.04]), P([sh[0] - 0.24, sh[1] - 0.01]), P([hip[0] - 0.16, hip[1] + 0.08]),
@@ -618,9 +629,7 @@ function drawPitcher(t, holdingBall, lefty) {
   const gp = P(pose.glove);
   ellipseAt(gp, 0.12 * s, 0.14 * s, C.glove);
   ellipseAt({ x: gp.x - hs * 0.02 * s, y: gp.y + 0.02 * s }, 0.06 * s, 0.08 * s, C.pocket);
-  if (!armBehind) arm(rSh, pose.hand, -0.14);
-  const hd = P(pose.hand);
-  if (holdingBall) ellipseAt({ x: hd.x, y: hd.y - 0.03 * s }, 0.045 * s, 0.045 * s, '#ffffff');
+  if (!armBehind) throwArm();
 
   // 목, 얼굴, 모자
   const head = P(pose.head);
@@ -729,8 +738,8 @@ function batPose(tau) {
   if (tau == null) { yaw = -100; pitch = 55; hand = [-0.84, 1.48, 0.04]; }
   else {
     const e = easeOut(tau / SWING_TIME);
-    yaw = lerp(5, 185, e); pitch = lerp(-8, 35, e);
-    hand = [lerp(-0.5, -0.82, e), lerp(1.02, 1.45, e), lerp(0.3, 0.45, e)];
+    yaw = lerp(5, 195, e); pitch = lerp(-8, 45, e);
+    hand = [lerp(-0.5, -1.0, e), lerp(1.02, 1.62, e), lerp(0.3, 0.44, e)];   // 끝에는 손이 앞어깨(왼쪽) 위로 가고 방망이는 어깨 너머로 넘어간다
   }
   const c = Math.cos(pitch * DEG);
   const tip = [hand[0] + BAT_LEN * c * Math.cos(yaw * DEG), hand[1] + BAT_LEN * Math.sin(pitch * DEG), hand[2] + BAT_LEN * c * Math.sin(yaw * DEG)];
@@ -739,13 +748,13 @@ function batPose(tau) {
 
 const BATTER_COLOR = {
   jersey: '#8b93a6', shade: '#6c7487', pants: '#a0a7b7', pantsShade: '#7f8696', accent: '#74182a', helmet: '#74182a', belt: '#1b1d24',
-  skin: '#c18f69', shoe: '#121418', glove: '#e9e9ec', bat: '#c8955a', batEnd: '#8a5e32', rim: 'rgba(225,232,245,0.6)',
+  skin: '#c18f69', shoe: '#121418', glove: '#e9e9ec', bat: '#c8955a', batEnd: '#8a5e32', rim: 'rgba(225,232,245,0.6)', sleeve: '#596173',
 };
 
 // ===== 팀 =====
 // KBO 10개 구단(2026-10-28 사용자 결정). 구단 이름은 상표라서 로고·엠블럼은 쓰지 않고, 팀 고르기·랭킹 화면에
 // "KBO·각 구단과 관계없는 비공식 팬 게임"이라고 적는다. 색은 공식 색상 코드가 아니라 대표 색에 가깝게 고른 값이다.
-// id는 랭킹 서버(worker/src/rules.js)의 TEAM_IDS와 순서까지 같아야 한다. main은 상의·헬멧, accent는 소매·스타킹 색이다
+// id는 랭킹 서버(worker/src/rules.js)의 TEAM_IDS와 순서까지 같아야 한다. main은 상의·헬멧(소매는 main을 어둡게), accent는 양말 색이다
 const TEAMS = [
   { id: 'kia', name: 'KIA 타이거즈', short: 'KIA', main: '#ea0029', accent: '#0b1c2c' },
   { id: 'kt', name: 'KT 위즈', short: 'KT', main: '#1b1b1b', accent: '#eb1c24' },
@@ -782,7 +791,7 @@ function batterColors() {
   const t = teamById(game.state === 'onboard' && game.onboard?.team ? game.onboard.team : settings.team), look = currentLook();
   const key = `b-${t?.id ?? '-'}-${look.bat}-${look.helmet}-${look.glove}-${look.shoe}-${look.uniform}`;
   if (paletteCache[key]) return paletteCache[key];
-  const base = t ? { ...BATTER_COLOR, jersey: tint(t.main, 0.9), shade: tint(t.main, 0.7), helmet: tint(t.main, 0.75), accent: t.accent, pants: '#b4b9c4', pantsShade: '#8f949f' } : BATTER_COLOR;
+  const base = t ? { ...BATTER_COLOR, jersey: tint(t.main, 0.9), shade: tint(t.main, 0.7), helmet: tint(t.main, 0.75), accent: t.accent, sleeve: tint(t.main, 0.6), pants: '#b4b9c4', pantsShade: '#8f949f' } : BATTER_COLOR;
   return (paletteCache[key] = lookPalette(base, t, look));
 }
 
@@ -806,7 +815,10 @@ function batterSkeleton(tau) {
   const feet = { l: at(0.03, 0.06, 0.4), r: at(-0.06 + 0.08 * e, 0.06 + 0.1 * e, -0.36) };   // 스윙하면 뒷발 뒤꿈치가 들린다
   const knees = { l: bendJoint(hips.l, feet.l, 0.46, 0.45, [1, 0, 0]), r: bendJoint(hips.r, feet.r, 0.46, 0.45, [1, 0, 0]) };
   const { hand, tip, yaw } = batPose(tau);
-  const elbows = { r: bendJoint(shoulders.r, hand, 0.3, 0.29, [-0.3, -0.7, -0.6]), l: bendJoint(shoulders.l, hand, 0.3, 0.29, [0.3, -1, 0.3]) };
+  // 팔꿈치가 굽는 쪽. 준비·맞는 순간에는 뒷팔 팔꿈치가 아래·뒤(포수 쪽)이고, 팔로스루에서는 두 팔이 몸 앞으로 감겨 등 뒤에서는 가려진다.
+  // 전에는 끝까지 뒤로 꺾여서 아래팔이 등을 가로질러 보였다(2026-10-29 사용자 제보)
+  const pole = (a, b) => V.add(V.mul(a, 1 - e), V.mul(b, e));
+  const elbows = { r: bendJoint(shoulders.r, hand, 0.3, 0.29, pole([-0.3, -0.7, -0.6], [0.3, -0.5, 1])), l: bendJoint(shoulders.l, hand, 0.3, 0.29, pole([0.3, -1, 0.3], [-0.9, 0.4, 0.5])) };
   return { e, shTurn, hipTurn, pelvis, chest, hips, shoulders, feet, knees, elbows, hand, tip, yaw, left, facing, head: V.add(chest, [0.04, 0.24, 0.02]) };
 }
 
@@ -824,14 +836,16 @@ function drawBatterFigure(k, col, dy) {
   for (const side of ['l', 'r']) {
     const far = side === 'l';   // 왼쪽 팔다리가 카메라에서 먼 쪽이라 조금 어둡다
     parts.push({ depth: k.knees[side][2], draw: () => {
+      const ankle = V.add(k.knees[side], V.mul(V.sub(k.feet[side], k.knees[side]), 0.62));   // 긴 바지 아래로 양말(보조색)이 조금 보인다
       seg(k.hips[side], k.knees[side], 0.19, 0.13, far ? 'pantsShade' : 'pants');
-      seg(k.knees[side], k.feet[side], 0.12, 0.08, 'accent');
+      seg(k.knees[side], ankle, 0.13, 0.1, far ? 'pantsShade' : 'pants');
+      seg(ankle, k.feet[side], 0.09, 0.08, 'accent');
       const f = P(k.feet[side]);
       if (f) ellipseAt({ x: f.x + batSide() * 0.05 * f.s, y: f.y }, 0.12 * f.s, 0.045 * f.s, col('shoe'));
     } });
     parts.push({ depth: k.elbows[side][2], draw: () => {
       seg(k.shoulders[side], k.elbows[side], 0.12, 0.095, far ? 'shade' : 'jersey');
-      seg(k.elbows[side], k.hand, 0.09, 0.07, 'accent');
+      seg(k.elbows[side], k.hand, 0.09, 0.07, 'sleeve');
     } });
   }
   parts.push({ depth: k.chest[2], draw: () => {
@@ -2097,7 +2111,7 @@ function currentLook() {
 // 팀 색 바탕 위에 유니폼 스타일과 배트·헬멧·장갑·신발 색을 덮는다. 유니폼 스타일은 소매·스타킹을 팀 색으로 둔다
 function lookPalette(base, t, look) {
   const c = { ...base }, u = shopItem(look.uniform)?.colors;
-  if (u) Object.assign(c, u, t ? { accent: t.main } : {});
+  if (u) Object.assign(c, u, t ? { accent: t.main, sleeve: t.main } : {});   // 상점 유니폼도 소매·양말은 팀 색
   for (const slot of ['bat', 'helmet', 'glove', 'shoe']) Object.assign(c, shopItem(look[slot])?.colors ?? {});
   return c;
 }
@@ -2783,7 +2797,7 @@ requestAnimationFrame(frame);
 syncAccount();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, dailySeed, dayNumber, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt };
 </script>
 </body>
 </html>
