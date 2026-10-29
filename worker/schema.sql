@@ -18,5 +18,11 @@ CREATE TABLE IF NOT EXISTS accounts (
   player_id TEXT NOT NULL UNIQUE,                -- daily_scores.player_id
   nick TEXT,                                     -- 마지막으로 쓴 닉네임·팀. 다른 기기에서 로그인하면 이어 준다
   team TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 상점(2026-10-29). 이미 있던 DB에는 migrations/0002_shop.sql로 더했다
+  coins INTEGER NOT NULL DEFAULT 0,              -- 코인 잔액
+  owned TEXT NOT NULL DEFAULT '[]',              -- 산 물건 id(JSON 배열)
+  equipped TEXT NOT NULL DEFAULT '{}',           -- 종류별 착용 물건 id와 등번호 no(JSON)
+  coin_at INTEGER NOT NULL DEFAULT 0,            -- 마지막으로 코인을 준 시각(ms)
+  daily_bonus_day TEXT NOT NULL DEFAULT ''       -- 오늘의 10구 2배를 준 날(하루 한 번)
 );

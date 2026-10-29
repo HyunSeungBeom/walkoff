@@ -43,6 +43,7 @@ async function login(code, pid = '') {
   return { kakao, back, hash: Object.fromEntries(new URLSearchParams(back.hash.slice(1))) };
 }
 const me = async (token) => (await call('GET', '/me', { token })).json();
+const profile = ({ ok, playerId, nick, team }) => ({ ok, playerId, nick, team });   // /me에서 지갑을 뺀 계정 정보
 const score = (patch) => ({ nick: '민성', team: 'lg', day: kstDay(Date.now()), lights: 'GGRRGGRRGR', score: 3000, ...patch });
 
 test('로그인 시작: 카카오로 보내고, 허용하지 않은 돌아갈 주소는 거절한다', async () => {
@@ -65,7 +66,9 @@ test('첫 로그인은 이 브라우저 ID를 이어 쓰고, 다른 기기에서
   assert.equal(first.hash.n, N);
   assert.deepEqual(kakaoCalls.find((c) => c.url.endsWith('/oauth/token')).body,
     { grant_type: 'authorization_code', client_id: 'rest-key', redirect_uri: 'https://api.test/auth/kakao/callback', code: 'c1', client_secret: 'client-secret' });
-  assert.deepEqual(await me(first.hash.login), { ok: true, playerId: 'p-device-0001', nick: null, team: null });
+  const fresh = await me(first.hash.login);
+  assert.deepEqual(profile(fresh), { ok: true, playerId: 'p-device-0001', nick: null, team: null });
+  assert.deepEqual([fresh.coins, fresh.owned, fresh.look.bat], [0, [], 'bat-wood']);   // 새 계정은 코인 0, 기본 물건
 
   const second = await login('c2', 'p-device-0002');   // 같은 카카오 계정, 다른 기기
   assert.equal((await me(second.hash.login)).playerId, 'p-device-0001');
@@ -102,7 +105,7 @@ test('점수는 로그인해야 받고, 사람 ID는 로그인 표에서 꺼낸�
   const higher = await (await call('POST', '/scores', { body: score({ score: 5000 }), token })).json();   // 더 높은 판은 바로 갱신
   assert.deepEqual([higher.accepted, higher.me], [true, { rank: 1, best: 5000, total: 5000, days: 1, team: 'lg' }]);
   assert.deepEqual(env.DB.rows('SELECT player_id, score FROM daily_scores'), [{ player_id: 'p-device-0001', score: 5000 }]);
-  assert.deepEqual(await me(token), { ok: true, playerId: 'p-device-0001', nick: '민성', team: 'lg' });   // 다른 기기에서 이어 줄 팀·닉네임
+  assert.deepEqual(profile(await me(token)), { ok: true, playerId: 'p-device-0001', nick: '민성', team: 'lg' });   // 다른 기기에서 이어 줄 팀·닉네임
 });
 
 test('팀·닉네임 바꾸기와 기록 지우기', async () => {
@@ -118,6 +121,45 @@ test('팀·닉네임 바꾸기와 기록 지우기', async () => {
   assert.equal(env.DB.rows('SELECT * FROM accounts').length, 0);
   assert.equal((await call('GET', '/me', { token })).status, 401);   // 지운 계정의 표는 더 못 쓴다
   assert.equal((await call('POST', '/scores', { body: score(), token })).status, 401);
+});
+
+test('코인: 판마다 점수의 1/100, 오늘의 10구 첫 판은 하루 한 번 2배, 20초 안에 또 보내면 주지 않는다', async () => {
+  const token = (await login('c1', 'p-device-0001')).hash.login;
+  const send = async (patch) => (await call('POST', '/scores', { token, body: score(patch) })).json();
+  const wait20s = () => env.DB.prepare('UPDATE accounts SET coin_at = 0').run();   // 20초가 지난 것처럼
+  assert.deepEqual(await send({ score: 3050, mode: 'daily' }).then((r) => [r.earned, r.bonus, r.coins]), [60, true, 60]);
+  assert.deepEqual(await send({ score: 4000, mode: 'challenge' }).then((r) => [r.earned, r.coins]), [0, 60]);   // 20초 안에 또 왔다(점수는 받는다)
+  await wait20s();
+  assert.deepEqual(await send({ score: 4000, mode: 'daily' }).then((r) => [r.earned, r.bonus, r.coins]), [40, false, 100]);   // 2배는 하루 한 번
+  await wait20s();
+  assert.deepEqual(await send({ score: 2500 }).then((r) => [r.earned, r.coins]), [25, 125]);   // mode를 안 보내는 예전 게임도 1/100
+  assert.equal((await me(token)).coins, 125);
+});
+
+test('상점: 산 것만 입고, 코인이 모자라거나 이미 있으면 못 산다', async () => {
+  assert.equal((await call('POST', '/shop/buy', { body: { item: 'bat-red' } })).status, 401);
+  const token = (await login('c1', 'p-device-0001')).hash.login;
+  await env.DB.prepare('UPDATE accounts SET coins = 500').run();
+  const buy = async (item) => { const r = await call('POST', '/shop/buy', { token, body: { item } }); return [r.status, await r.json()]; };
+  const equip = async (body) => { const r = await call('POST', '/shop/equip', { token, body }); return [r.status, await r.json()]; };
+  const [st, ok] = await buy('bat-red');
+  assert.deepEqual([st, ok.coins, ok.owned], [200, 350, ['bat-red']]);
+  assert.deepEqual((await buy('bat-red')).map((x, i) => (i ? x.error : x)), [400, 'already_owned']);
+  assert.deepEqual((await buy('bat-gold')).map((x, i) => (i ? x.error : x)), [400, 'not_enough_coins']);
+  assert.equal((await buy('bat-wood'))[1].error, 'free_item');
+  assert.equal((await buy('no-such'))[1].error, 'unknown_item');
+  assert.equal((await me(token)).coins, 350);   // 거절된 것은 코인을 빼지 않았다
+
+  assert.equal((await equip({ item: 'bat-gold' }))[1].error, 'not_owned');
+  assert.equal((await equip({ item: 'bat-red' }))[1].look.bat, 'bat-red');
+  assert.equal((await equip({ item: 'helmet-team' }))[1].look.helmet, 'helmet-team');   // 기본 물건은 사지 않아도 입는다
+  assert.equal((await equip({ item: 'number-on', number: 7 }))[1].error, 'not_owned');
+  assert.equal((await buy('number-on'))[1].coins, 50);
+  assert.equal((await equip({ item: 'number-on', number: 100 }))[1].error, 'bad_number');
+  const [, eq] = await equip({ item: 'number-on', number: 7 });
+  assert.deepEqual([eq.look.number, eq.look.no, eq.look.bat], ['number-on', 7, 'bat-red']);
+  const mine = await me(token);
+  assert.deepEqual([mine.coins, mine.owned, mine.look.bat, mine.look.no], [50, ['bat-red', 'number-on'], 'bat-red', 7]);   // 다른 기기에서도 그대로
 });
 
 test('다른 주소의 게임이 로그인 표를 보낼 수 있다(CORS)', async () => {

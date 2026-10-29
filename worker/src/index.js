@@ -3,6 +3,7 @@
 // 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다)
 import { kstDay, weekStart, addDays, validateSubmission, validateProfile, aggregate } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
+import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -81,9 +82,28 @@ async function loginCallback(url, env, now) {
 }
 
 // 로그인 표의 계정. 기록을 지운 계정의 표는 받지 않는다
+const ACCOUNT_COLS = 'player_id, nick, team, coins, owned, equipped';
+const accountById = (db, pid) => db.prepare(`SELECT ${ACCOUNT_COLS} FROM accounts WHERE player_id = ?`).bind(pid).first();
 async function account(request, env, now) {
   const pid = await sessionPlayer(env, request, now);
-  return pid ? env.DB.prepare('SELECT player_id, nick, team FROM accounts WHERE player_id = ?').bind(pid).first() : null;
+  return pid ? accountById(env.DB, pid) : null;
+}
+// 게임에 돌려주는 지갑: 코인, 산 물건, 착용(look)
+const wallet = (a) => { const owned = ownedOf(a.owned); return { coins: a.coins, owned, look: lookOf(a.equipped, owned) }; };
+
+// 판마다 코인을 준다(점수의 1/100). 오늘의 10구 첫 판 2배는 하루 한 번이고, 20초 안에 또 오면 주지 않는다.
+// 조건을 UPDATE 안에 넣어서 같은 판을 두 번 보내도(네트워크 오류 뒤 다시 보내기 등) 한 번만 준다
+async function earnCoins(db, playerId, score, daily, day, now) {
+  const cutoff = now - COIN_GAP_MS;
+  if (daily) {
+    const r = await db.prepare('UPDATE accounts SET coins = coins + ?, coin_at = ?, daily_bonus_day = ? WHERE player_id = ? AND coin_at <= ? AND daily_bonus_day <> ?')
+      .bind(coinsFor(score, true), now, day, playerId, cutoff, day).run();
+    if (r.meta.changes > 0) return { earned: coinsFor(score, true), bonus: true };
+  }
+  const earned = coinsFor(score, false);
+  if (earned <= 0) return { earned: 0, bonus: false };
+  const r = await db.prepare('UPDATE accounts SET coins = coins + ?, coin_at = ? WHERE player_id = ? AND coin_at <= ?').bind(earned, now, playerId, cutoff).run();
+  return { earned: r.meta.changes > 0 ? earned : 0, bonus: false };
 }
 
 export default {
@@ -99,10 +119,11 @@ export default {
       if (url.pathname === '/auth/kakao/start' && method === 'GET') return await loginStart(url, env, now);
       if (url.pathname === '/auth/kakao/callback' && method === 'GET') return await loginCallback(url, env, now);
 
-      const acct = url.pathname === '/scores' || url.pathname === '/me' ? await account(request, env, now) : null;
+      const acct = ['/scores', '/me', '/shop/buy', '/shop/equip'].includes(url.pathname) ? await account(request, env, now) : null;
       if (url.pathname === '/scores' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
-        const checked = validateSubmission(await request.json().catch(() => null), now, acct.player_id);
+        const body = await request.json().catch(() => null);
+        const checked = validateSubmission(body, now, acct.player_id);
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const s = checked.value;
         // 같은 사람·같은 날은 그날 가장 높은 판만 남긴다(주간 순위는 이번 주 최고 기록). accepted는 그날 기록이 새로 생기거나 올랐다는 뜻.
@@ -114,12 +135,13 @@ export default {
             .bind(s.playerId, s.day, s.week, s.nick, s.team, s.score, s.lights),
           env.DB.prepare('UPDATE accounts SET nick = ?, team = ? WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
         ]);
-        const r = await rankings(env.DB, s.week, s.playerId);
-        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count });
+        const coin = await earnCoins(env.DB, s.playerId, s.score, body.mode === 'daily', s.day, now);
+        const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId), accountById(env.DB, s.playerId)]);
+        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, coins: after.coins, earned: coin.earned, bonus: coin.bonus });
       }
       if (url.pathname === '/me') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
-        if (method === 'GET') return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team });
+        if (method === 'GET') return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team, ...wallet(acct) });
         if (method === 'PUT') {   // 팀·닉네임 바꾸기. 닉네임은 랭킹에 바로 보이게 지난 기록에도 고쳐 쓴다(팀은 그날 팀 그대로)
           const checked = validateProfile(await request.json().catch(() => null));
           if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
@@ -137,6 +159,34 @@ export default {
           ]);
           return json({ ok: true });
         }
+      }
+      // ===== 상점 =====
+      if (url.pathname === '/shop/buy' && method === 'POST') {
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        const it = itemById((await request.json().catch(() => null))?.item);
+        if (!it) return json({ ok: false, error: 'unknown_item' }, 400);
+        if (it.price === 0) return json({ ok: false, error: 'free_item' }, 400);
+        // 코인이 넉넉하고 아직 안 가진 물건일 때만 한 문장으로 코인을 빼고 물건을 넣는다(두 번 눌러도 한 번만 산다)
+        const r = await env.DB.prepare(`UPDATE accounts SET coins = coins - ?, owned = json_insert(owned, '$[#]', ?)
+          WHERE player_id = ? AND coins >= ? AND NOT EXISTS (SELECT 1 FROM json_each(accounts.owned) WHERE json_each.value = ?)`)
+          .bind(it.price, it.id, acct.player_id, it.price, it.id).run();
+        const after = await accountById(env.DB, acct.player_id);
+        if (r.meta.changes === 0) return json({ ok: false, error: ownedOf(after.owned).includes(it.id) ? 'already_owned' : 'not_enough_coins', ...wallet(after) }, 400);
+        return json({ ok: true, ...wallet(after) });
+      }
+      if (url.pathname === '/shop/equip' && method === 'POST') {   // 기본 물건이나 산 물건만 입는다. 등번호는 0~99
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        const b = await request.json().catch(() => null), it = itemById(b?.item), owned = ownedOf(acct.owned);
+        if (!it) return json({ ok: false, error: 'unknown_item' }, 400);
+        if (it.price > 0 && !owned.includes(it.id)) return json({ ok: false, error: 'not_owned' }, 400);
+        const look = lookOf(acct.equipped, owned);
+        look[it.slot] = it.id;
+        if (it.id === 'number-on') {
+          if (!Number.isInteger(b.number) || b.number < 0 || b.number > 99) return json({ ok: false, error: 'bad_number' }, 400);
+          look.no = b.number;
+        } else if (it.slot === 'number') delete look.no;
+        await env.DB.prepare('UPDATE accounts SET equipped = ? WHERE player_id = ?').bind(JSON.stringify(look), acct.player_id).run();
+        return json({ ok: true, ...wallet({ ...acct, equipped: JSON.stringify(look) }) });
       }
       return json({ ok: false, error: 'not_found' }, 404);
     } catch (e) {
