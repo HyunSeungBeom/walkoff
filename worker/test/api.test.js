@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { sign, verify, allowedReturn } from '../src/auth.js';
 import { kstDay } from '../src/rules.js';
-import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../src/pitches.js';
+import { makeSequence, pitcherHand, zoneMiss } from '../src/pitches.js';
+import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
 import { memoryD1 } from './d1.js';
 
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
@@ -51,11 +52,14 @@ const played = (seed) => {
   for (const p of makeSequence(seed, pitcherHand(seed) === 'L')) { if (!left) break; if (zoneMiss(p) > 0) out += 'Y'; else { out += 'G'; left--; } }
   return out;
 };
-// 오늘의 10구(mode가 없는 예전 게임도)는 날짜로, 10구 도전은 시드로 공 순서가 정해진다
-const score = (patch = {}) => {
-  const day = patch.day ?? kstDay(Date.now()), seed = patch.mode === 'challenge' ? (patch.seed ?? 42) : dailySeed(day);
-  return { nick: '민성', team: 'lg', day, lights: played(seed), score: 3000, ...(patch.mode === 'challenge' ? { seed } : {}), ...patch };
-};
+// 10구 도전 한 판은 /seeds로 받은 표의 시드로 친다. 서버는 한 판 칠 시간이 지나야 받으므로 10분 전에 받은 것처럼 받은 시각을 당긴다
+async function seeded(token) {
+  const t = await (await call('POST', '/seeds', { token })).json();
+  await env.DB.prepare('UPDATE seed_tokens SET issued_at = issued_at - 600000 WHERE id = ?').bind(t.token).run();
+  return t;
+}
+const score = (t, patch = {}) => ({ nick: '민성', team: 'lg', day: kstDay(Date.now()), mode: 'challenge', token: t.token, seed: t.seed, lights: played(t.seed), score: 3000, ...patch });
+const NO_TICKET = { token: 'no-such-token', seed: 42 };   // 로그인부터 막히는 요청에 넣는 아무 표
 
 test('로그인 시작: 카카오로 보내고, 허용하지 않은 돌아갈 주소는 거절한다', async () => {
   const { kakao } = await login('c1');
@@ -106,14 +110,14 @@ test('로그인 실패: 취소, 카카오 오류, 망가진 확인 표', async (
 });
 
 test('점수는 로그인해야 받고, 사람 ID는 로그인 표에서 꺼낸다. 그날 가장 높은 판만 남는다', async () => {
-  assert.equal((await call('POST', '/scores', { body: score({ playerId: 'someone-else' }) })).status, 401);
-  assert.equal((await call('POST', '/scores', { body: score(), token: 'forged.token' })).status, 401);
+  assert.equal((await call('POST', '/scores', { body: score(NO_TICKET, { playerId: 'someone-else' }) })).status, 401);
+  assert.equal((await call('POST', '/scores', { body: score(NO_TICKET), token: 'forged.token' })).status, 401);
   const token = (await login('c1', 'p-device-0001')).hash.login;
-  const res = await (await call('POST', '/scores', { body: score({ playerId: 'someone-else' }), token })).json();
+  const res = await (await call('POST', '/scores', { body: score(await seeded(token), { playerId: 'someone-else' }), token })).json();
   assert.equal(res.accepted, true);
   assert.deepEqual(res.me, { rank: 1, best: 3000, total: 3000, days: 1, team: 'lg' });
-  assert.equal((await (await call('POST', '/scores', { body: score({ score: 2000 }), token })).json()).accepted, false);   // 더 낮은 판은 그대로
-  const higher = await (await call('POST', '/scores', { body: score({ score: 5000 }), token })).json();   // 더 높은 판은 바로 갱신
+  assert.equal((await (await call('POST', '/scores', { body: score(await seeded(token), { score: 2000 }), token })).json()).accepted, false);   // 더 낮은 판은 그대로
+  const higher = await (await call('POST', '/scores', { body: score(await seeded(token), { score: 5000 }), token })).json();   // 더 높은 판은 바로 갱신
   assert.deepEqual([higher.accepted, higher.me], [true, { rank: 1, best: 5000, total: 5000, days: 1, team: 'lg' }]);
   assert.deepEqual(env.DB.rows('SELECT player_id, score FROM daily_scores'), [{ player_id: 'p-device-0001', score: 5000 }]);
   assert.deepEqual(profile(await me(token)), { ok: true, playerId: 'p-device-0001', nick: '민성', team: 'lg' });   // 다른 기기에서 이어 줄 팀·닉네임
@@ -121,16 +125,58 @@ test('점수는 로그인해야 받고, 사람 ID는 로그인 표에서 꺼낸�
 
 test('그 판의 공 순서로 나올 수 없는 점수는 거절한다(2026-10-30 조작 사례)', async () => {
   const token = (await login('c1', 'p-device-0001')).hash.login;
-  const post = async (patch) => { const r = await call('POST', '/scores', { token, body: score(patch) }); return [r.status, (await r.json()).error ?? 'ok']; };
-  assert.deepEqual(await post({ mode: 'daily', score: 15100, lights: `${'G'.repeat(10)}${'Y'.repeat(30)}` }), [400, 'bad_lights']);   // 안타 10개 뒤에 볼 30개
-  assert.deepEqual(await post({ mode: 'challenge', seed: undefined }), [400, 'bad_seed']);   // 10구 도전인데 시드가 없다
-  assert.deepEqual(await post({ mode: 'challenge', seed: 7 }), [200, 'ok']);
+  const post = async (t, patch) => { const r = await call('POST', '/scores', { token, body: score(t, patch) }); return [r.status, (await r.json()).error ?? 'ok']; };
+  const t = await seeded(token);
+  assert.deepEqual(await post(t, { score: 15100, lights: `${'G'.repeat(10)}${'Y'.repeat(30)}` }), [400, 'bad_lights']);   // 안타 10개 뒤에 볼 30개
+  assert.deepEqual(await post(t, { score: 99999 }), [400, 'bad_score']);
+  assert.deepEqual(await post(t), [200, 'ok']);   // 거절된 판은 표를 쓰지 않는다
   assert.equal(env.DB.rows('SELECT score FROM daily_scores').length, 1);   // 거절된 판은 남지 않는다
+});
+
+test('10구 도전은 서버가 내준 표로만 받는다: 표 하나에 한 번, 내 표만, 기한 안, 한 판 칠 시간이 지나야', async () => {
+  assert.equal((await call('POST', '/seeds')).status, 401);   // 표는 로그인해야 받는다
+  const token = (await login('c1', 'p-device-0001')).hash.login, other = (await login('c3')).hash.login;
+  const post = async (body, as = token) => { const r = await call('POST', '/scores', { token: as, body }); return [r.status, (await r.json()).error ?? 'ok']; };
+  const res = await call('POST', '/seeds', { token });
+  const fresh = await res.json();
+  assert.equal(res.status, 200);
+  assert.match(fresh.token, /^[0-9a-f-]{36}$/);
+  assert.ok(Number.isInteger(fresh.seed) && fresh.seed > 0 && fresh.seed < 2 ** 31, String(fresh.seed));
+  assert.deepEqual(await post(score(fresh)), [400, 'too_fast']);   // 받자마자 낸 판(한 판 칠 시간이 안 지났다)
+
+  const t = await seeded(token);
+  const { seed: _, token: __, ...noTicket } = score(t);
+  assert.deepEqual(await post(noTicket), [400, 'seed_required']);   // 게임이 정한 시드만 보낸 판(예전 게임, ?seed= 판)
+  assert.deepEqual(await post({ ...score(t), token: crypto.randomUUID() }), [400, 'bad_seed']);   // 서버에 없는 표
+  assert.deepEqual(await post(score(t), other), [400, 'bad_seed']);   // 남이 받은 표
+  const otherSeed = t.seed === 7 ? 8 : 7;
+  if (played(otherSeed) !== played(t.seed)) assert.deepEqual(await post(score(t, { seed: otherSeed, lights: played(otherSeed) })), [400, 'bad_lights']);   // 게임이 보낸 시드는 쓰지 않는다
+  assert.deepEqual(await post(score(t)), [200, 'ok']);
+  assert.deepEqual(await post(score(t)), [400, 'seed_used']);   // 같은 표로 또
+  assert.deepEqual(env.DB.rows('SELECT used_at IS NOT NULL AS used FROM seed_tokens WHERE id = ?', t.token), [{ used: 1 }]);
+
+  const old = await seeded(token);
+  await env.DB.prepare('UPDATE seed_tokens SET issued_at = ? WHERE id = ?').bind(Date.now() - SEED_TTL_MS - 1000, old.token).run();
+  assert.deepEqual(await post(score(old)), [400, 'seed_expired']);
+});
+
+test('표는 한 시간에 정한 수까지만 주고, 기한이 지난 표는 새 표를 줄 때 지운다', async () => {
+  const token = (await login('c1', 'p-device-0001')).hash.login, now = Date.now();
+  const add = (n, at) => { for (let i = 0; i < n; i++) env.DB.prepare('INSERT INTO seed_tokens (id, player_id, seed, issued_at) VALUES (?, ?, 1, ?)').bind(crypto.randomUUID(), 'p-device-0001', at).run(); };
+  add(5, now - SEED_TTL_MS - 1000);   // 기한이 지난 표
+  add(SEEDS_PER_HOUR - 1, now - 60e3);
+  assert.equal((await call('POST', '/seeds', { token })).status, 200);   // 한 시간 안에 받은 표가 정한 수에 닿았다
+  const over = await call('POST', '/seeds', { token });
+  assert.deepEqual([over.status, (await over.json()).error], [429, 'too_many_seeds']);
+  assert.equal(env.DB.rows('SELECT 1 FROM seed_tokens WHERE issued_at < ?', now - SEED_TTL_MS).length, 0);
+  await env.DB.prepare('UPDATE seed_tokens SET issued_at = issued_at - 3600000').run();   // 한 시간이 지난 것처럼
+  assert.equal((await call('POST', '/seeds', { token })).status, 200);
 });
 
 test('팀·닉네임 바꾸기와 기록 지우기', async () => {
   const token = (await login('c1', 'p-device-0001')).hash.login;
-  await call('POST', '/scores', { body: score(), token });
+  await call('POST', '/scores', { body: score(await seeded(token)), token });
+  await seeded(token);   // 아직 안 쓴 표
   assert.equal((await call('PUT', '/me', { token, body: { nick: '새이름', team: 'kt' } })).status, 200);
   assert.equal((await call('PUT', '/me', { token, body: { nick: '새이름', team: 'comets' } })).status, 400);
   const ranking = await (await call('GET', '/rankings?player=p-device-0001')).json();
@@ -139,21 +185,21 @@ test('팀·닉네임 바꾸기와 기록 지우기', async () => {
   assert.equal((await call('DELETE', '/me', { token })).status, 200);
   assert.equal(env.DB.rows('SELECT * FROM daily_scores').length, 0);
   assert.equal(env.DB.rows('SELECT * FROM accounts').length, 0);
+  assert.equal(env.DB.rows('SELECT * FROM seed_tokens').length, 0);
   assert.equal((await call('GET', '/me', { token })).status, 401);   // 지운 계정의 표는 더 못 쓴다
-  assert.equal((await call('POST', '/scores', { body: score(), token })).status, 401);
+  assert.equal((await call('POST', '/scores', { body: score(NO_TICKET), token })).status, 401);
+  assert.equal((await call('POST', '/seeds', { token })).status, 401);
 });
 
-test('코인: 판마다 점수의 1/100, 오늘의 10구 첫 판은 하루 한 번 2배, 20초 안에 또 보내면 주지 않는다', async () => {
+test('코인: 판마다 점수의 1/100, 20초 안에 또 보내면 주지 않는다', async () => {
   const token = (await login('c1', 'p-device-0001')).hash.login;
-  const send = async (patch) => (await call('POST', '/scores', { token, body: score(patch) })).json();
+  const send = async (patch) => (await call('POST', '/scores', { token, body: score(await seeded(token), patch) })).json();
   const wait20s = () => env.DB.prepare('UPDATE accounts SET coin_at = 0').run();   // 20초가 지난 것처럼
-  assert.deepEqual(await send({ score: 3050, mode: 'daily' }).then((r) => [r.earned, r.bonus, r.coins]), [60, true, 60]);
-  assert.deepEqual(await send({ score: 4000, mode: 'challenge' }).then((r) => [r.earned, r.coins]), [0, 60]);   // 20초 안에 또 왔다(점수는 받는다)
+  assert.deepEqual(await send({ score: 3050 }).then((r) => [r.earned, r.coins]), [30, 30]);
+  assert.deepEqual(await send({ score: 4000 }).then((r) => [r.earned, r.coins]), [0, 30]);   // 20초 안에 또 왔다(점수는 받는다)
   await wait20s();
-  assert.deepEqual(await send({ score: 4000, mode: 'daily' }).then((r) => [r.earned, r.bonus, r.coins]), [40, false, 100]);   // 2배는 하루 한 번
-  await wait20s();
-  assert.deepEqual(await send({ score: 2500 }).then((r) => [r.earned, r.coins]), [25, 125]);   // mode를 안 보내는 예전 게임도 1/100
-  assert.equal((await me(token)).coins, 125);
+  assert.deepEqual(await send({ score: 4000 }).then((r) => [r.earned, r.coins, r.accepted]), [40, 70, false]);   // 같은 4,000점이라 그날 기록은 그대로
+  assert.equal((await me(token)).coins, 70);
 });
 
 test('상점: 산 것만 입고, 코인이 모자라거나 이미 있으면 못 산다', async () => {

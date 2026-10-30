@@ -24,13 +24,16 @@ const SAMPLE_RANKING = {
 // 테스트가 실제 랭킹 서버에 닿지 않도록 서버 주소를 가로채 가짜로 답한다. 받은 요청은 돌려주는 배열에 쌓인다.
 // account: 로그인한 계정에 이미 있는 팀·닉네임(다른 기기에서 쓰던 계정을 흉내 낸다).
 // scoreReply: 'best'(보낸 점수가 이번 주 최고 기록) | 'lower'(이번 주에 더 높은 기록이 있다). 테스트 중에 바꿀 수 있게 요청 때 읽는다.
+// seed: /seeds가 내주는 10구 도전 시드(기본 42). 표는 요청마다 새로 만들어 돌려주는 배열의 tickets에 쌓는다(받은 시각 at).
+// seedFail: /seeds가 서버 오류로 답한다. seedDelay: /seeds가 이만큼(ms) 늦게 답한다. scoreFail: /scores가 서버 오류로 답한다.
+// /scores는 실제 서버처럼 10구 도전에 표가 없거나 모르는 표, 이미 쓴 표면 거절한다.
 // 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
-  const calls = [];
+  const calls = [], tickets = [];
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
     const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
@@ -41,14 +44,25 @@ async function mockApi(page, opts = {}) {
       return new Promise((done) => setTimeout(done, 300)).then(() => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>kakao</title>' }));
     }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
-    if (['/me', '/scores', '/shop/buy', '/shop/equip'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (['/seeds', '/me', '/scores', '/shop/buy', '/shop/equip'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (url.pathname === '/seeds') {
+      if (opts.seedFail) return reply({ ok: false, error: 'server_error' }, 500);
+      const t = { token: `00000000-0000-4000-8000-${String(tickets.length + 1).padStart(12, '0')}`, seed: opts.seed ?? 42 };
+      tickets.push({ ...t, at: Date.now(), used: false });
+      return new Promise((done) => setTimeout(done, opts.seedDelay ?? 0)).then(() => reply({ ok: true, ...t }));
+    }
     if (url.pathname === '/me' && req.method() === 'PUT' && opts.failProfile) return reply({ ok: false, error: 'server_error' }, 500);   // 팀·닉네임 저장 실패(테스트 중에 바꿀 수 있게 요청 때 읽는다)
     if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet() } : { ok: true });
     if (url.pathname === '/scores') {
-      const { score, mode } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
-      const earned = opts.earned ?? Math.floor(score / 100) * (mode === 'daily' ? 2 : 1);
+      if (opts.scoreFail) return reply({ ok: false, error: 'server_error' }, 500);
+      const { score, mode, token } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
+      const ticket = tickets.find((t) => t.token === token);
+      if (mode === 'challenge' && !token) return reply({ ok: false, error: 'seed_required' }, 400);
+      if (mode === 'challenge' && (!ticket || ticket.used)) return reply({ ok: false, error: ticket ? 'seed_used' : 'bad_seed' }, 400);
+      if (ticket) ticket.used = true;
+      const earned = opts.earned ?? Math.floor(score / 100);
       shop.coins += earned;
-      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best: lower ? score + 1000 : score, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, coins: shop.coins, earned, bonus: mode === 'daily' });
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best: lower ? score + 1000 : score, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, coins: shop.coins, earned });
     }
     if (url.pathname === '/shop/buy') {
       const it = ITEMS.find((i) => i.id === JSON.parse(req.postData() || '{}').item);
@@ -68,6 +82,7 @@ async function mockApi(page, opts = {}) {
     }
     return reply(rankings);
   });
+  Object.defineProperty(calls, 'tickets', { value: tickets });   // 받은 요청 목록과 비교할 때 걸리지 않게 숨긴 속성으로 둔다
   return calls;
 }
 
@@ -89,6 +104,11 @@ async function open(page, query = '?seed=42', { team = 'lg', login = false, api 
   return errors;
 }
 const sentScores = (errors) => errors.calls.filter((c) => c.method === 'POST' && c.path === '/scores');
+const seedCalls = (errors) => errors.calls.filter((c) => c.path === '/seeds');
+// 로그인한 10구 도전은 서버 시드를 받아 둔 뒤에 바로 시작한다(받는 중이면 startGame이 받을 때까지 기다렸다가 시작한다)
+const seedReady = (page) => page.waitForFunction(() => !!walkoff.seedTicket.ready);
+// 서버의 seed_tokens 한 줄처럼 만든 표. 가짜 서버가 내준 표(t)를 실제 서버 검사(worker/src/rules.js)에 넣을 때 쓴다
+const ticketRow = (t, playerId, patch = {}) => ({ id: t.token, player_id: playerId, seed: t.seed, issued_at: t.at, used_at: null, ...patch });
 
 // 게임이 카카오 로그인으로 떠난 요청(서버 /auth/kakao/start)을 기다려 그 값을 돌려준다. 그 페이지가 다 열린 뒤에 돌려줘서
 // 다음 페이지 이동과 부딪히지 않게 한다
@@ -281,19 +301,44 @@ test.describe('판정 계산', () => {
 test.describe('한 판 끝까지', () => {
   test.skip(({ isMobile }) => isMobile, '오래 걸려서 PC에서만 본다');
 
-  test('실제로 친 10구 도전은 서버 검사(그 시드의 공 순서·점수 상한)를 통과한다', async ({ page }) => {
+  test('실제로 친 10구 도전은 서버 검사(서버가 내준 시드의 공 순서·점수 상한·한 판 칠 시간)를 통과한다', async ({ page }) => {
     test.slow();
     const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    const errors = await open(page, '?seed=7', { login: true });
+    const errors = await open(page, '', { login: true, api: { seed: 7 } });
+    await seedReady(page);
     await page.evaluate(() => walkoff.startGame('challenge'));
     const plan = [null, 0, -40, null, 60, 0, null, -120, 0, 30];   // 그냥 보내기(볼·스트라이크), 정타, 조금 빠름·늦음, 헛스윙을 섞는다
     for (let k = 0; k < 40 && !(await page.evaluate(() => walkoff.game.state === 'over')); k++) await playPitch(page, plan[k % plan.length]);
     await page.waitForFunction(() => walkoff.game.state === 'over');
     await expect.poll(() => sentScores(errors).length).toBe(1);
-    const body = sentScores(errors)[0].body;
-    expect([body.mode, body.seed]).toEqual(['challenge', 7]);
-    expect(rules.validateSubmission(body, Date.now(), 'p-test-0001')).toMatchObject({ ok: true });
-    expect(rules.validateSubmission({ ...body, score: body.score + 100000 }, Date.now(), 'p-test-0001').error).toBe('bad_score');
+    const body = sentScores(errors)[0].body, [t] = errors.calls.tickets;
+    expect([body.mode, body.seed, body.token]).toEqual(['challenge', 7, t.token]);
+    expect(rules.validateSubmission(body, Date.now(), 'p-test-0001', ticketRow(t, 'p-test-0001'))).toMatchObject({ ok: true });
+    expect(rules.validateSubmission({ ...body, score: body.score + 100000 }, Date.now(), 'p-test-0001', ticketRow(t, 'p-test-0001')).error).toBe('bad_score');
+    expect(rules.validateSubmission(body, Date.now(), 'p-test-0001', ticketRow(t, 'p-test-0001', { issued_at: Date.now() })).error).toBe('too_fast');
+    expect(errors).toEqual([]);
+  });
+
+  test('가장 빨리 친 판(공을 놓자마자 휘두르고 바로 다음 공)도 서버의 한 판 칠 시간 검사에 걸리지 않는다', async ({ page }) => {
+    test.slow();
+    const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
+    const { MIN_PITCH_MS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'seeds.js')).href);
+    const errors = await open(page, '', { login: true });
+    await seedReady(page);
+    const startedAt = Date.now();   // 서버가 시작하는 순간에 표를 내줬다고 보고 잰다(실제로는 미리 받아 둬서 더 일찍이다)
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    for (let k = 0; k < 40; k++) {
+      await page.waitForFunction(() => ['pitch', 'over'].includes(walkoff.game.state));
+      if (await page.evaluate(() => walkoff.game.state === 'over')) break;
+      await page.keyboard.press('Space');   // 공을 놓자마자 휘두른다(대개 헛스윙. 키가 늦게 가서 맞으면 결과가 늦게 뜬다)
+      await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > Math.max(0.35, walkoff.game.revealAt) + 0.01);
+      await page.keyboard.press('Space');   // 넘길 수 있게 되자마자 다음 공
+    }
+    await expect.poll(() => sentScores(errors).length).toBe(1);
+    const body = sentScores(errors)[0].body, took = Date.now() - startedAt;
+    expect(took).toBeGreaterThan(body.lights.length * MIN_PITCH_MS);
+    const row = ticketRow(errors.calls.tickets[0], 'p-test-0001', { issued_at: startedAt });
+    expect(rules.validateSubmission(body, Date.now(), 'p-test-0001', row)).toMatchObject({ ok: true });
     expect(errors).toEqual([]);
   });
 
@@ -314,19 +359,19 @@ test.describe('한 판 끝까지', () => {
 
   test('시작 화면에서 누르면 늘 10구 도전이고, 끝까지 치면 점수를 보내고 연속 기록이 이어진다(어제도 쳤으면 2일 연속)', async ({ page }) => {
     test.slow();
-    const errors = await open(page, '?seed=42', { login: true });
+    const errors = await open(page, '', { login: true });
     await setPlayedDays(page, [1]);   // 어제도 쳤다
     await page.keyboard.press('Space');   // 오늘의 10구는 2026-10-30에 없앴다
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
     await playUntilOver(page, 0);
-    // 점수가 로그인 표와 시드를 붙여 랭킹 서버로 한 번 가고, 끝 화면에 이번 주 순위가 붙는다
+    // 점수가 로그인 표와 서버가 내준 시드(표)를 붙여 랭킹 서버로 한 번 가고, 끝 화면에 이번 주 순위가 붙는다
     await expect.poll(() => sentScores(errors).length).toBe(1);
-    const sent = sentScores(errors)[0], today = await page.evaluate(() => walkoff.today());
+    const sent = sentScores(errors)[0], today = await page.evaluate(() => walkoff.today()), [t] = errors.calls.tickets;
     const game = await page.evaluate(() => ({ score: walkoff.game.score, lights: walkoff.game.summary.lights }));
     expect(sent.auth).toBe(`Bearer ${SESSION}`);
-    expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, ...game, mode: 'challenge', seed: 42 });   // 사람 ID는 서버가 로그인 표에서 꺼낸다
+    expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, ...game, mode: 'challenge', seed: 42, token: t.token });   // 사람 ID는 서버가 로그인 표에서 꺼낸다
     const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    expect(rules.validateSubmission(sent.body, Date.now(), 'p-test-0001')).toMatchObject({ ok: true });   // 실제로 친 판은 서버 검사를 통과한다
+    expect(rules.validateSubmission(sent.body, Date.now(), 'p-test-0001', ticketRow(t, 'p-test-0001'))).toMatchObject({ ok: true });   // 실제로 친 판은 서버 검사를 통과한다
     await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
     expect(await drawnTexts(page)).toContain('10구 도전 · 2일 연속');   // 방금 친 판까지 세서 제목 옆에 붙는다
@@ -401,7 +446,7 @@ test.describe('화면', () => {
   });
 
   test('연속 기록: 시작 화면 아래 줄과 10구 도전 끝 화면 제목에 이어 친 날 수가 나오고, 하루 빠지면 끊긴다(없앤 오늘의 10구 기록도 센다)', async ({ page }) => {
-    const errors = await open(page, '');
+    const errors = await open(page);   // ?seed=42: 첫 공이 스트라이크라 공 하나로 끝난다(시드가 무작위면 첫 공이 볼일 때 판이 안 끝났다)
     const titleLine = async () => (await drawnTexts(page)).find((t) => t.endsWith('주간 랭킹은 이번 주 최고 기록이에요') || t.includes('오늘 치면'));
     await setPlayedDays(page, [2, 3]);   // 어제를 걸러서 끊겼다
     expect(await titleLine()).toBe('주간 랭킹은 이번 주 최고 기록이에요');
@@ -490,31 +535,32 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('로그인하지 않으면 점수를 남겨 두고, 끝 화면에서 카카오로 로그인하면 그때 올린다', async ({ page }) => {
-    const errors = await open(page);
+  test('로그인하지 않고 친 판은 랭킹에 보내지 않고, 끝 화면에서 로그인해도 그 판은 올리지 않는다(다음 판부터)', async ({ page }) => {
+    const errors = await open(page);   // ?seed=42: 첫 공이 스트라이크라 공 하나로 끝난다
+    const legacy = { nick: '테스트', team: 'lg', day: await page.evaluate(() => walkoff.today()), score: 9000, lights: 'G', mode: 'challenge', seed: 42 };
+    await page.evaluate((b) => walkoff.store.set('pending', b), legacy);   // 예전 게임이 남겨 둔 로그인 전 판(서버 시드가 없다)
     await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝낸다
     await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
     await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'over');
-    const today = await page.evaluate(() => walkoff.today()), pending = await page.evaluate(() => walkoff.store.get('pending', null));
-    expect(pending).toMatchObject({ nick: '테스트', team: 'lg', day: today });
+    expect(await page.evaluate(() => walkoff.store.get('pending', null))).toEqual(legacy);   // 방금 친 판은 남기지 않는다
+    expect([sentScores(errors), seedCalls(errors)]).toEqual([[], []]);   // 로그인 전에는 시드도 받지 않는다
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 로그인하면 다음 판부터 랭킹에 올라가요 ›'));
+    await tap(page, '카카오로 로그인하면 다음 판부터 랭킹에 올라가요 ›');
+    await loginReturn(page, '', (await kakaoStart(errors, page)).n);   // 주소에 ?seed=가 없는 게임으로 돌아온다
+    await page.waitForFunction(() => walkoff.settings.playerId === 'p-account-0001' && !!walkoff.seedTicket.ready);   // 로그인하면 다음 판 시드를 받아 둔다
+    await expect.poll(() => page.evaluate(() => walkoff.store.get('pending', null))).toBe(null);   // 서버 시드 없이 친 판은 보내지 않고 버린다
     expect(sentScores(errors)).toEqual([]);
-    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 로그인하면 랭킹에 올라가요 ›'));
-    await tap(page, '카카오로 로그인하면 랭킹에 올라가요 ›');
-    await loginReturn(page, '?seed=42', (await kakaoStart(errors, page)).n);
-    await expect.poll(() => sentScores(errors).length).toBe(1);
-    expect(sentScores(errors)[0]).toMatchObject({ auth: `Bearer ${SESSION}`, body: pending });
-    await page.waitForFunction(() => walkoff.store.get('pending', null) === null);
-    expect(await page.evaluate(() => ({ token: walkoff.auth.token, playerId: walkoff.settings.playerId, toast: walkoff.game.toast?.text })))
-      .toEqual({ token: SESSION, playerId: ACCOUNT_ID, toast: '기록을 랭킹에 올렸어요' });
+    expect(await page.evaluate(() => ({ token: walkoff.auth.token, toast: walkoff.game.toast?.text }))).toEqual({ token: SESSION, toast: '카카오로 로그인했어요' });
     expect(errors.calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg' }]);   // 새 계정에 팀·닉네임을 올린다
     expect(errors).toEqual([]);
   });
 
   test('10구 도전도 판이 끝나면 보내고, 이번 주 최고 기록이면 끝 화면에 바로 보인다', async ({ page }) => {
     const api = { scoreReply: 'best' };
-    const errors = await open(page, '?seed=42', { login: true, api });
+    const errors = await open(page, '', { login: true, api });
     const endChallenge = async () => {
+      await seedReady(page);
       await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝낸다
       await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
       await page.keyboard.press('Space');
@@ -522,40 +568,118 @@ test.describe('화면', () => {
       return page.evaluate(() => ({ score: walkoff.game.score, labels: walkoff.ui.buttons.map((b) => b.label) }));
     };
     const first = await endChallenge();
-    // 10구 도전은 서버가 공 순서를 다시 만들어 맞춰 볼 수 있게 시드를 함께 보낸다(주소의 ?seed=42)
-    expect(sentScores(errors).map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg', day: await page.evaluate(() => walkoff.today()), score: first.score, lights: expect.stringMatching(/^[GYR]$/), mode: 'challenge', seed: 42 }]);
+    // 서버가 내준 시드로 치고, 서버가 그 시드로 공 순서를 다시 만들어 맞춰 볼 수 있게 표(token)를 함께 보낸다
+    expect(sentScores(errors).map((c) => c.body)).toEqual([{ nick: '테스트', team: 'lg', day: await page.evaluate(() => walkoff.today()), score: first.score, lights: expect.stringMatching(/^[GYR]$/), mode: 'challenge', seed: 42, token: errors.calls.tickets[0].token }]);
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('이번 주')));
     expect((await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label)))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
     api.scoreReply = 'lower';   // 이번에는 이번 주에 더 높은 기록이 있다
     const second = await endChallenge();
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('이번 주 최고 ')));
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain(`이번 주 최고 ${(second.score + 1000).toLocaleString()}점 · 3위 · 랭킹 보기 ›`);
-    expect(sentScores(errors).length).toBe(2);
+    expect(sentScores(errors).map((c) => c.body.token)).toEqual(errors.calls.tickets.slice(0, 2).map((t) => t.token));   // 판마다 새 시드
     expect(errors).toEqual([]);
   });
 
-  test('로그인 전에 친 판은 가장 높은 판 하나만 남겨 둔다(이틀 지난 판은 버린다)', async ({ page }) => {
+  test('못 보낸 판은 서버 시드로 친 판만, 가장 높은 판 하나만 남겨 둔다(이틀 지난 판과 서버 시드가 없는 판은 버린다)', async ({ page }) => {
     const errors = await open(page);
-    const keep = (body) => page.evaluate((b) => { walkoff.keepPending(b); return walkoff.store.get('pending', null)?.score; }, body);
+    const keep = (body) => page.evaluate((b) => { walkoff.keepPending(b); return walkoff.store.get('pending', null)?.score ?? null; }, body);
     const day = await page.evaluate(() => walkoff.today());
     const old = await page.evaluate(() => new Date(Date.now() + 9 * 3600e3 - 3 * 864e5).toISOString().slice(0, 10));
-    expect(await keep({ nick: '테스트', team: 'lg', day, score: 5000, lights: 'G' })).toBe(5000);
-    expect(await keep({ nick: '테스트', team: 'lg', day, score: 3000, lights: 'G' })).toBe(5000);   // 낮은 판은 남기지 않는다
-    expect(await keep({ nick: '테스트', team: 'lg', day, score: 6000, lights: 'G' })).toBe(6000);
-    await page.evaluate((d) => walkoff.store.set('pending', { nick: '테스트', team: 'lg', day: d, score: 9000, lights: 'G' }), old);
-    expect(await keep({ nick: '테스트', team: 'lg', day, score: 1000, lights: 'G' })).toBe(1000);   // 서버가 안 받는 사흘 전 판은 버린다
+    const body = (score, patch = {}) => ({ nick: '테스트', team: 'lg', day, score, lights: 'G', mode: 'challenge', seed: 42, token: `token-${score}`, ...patch });
+    expect(await keep(body(5000, { token: undefined }))).toBe(null);   // 서버 시드를 못 받고 친 판
+    expect(await keep(body(5000))).toBe(5000);
+    expect(await keep(body(3000))).toBe(5000);   // 낮은 판은 남기지 않는다
+    expect(await keep(body(6000))).toBe(6000);
+    await page.evaluate((b) => walkoff.store.set('pending', b), body(9000, { day: old }));
+    expect(await keep(body(1000))).toBe(1000);   // 서버가 안 받는 사흘 전 판은 버린다
+    await page.evaluate((b) => walkoff.store.set('pending', b), body(9000, { token: undefined }));
+    expect(await keep(body(1000))).toBe(1000);   // 예전 게임이 남긴 로그인 전 판도 버린다
     expect(sentScores(errors)).toEqual([]);   // 로그인하지 않았으면 보내지 않는다
     expect(errors).toEqual([]);
   });
 
-  test('10구 도전은 공을 보고 처음부터 다시 할 수 있고, 끝내지 않은 판은 보내지 않는다', async ({ page }) => {
+  test('보내다 서버 오류가 나면 남겨 뒀다가 다음에 열 때 보낸다', async ({ page }) => {
+    const api = { scoreFail: true };
+    const errors = await open(page, '', { login: true, api });
+    await seedReady(page);
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.game.rankInfo?.status === 'error');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '랭킹 서버에 연결하지 못했어요 · 랭킹 보기 ›'));
+    const pending = await page.evaluate(() => walkoff.store.get('pending', null));
+    expect(pending).toEqual(sentScores(errors)[0].body);
+    expect(pending.token).toBe(errors.calls.tickets[0].token);
+    api.scoreFail = false;
+    await page.waitForTimeout(300);   // 저장한 값이 넘어갈 틈
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    await expect.poll(() => page.evaluate(() => walkoff.store.get('pending', null))).toBe(null);
+    expect(sentScores(errors).map((c) => c.body)).toEqual([pending, pending]);
+    await expect.poll(() => page.evaluate(() => walkoff.game.toast?.text)).toBe('기록을 랭킹에 올렸어요');
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인했으면 서버가 내준 시드로 친다. 막 열어서 받는 중에 누르면 받은 뒤에 시작하고, 그동안 누른 것은 받지 않는다', async ({ page }) => {
+    const errors = await open(page, '', { login: true, api: { seed: 7, seedDelay: 1500 } });
+    await page.keyboard.press('Space');   // 시드를 받는 중에 시작한다
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.waitingSeed])).toEqual(['title', true]);
+    await expect.poll(() => page.evaluate(() => walkoff.game.toast?.text)).toBe('공을 받는 중…');
+    await page.keyboard.press('Space');   // 기다리는 동안 또 눌러도 한 판만 시작한다
+    await tap(page, '메뉴');   // 다른 버튼도 받지 않는다(메뉴가 열리면 시작하지 않게 돼 있다)
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+    await page.waitForFunction(() => walkoff.game.state === 'windup', null, { timeout: 5000 });
+    expect(await page.evaluate(() => ({ seed: walkoff.game.seed, token: walkoff.game.ticket?.token, throws: walkoff.game.throws === walkoff.pitcherHand(7), waiting: walkoff.game.waitingSeed, toast: walkoff.game.toast?.text ?? null })))
+      .toEqual({ seed: 7, token: errors.calls.tickets[0].token, throws: true, waiting: false, toast: null });
+    await expect.poll(() => seedCalls(errors).length).toBe(2);   // 다음 판 시드를 바로 받기 시작한다
+    expect(errors).toEqual([]);
+  });
+
+  test('서버 시드를 못 받으면 기다리다 이 기기 시드로 치고, 끝 화면에 랭킹에 안 올라간 까닭이 나온다', async ({ page }) => {
+    const api = { seedFail: true };
+    const errors = await open(page, '', { login: true, api });
+    await expect.poll(() => seedCalls(errors).length).toBe(1);   // 열자마자 받으려다 실패했다
+    await page.evaluate(() => { walkoff.startGame('challenge'); });   // 시작할 때 한 번 더 받아 보고, 또 실패하면 그냥 시작한다
+    await page.waitForFunction(() => walkoff.game.state === 'windup', null, { timeout: 5000 });
+    expect(await page.evaluate(() => walkoff.game.ticket)).toBe(null);
+    expect(seedCalls(errors).length).toBeGreaterThanOrEqual(2);
+    await page.evaluate(() => Object.assign(walkoff.game, { left: 1 }));
+    api.seedFail = false;
+    await playUntilOver(page, null);   // 이 기기 시드라 공 순서가 판마다 다르다. 존 밖 공은 기회를 안 쓰므로 스트라이크가 나올 때까지 그냥 보낸다
+    await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'rejected');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '랭킹 서버에 연결하지 못해 안 올라갔어요 · 랭킹 보기 ›'));
+    expect(sentScores(errors).map((c) => c.body.token)).toEqual([undefined]);   // 시드를 못 받은 판은 표 없이 가서 서버가 거절한다
+    expect(await page.evaluate(() => walkoff.store.get('pending', null))).toBe(null);
+    await page.waitForFunction(() => walkoff.game.resultT > 0.7);   // 끝 화면은 잠깐 뒤부터 스페이스바를 받는다
+    await page.keyboard.press('Space');   // 서버가 살아나면 다음 판은 서버 시드로 친다
+    await page.waitForFunction(() => walkoff.game.state === 'windup' && !!walkoff.game.ticket, null, { timeout: 5000 });
+    expect(await page.evaluate(() => walkoff.game.seed)).toBe(42);
+    expect(errors).toEqual([]);
+  });
+
+  test('주소에 ?seed=를 붙인 판은 서버 시드를 받지 않고 랭킹에도 보내지 않는다', async ({ page }) => {
     const errors = await open(page, '?seed=42', { login: true });
+    await page.waitForFunction(() => walkoff.settings.playerId === 'p-account-0001');
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    expect(await page.evaluate(() => [walkoff.game.seed, walkoff.game.ticket, walkoff.game.fixedSeed])).toEqual([42, null, true]);
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '주소로 정한 공은 랭킹에 안 올라가요 · 랭킹 보기 ›'));
+    expect([sentScores(errors), seedCalls(errors)]).toEqual([[], []]);
+    expect(errors).toEqual([]);
+  });
+
+  test('10구 도전은 공을 보고 처음부터 다시 할 수 있고(새 서버 시드), 끝내지 않은 판은 보내지 않는다', async ({ page }) => {
+    const errors = await open(page, '', { login: true });
     const resultShown = () => page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await seedReady(page);
     await page.evaluate(() => walkoff.startGame('challenge'));
     await resultShown();   // 초구를 그냥 보낸다
     await tap(page, '처음부터');
     await expect.poll(() => page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode, i: walkoff.game.i, results: walkoff.game.results.length, score: walkoff.game.score })))
       .toEqual({ state: 'windup', mode: 'challenge', i: 0, results: 0, score: 0 });
+    expect(await page.evaluate(() => walkoff.game.ticket?.token)).toBe(errors.calls.tickets[1].token);   // 시작할 때 받아 둔 다음 시드
     expect(sentScores(errors)).toEqual([]);
     expect(errors).toEqual([]);
   });
@@ -764,8 +888,9 @@ test.describe('화면', () => {
 
   test('끝 화면에 받은 코인이 붙고, 꾸민 공 꼬리·타격음·등번호로 쳐도 문제없다', async ({ page }) => {
     const look = { trail: 'trail-fire', sound: 'sound-metal', number: 'number-on', no: 9, helmet: 'helmet-gold', uniform: 'uniform-home' };
-    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 0, owned: ['trail-fire', 'sound-metal', 'number-on', 'helmet-gold', 'uniform-home'], look }, earned: 64 } });
+    const errors = await open(page, '', { login: true, api: { account: { coins: 0, owned: ['trail-fire', 'sound-metal', 'number-on', 'helmet-gold', 'uniform-home'], look }, earned: 64 } });
     await page.waitForFunction(() => walkoff.wallet.look.trail === 'trail-fire');
+    await seedReady(page);
     expect(await page.evaluate(() => ({ helmet: walkoff.batterColors().helmet, jersey: walkoff.batterColors().jersey, accent: walkoff.batterColors().accent })))
       .toEqual({ helmet: '#e3b322', jersey: '#eceef2', accent: '#a50034' });   // 홈 유니폼은 흰 바탕에 소매·스타킹은 팀 색(LG)
     await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });

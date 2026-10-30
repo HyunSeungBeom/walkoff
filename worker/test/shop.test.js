@@ -9,11 +9,10 @@ test('물건 목록: id가 겹치지 않고, 종류마다 무료 기본 물건�
   assert.ok(ITEMS.every((i) => SLOTS.includes(i.slot) && Number.isInteger(i.price) && i.price >= 0));
 });
 
-test('코인: 점수의 1/100(버림), 오늘의 10구 첫 판은 2배', () => {
-  assert.equal(coinsFor(3050, false), 30);
-  assert.equal(coinsFor(3050, true), 60);
-  assert.equal(coinsFor(99, false), 0);
-  assert.equal(coinsFor(-5, false), 0);
+test('코인: 점수의 1/100(버림)', () => {
+  assert.equal(coinsFor(3050), 30);
+  assert.equal(coinsFor(99), 0);
+  assert.equal(coinsFor(-5), 0);
 });
 
 test('착용: 모르거나 안 산 물건은 기본으로, 등번호는 달았을 때 0~99만', () => {

@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   owned TEXT NOT NULL DEFAULT '[]',              -- 산 물건 id(JSON 배열)
   equipped TEXT NOT NULL DEFAULT '{}',           -- 종류별 착용 물건 id와 등번호 no(JSON)
   coin_at INTEGER NOT NULL DEFAULT 0,            -- 마지막으로 코인을 준 시각(ms)
-  daily_bonus_day TEXT NOT NULL DEFAULT ''       -- 오늘의 10구 2배를 준 날(하루 한 번)
+  daily_bonus_day TEXT NOT NULL DEFAULT ''       -- 오늘의 10구 2배를 준 날(하루 한 번). 2026-10-30 2배를 없애서 더 쓰지 않는다
 );
 
 -- 하루 이용 통계(2026-10-29, src/stats.js). 이미 있던 DB에는 migrations/0003_stats.sql로 더했다
@@ -42,3 +42,13 @@ CREATE TABLE IF NOT EXISTS play_devices (
   events INTEGER NOT NULL DEFAULT 0,             -- 그날 받은 신호 수(EVENT_CAP까지만 센다)
   PRIMARY KEY (day, device)
 );
+
+-- 10구 도전 시드 표(2026-10-30, src/seeds.js). 서버가 판마다 내주고 점수와 함께 한 번만 받는다. 이미 있던 DB에는 migrations/0004_seed_tokens.sql로 더했다
+CREATE TABLE IF NOT EXISTS seed_tokens (
+  id TEXT PRIMARY KEY,                           -- 게임에 준 표(무작위 UUID)
+  player_id TEXT NOT NULL,                       -- 받은 계정(accounts.player_id)
+  seed INTEGER NOT NULL,                         -- 공 순서 시드
+  issued_at INTEGER NOT NULL,                    -- 내준 시각(ms)
+  used_at INTEGER                                -- 점수를 받은 시각(ms). 아직 안 썼으면 NULL
+);
+CREATE INDEX IF NOT EXISTS seed_tokens_player ON seed_tokens (player_id, issued_at);

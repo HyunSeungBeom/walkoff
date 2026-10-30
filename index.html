@@ -2006,19 +2006,22 @@ async function postScore(body) {
   return { status: res.status, data: await res.json().catch(() => ({})) };
 }
 
-// 10구 도전이 끝나면 점수를 보낸다. 주간 랭킹은 이번 주 최고 기록이라(2026-10-29 사용자 결정)
-// 칠 때마다 보내고, 서버는 그날 가장 높은 판만 남긴다. 로그인하지 않았거나 네트워크 오류면 아직 못 보낸 판 중
-// 가장 높은 판 하나를 남겨 뒀다가 로그인하거나 다음에 열 때 보낸다. 서버가 거절한 기록(날짜가 지난 기록 등)은 버린다
+// 10구 도전이 끝나면 점수를 보낸다. 주간 랭킹은 이번 주 최고 기록이라(2026-10-29 사용자 결정) 칠 때마다 보내고,
+// 서버는 그날 가장 높은 판만 남긴다. 로그인하고 친 판만 보낸다(2026-10-30 사용자 결정: 로그인 전 판은 연습으로만 남는다).
+// 서버가 내준 시드로 친 판은 보내기 전에 이 브라우저에 남겨 두고(아직 못 보낸 판 중 가장 높은 판 하나), 네트워크·서버 오류면
+// 다음에 열 때 보낸다. 서버가 거절한 판(날짜가 지났거나 이미 쓴 시드 등)은 버린다
 function keepPending(body) {
+  if (!body.token) return;
   const old = store.get('pending', null);
-  const stale = !old || typeof old !== 'object' || !(old.score >= 0) || old.day < addDay(today(), -2);   // 서버는 이틀 전 기록까지 받는다
+  const stale = !old || typeof old !== 'object' || !old.token || !(old.score >= 0) || old.day < addDay(today(), -2);   // 서버는 이틀 전 기록까지 받는다
   if (stale || body.score > old.score) store.set('pending', body);
 }
 
-// 남겨 둔 판을 보낸다. 받은 응답(내 순위)을 돌려준다
+// 남겨 둔 판을 보낸다. 받은 응답(내 순위)을 돌려준다. 서버 시드가 없는 판(예전 게임이 남긴 로그인 전 판)은 버린다
 async function sendPending() {
   const body = store.get('pending', null);
   if (!body || typeof body !== 'object' || !loggedIn()) return null;
+  if (!body.token) { store.remove('pending'); return null; }
   try {
     const { status, data } = await postScore(body);
     if (status === 401) { logout('expired'); return null; }
@@ -2030,13 +2033,22 @@ async function sendPending() {
 async function submitScore(s, mode) {
   if (!settings.team) return;
   if (!settings.nick) saveTeamAndNick(settings.team, defaultNick());
-  // 서버는 그 판의 공 순서를 다시 만들어 전광판·점수를 맞춰 본다. 그래서 10구 도전은 시드를 함께 보낸다
-  keepPending({ nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, ...(mode === 'challenge' ? { seed: game.seed } : {}) });
-  if (!loggedIn()) return;
+  if (!loggedIn()) return;   // 끝 화면에는 로그인하라는 줄이 나온다
+  if (game.fixedSeed) { game.rankInfo = { status: 'unranked' }; return; }   // 주소에 ?seed=를 붙여 공 순서를 정한 판
+  // 서버는 자기가 내준 시드(token)로 공 순서를 다시 만들어 전광판·점수를 맞춰 본다. 시드를 못 받은 판은 token 없이 가서 거절된다.
+  // seed는 시드를 내주기 전의 서버가 보던 값이다
+  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, seed: game.seed, ...(game.ticket ? { token: game.ticket.token } : {}) };
+  keepPending(body);
   game.rankInfo = { status: 'sending' };
-  const d = await sendPending();
-  if (d) setWallet({ coins: d.coins });
-  game.rankInfo = d ? { status: 'ok', me: d.me, myTeam: d.myTeam, newBest: d.accepted && d.me?.best === s.score, earned: d.earned ?? 0, bonus: !!d.bonus } : { status: loggedIn() ? 'error' : 'login' };
+  let res;
+  try { res = await postScore(body); } catch { res = { status: 0, data: {} }; }
+  const { status, data } = res;
+  if (status === 401) { logout('expired'); return; }   // 남겨 둔 판은 다시 로그인하면 보낸다
+  if (status > 0 && status < 500 && store.get('pending', null)?.token === body.token) store.remove('pending');
+  if (status === 200 && data.ok) {
+    setWallet({ coins: data.coins });
+    game.rankInfo = { status: 'ok', me: data.me, myTeam: data.myTeam, newBest: data.accepted && data.me?.best === s.score, earned: data.earned ?? 0 };
+  } else game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error };
 }
 
 // 로그인하거나 다시 열었을 때 남겨 둔 판을 보낸다
@@ -2061,15 +2073,17 @@ async function loadRanking() {
 }
 function closeRanking() { if (game.rankBack === 'over') game.state = 'over'; else goTitle(); }
 
-// 끝 화면 점수 아래 줄 끝에 붙이는 받은 코인: " · +64코인(2배)"
-const coinNote = () => { const ri = game.rankInfo; return loggedIn() && ri?.earned > 0 ? ` · +${ri.earned}코인${ri.bonus ? '(2배)' : ''}` : ''; };
+// 끝 화면 점수 아래 줄 끝에 붙이는 받은 코인: " · +64코인"
+const coinNote = () => { const ri = game.rankInfo; return loggedIn() && ri?.earned > 0 ? ` · +${ri.earned}코인` : ''; };
 
 // 끝 화면 한 줄: "이번 주 최고 기록! 3위 · 랭킹 보기 ›" 또는 "이번 주 최고 4,200점 · 3위 · 랭킹 보기 ›".
-// 로그인하지 않았으면 로그인하라는 줄
+// 로그인하지 않았으면 로그인하라는 줄, 랭킹에 안 올라간 판이면 그 까닭
 function rankLine() {
-  if (!loggedIn()) return '카카오로 로그인하면 랭킹에 올라가요 ›';
+  if (!loggedIn()) return '카카오로 로그인하면 다음 판부터 랭킹에 올라가요 ›';
   const ri = game.rankInfo;
+  if (ri?.status === 'unranked') return '주소로 정한 공은 랭킹에 안 올라가요 · 랭킹 보기 ›';
   if (!ri || ri.status === 'sending') return '이번 주 랭킹을 불러오는 중…';
+  if (ri.status === 'rejected') return ri.error === 'seed_required' ? '랭킹 서버에 연결하지 못해 안 올라갔어요 · 랭킹 보기 ›' : '이 판은 랭킹에 올리지 못했어요 · 랭킹 보기 ›';
   if (ri.status === 'error') return '랭킹 서버에 연결하지 못했어요 · 랭킹 보기 ›';
   if (!ri.me) return '이번 주 랭킹 보기 ›';
   return ri.newBest ? `이번 주 최고 기록! ${ri.me.rank}위 · 랭킹 보기 ›` : `이번 주 최고 ${(ri.me.best ?? ri.me.total ?? 0).toLocaleString()}점 · ${ri.me.rank}위 · 랭킹 보기 ›`;
@@ -2147,6 +2161,38 @@ function api(path, { method = 'GET', body } = {}) {
   return fetch(`${RANKING_API}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
 }
 
+// ===== 10구 도전 시드 =====
+// 랭킹에 올라가는 10구 도전은 서버가 판마다 내준 시드로 친다(2026-10-30, worker/src/seeds.js). 게임이 시드를 정하던 때는
+// 볼이 많이 나오는 시드를 골라 보내거나 같은 공 순서를 미리 익혀 칠 수 있었다. 서버는 점수를 받을 때 자기가 낸 시드인지,
+// 한 번만 쓰였는지, 그 판을 칠 시간이 지났는지를 본다.
+// 시작할 때 기다리지 않게 다음 판 시드를 미리 하나 받아 둔다. 로그인 안 했거나 주소에 ?seed=를 붙였으면 받지 않는다
+const SEED_KEEP_MS = 6 * 3600e3;   // 받아 둔 시드가 이보다 오래됐으면 버리고 새로 받는다(서버는 받은 뒤 사흘까지 받는다)
+const SEED_WAIT_MS = 3000;         // 받는 중에 시작하면 이만큼까지 기다린다. 그래도 못 받으면 랭킹 없이 친다
+const seedTicket = { ready: null, loading: null };   // ready: { token, seed, at }
+function prefetchSeed() {
+  if (!loggedIn() || urlSeed() != null) return null;
+  if (seedTicket.ready && Date.now() - seedTicket.ready.at > SEED_KEEP_MS) seedTicket.ready = null;
+  if (seedTicket.ready || seedTicket.loading) return seedTicket.loading;
+  const by = auth.token;
+  seedTicket.loading = (async () => {
+    try {
+      const res = await api('/seeds', { method: 'POST' });
+      if (res.status === 401) { if (auth.token === by) logout('expired'); return; }
+      const d = await res.json().catch(() => ({}));
+      if (auth.token === by && res.ok && typeof d.token === 'string' && Number.isInteger(d.seed) && d.seed > 0) seedTicket.ready = { token: d.token, seed: d.seed, at: Date.now() };
+    } catch { /* 이번에 못 받으면 시작할 때 다시 받는다 */ }
+    finally { seedTicket.loading = null; }
+  })();
+  return seedTicket.loading;
+}
+// 받아 둔 시드를 이번 판에 쓰고, 다음 판 것을 받기 시작한다
+function takeSeedTicket() {
+  const t = seedTicket.ready;
+  seedTicket.ready = null;
+  prefetchSeed();
+  return t;
+}
+
 // 카카오 로그인 화면으로 간다. 확인값을 이 브라우저에 적어 두고, 돌아왔을 때 같은 값인지 본다
 function startKakaoLogin() {
   const n = `n${Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')}`;
@@ -2214,6 +2260,7 @@ async function pushProfile() {
 
 function logout(reason) {
   Object.assign(auth, { token: null, fresh: false });
+  seedTicket.ready = null;   // 받아 둔 시드는 그 계정 것이다
   store.remove('session');
   resetWallet();   // 코인과 꾸미기는 계정에 남는다. 이 브라우저는 기본 모습으로
   toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
@@ -2225,6 +2272,7 @@ async function deleteAccount() {
     const res = await api('/me', { method: 'DELETE' });
     if (!res.ok && res.status !== 401) throw new Error(`delete ${res.status}`);
     Object.assign(auth, { token: null, fresh: false });
+    seedTicket.ready = null;
     ['session', 'pending', 'playerId'].forEach((k) => store.remove(k));
     resetWallet();
     settings.playerId = ensurePlayerId();
@@ -2234,7 +2282,7 @@ async function deleteAccount() {
 }
 
 // 로그인 안 한 사람이 시작 화면에서 10구 판을 시작하려고 하면 하루 한 번 카카오 로그인을 권한다(2026-10-29 사용자 요청).
-// "나중에 하기"를 누르면 바로 시작하고 그날은 다시 묻지 않는다. 나중에 로그인해도 그날 가장 높은 판은 올라간다(keepPending)
+// "나중에 하기"를 누르면 바로 시작하고 그날은 다시 묻지 않는다. 로그인하기 전에 친 판은 랭킹에 올리지 않는다(2026-10-30 사용자 결정)
 const askLoginToday = () => !loggedIn() && store.get('loginLater', '') !== today();
 const skipLogin = () => store.set('loginLater', today());
 function drawLoginPrompt() {
@@ -2252,7 +2300,7 @@ function drawLoginPrompt() {
   y += 48 + (m ? 16 : 20);
   text('카카오에서는 회원번호만 받아요 · 랭킹에만 써요', cx, y, sub);
   addButton({ x: cx - 80, y: y + 10, w: 160, h: 36 }, '나중에 하기', 'link', () => { skipLogin(); startDefault(); });
-  text('나중에 로그인해도 오늘 친 가장 높은 기록은 올라가요', cx, y + 64, sub);
+  text('로그인하기 전에 친 판은 랭킹에 안 올라가요', cx, y + 64, sub);
 }
 
 // 내 계정(로그인했을 때) 또는 카카오 로그인 안내(안 했을 때). 개인정보 안내도 여기 둔다
@@ -2729,17 +2777,35 @@ const game = {
   toast: null, newBest: false, best: 0,
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
   opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
+  ticket: null, fixedSeed: false, waitingSeed: false,   // 이번 판에 쓴 서버 시드, 주소의 ?seed=로 친 판인지, 서버 시드를 기다리는 중인지
 };
 
-function seedFromUrl() {
+// 주소 끝 ?seed=숫자. 같은 공 순서를 다시 칠 때 쓴다(랭킹에는 안 올라간다)
+function urlSeed() {
   const s = Number(new URLSearchParams(location.search).get('seed'));
-  return Number.isFinite(s) && s > 0 ? s : (Date.now() % 2147483647);
+  return Number.isFinite(s) && s > 0 ? s : null;
 }
+const seedFromUrl = () => urlSeed() ?? (Date.now() % 2147483647);
 
 // mode: 'challenge'(10구 도전, 매번 다른 공) | 'scenario'(끝내기 상황) | 'practice'(연습)
-function startGame(mode) {
+// 로그인한 10구 도전은 서버가 내준 시드로 친다. 받아 둔 것이 없으면(막 열었을 때) 받을 때까지 잠깐 기다리고, 그동안 누른 것은 받지 않는다
+function startGame(mode, waited = false) {
+  const ranked = mode === 'challenge' && loggedIn() && urlSeed() == null;
+  if (ranked && !waited && prefetchSeed() && !seedTicket.ready) {   // prefetchSeed는 받아 둔 것이 없거나 오래됐으면 새로 받기 시작한다
+    const from = game.state, slow = setTimeout(() => toast('공을 받는 중…'), 400);
+    game.waitingSeed = true;
+    Promise.race([seedTicket.loading, new Promise((done) => setTimeout(done, SEED_WAIT_MS))]).then(() => {
+      clearTimeout(slow);
+      game.waitingSeed = false;
+      if (game.toast?.text === '공을 받는 중…') game.toast = null;
+      if (game.state === from) startGame(mode, true);   // 기다리는 동안 다른 화면으로 갔으면 시작하지 않는다
+    });
+    return;
+  }
   game.mode = mode;
-  game.seed = seedFromUrl();
+  game.ticket = ranked ? takeSeedTicket() : null;
+  game.fixedSeed = mode === 'challenge' && urlSeed() != null;
+  game.seed = game.ticket?.seed ?? seedFromUrl();
   Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0 });
   game.throws = pitcherHand(game.seed);
   game.opponent = pickOpponent(game.seed);
@@ -2884,6 +2950,7 @@ function update(dt) {
 // 버튼 위를 누르면 그 버튼, 아니면 화면마다 정한 기본 동작(시작, 스윙, 다음 공)을 한다
 function primaryAction(eventTime, x, y) {
   Sound.init();
+  if (game.waitingSeed) return;   // 서버 시드를 받는 중(startGame)
   if (x != null && game.state !== 'pitch' && game.state !== 'windup') {
     const b = ui.buttons.find((btn) => inRect(btn.r, x, y));
     if (b) { b.onTap(); return; }
@@ -3026,9 +3093,10 @@ readLoginReturn();
 if (!settings.team) openOnboard('start');   // 처음 온 사람은 열자마자 팀 고르기
 requestAnimationFrame(frame);
 syncAccount();
+prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay };
 </script>
 </body>
 </html>

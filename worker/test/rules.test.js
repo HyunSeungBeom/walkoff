@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate } from '../src/rules.js';
+import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate, DAILY_LAST_DAY } from '../src/rules.js';
+import { SEED_TTL_MS, MIN_PITCH_MS } from '../src/seeds.js';
 import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../src/pitches.js';
 
 test('한국 시간 날짜와 월요일 0시 주 경계', () => {
@@ -41,6 +42,9 @@ const played = (seed) => {
 const DAY = '2026-10-28', LIGHTS = played(dailySeed(DAY));
 const base = { nick: '타자1234', team: 'lg', day: DAY, lights: LIGHTS, score: 3000 };
 const check = (patch, playerId = PID) => validateSubmission({ ...base, ...patch }, NOW, playerId);
+// 10구 도전: 서버가 내준 표(seed_tokens 한 줄)와 함께 검사한다. 기본은 1분 전에 받은 아직 안 쓴 표
+const ticket = (seed, patch = {}) => ({ id: 'tk', player_id: PID, seed, issued_at: NOW - 60e3, used_at: null, ...patch });
+const challenge = (seed, patch = {}, tk = ticket(seed)) => validateSubmission({ ...base, mode: 'challenge', token: 'tk', lights: played(seed), ...patch }, NOW, PID, tk);
 
 test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
   assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26' } });   // mode가 없는 예전 게임은 오늘의 10구로 본다
@@ -48,7 +52,7 @@ test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
   assert.equal(check({ playerId: 'someone-else' }).value.playerId, PID);   // 보낸 내용의 ID는 쓰지 않는다
   assert.equal(check({ day: '2026-10-26', lights: played(dailySeed('2026-10-26')) }).ok, true);   // 이틀 전까지 받는다
   assert.equal(check({ day: '2026-10-29', lights: LIGHTS }).ok, true);   // 자정을 넘겨 끝난 판은 전날 공 순서로 본다
-  assert.equal(check({ mode: 'challenge', seed: 42, lights: played(42) }).ok, true);   // 10구 도전은 게임이 보낸 시드로 본다
+  assert.equal(challenge(42).ok, true);   // 10구 도전은 서버가 내준 표의 시드로 본다
   assert.equal(check({ nick: '가나다라마바사아자차' }).ok, true);                // 한글 10자
   assert.equal(check({ nick: '  공백  ' }).value?.nick, '공백');
 });
@@ -64,14 +68,12 @@ test('규칙상 나올 수 없는 값은 거절한다', () => {
     bad_score: { score: maxOf(LIGHTS) + 1 },
     stale_day: { day: '2026-10-25' },               // 사흘 전
     bad_nick: { nick: '가나다라마바사아자차카' },      // 11자
-    bad_seed: { mode: 'challenge', lights: played(42) },   // 10구 도전인데 시드가 없다
+    seed_required: { mode: 'challenge', seed: 42, lights: played(42) },   // 10구 도전인데 서버가 내준 표가 없다(게임이 정한 시드만 있다)
+    bad_mode: { mode: 'scenario' },
   };
   for (const [error, patch] of Object.entries(cases)) assert.deepEqual(check(patch), { ok: false, error }, error);
   assert.equal(check({ lights: `${'R'.repeat(inBoth)}Y${'R'.repeat(10 - inBoth)}` }).error, 'bad_lights');   // 존 안 공에 볼
   assert.equal(check({ lights: `${'Y'.repeat(30)}${'G'.repeat(10)}` }).error, 'bad_lights');   // 순서를 바꿔도 실제 공 순서와 안 맞는다
-  assert.equal(check({ mode: 'challenge', seed: 42, lights: LIGHTS }).ok, played(42) === LIGHTS);   // 다른 판의 전광판(같지 않으면 거절)
-  assert.equal(check({ mode: 'scenario' }).error, 'bad_seed');
-  assert.equal(check({ mode: 'challenge', seed: 'abc', lights: played(42) }).error, 'bad_seed');
   assert.equal(check({ day: '2026-10-30' }).error, 'stale_day');   // 이틀 뒤
   assert.equal(check({ lights: 'GGGGGGGGGX' }).error, 'bad_lights');
   assert.equal(check({ lights: '' }).error, 'bad_lights');
@@ -82,6 +84,29 @@ test('규칙상 나올 수 없는 값은 거절한다', () => {
   assert.equal(check({}, 'ABC').error, 'bad_player');
   assert.equal(check({}, '').error, 'bad_player');
   assert.equal(validateSubmission(null, NOW, PID).error, 'bad_body');
+});
+
+test('10구 도전은 서버가 내준 표의 시드로만 보고, 표는 내 것이고 안 썼고 기한 안이고 한 판 칠 시간이 지나야 한다', () => {
+  assert.equal(challenge(42, { seed: 7 }).ok, true);   // 게임이 보낸 시드는 쓰지 않는다
+  assert.equal(challenge(42, { lights: played(7) }).error, played(7) === played(42) ? undefined : 'bad_lights');   // 다른 판의 전광판
+  assert.equal(challenge(42, {}, null).error, 'bad_seed');   // 서버에 없는 표
+  assert.equal(challenge(42, {}, ticket(42, { player_id: 'p-someone-else' })).error, 'bad_seed');   // 남이 받은 표
+  assert.equal(challenge(42, {}, ticket(42, { used_at: NOW - 1000 })).error, 'seed_used');
+  assert.equal(challenge(42, {}, ticket(42, { issued_at: NOW - SEED_TTL_MS })).ok, true);
+  assert.equal(challenge(42, {}, ticket(42, { issued_at: NOW - SEED_TTL_MS - 1 })).error, 'seed_expired');
+  const pitches = played(42).length, fastest = pitches * MIN_PITCH_MS;   // 공 하나에 1.5초는 걸린다
+  assert.equal(challenge(42, {}, ticket(42, { issued_at: NOW - fastest })).ok, true);
+  assert.equal(challenge(42, {}, ticket(42, { issued_at: NOW - fastest + 1 })).error, 'too_fast');
+  assert.equal(challenge(42, { token: '' }).error, 'seed_required');
+});
+
+test('오늘의 10구는 없어진 날(2026-10-30)까지 친 판만 받는다', () => {
+  const later = Date.parse('2026-10-31T03:00:00Z');   // 한국 시간 2026-10-31 12:00
+  const daily = (day, patch = {}) => validateSubmission({ ...base, day, lights: played(dailySeed(day)), ...patch }, later, PID);
+  assert.equal(DAILY_LAST_DAY, '2026-10-30');
+  assert.equal(daily('2026-10-30').ok, true);   // 열어 둔 예전 탭이 자정 전에 친 판
+  assert.equal(daily('2026-10-31').error, 'mode_removed');   // mode가 없는 예전 게임
+  assert.equal(daily('2026-10-31', { mode: 'daily' }).error, 'mode_removed');
 });
 
 test('주간 순위: 이번 주 최고 기록으로 줄 세우고, 같은 점수는 같은 등수, 팀 점수는 팀원 최고 기록의 합', () => {

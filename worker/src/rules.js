@@ -1,7 +1,9 @@
 // 랭킹 규칙. 게임(index.html)도 같은 팀 목록과 주 계산을 써야 해서, 테스트로 둘이 같은지 맞춰 본다
 import { makeSequence, pitcherHand, dailySeed, zoneMiss, CHANCES, REACH_M, POINTS, PERFECT_BONUS } from './pitches.js';
+import { SEED_TTL_MS, MIN_PITCH_MS } from './seeds.js';
 export const TEAM_IDS = ['kia', 'kt', 'lg', 'nc', 'ssg', 'doosan', 'lotte', 'samsung', 'kiwoom', 'hanwha'];   // KBO 10개 구단(게임의 TEAMS와 같은 순서)
 const DAY_MS = 864e5;
+export const DAILY_LAST_DAY = '2026-10-30';   // 오늘의 10구가 없어진 날. 그날까지 친 판만 받는다
 
 // 한국 시간 날짜(YYYY-MM-DD)
 export const kstDay = (ms) => new Date(ms + 9 * 3600e3).toISOString().slice(0, 10);
@@ -37,14 +39,19 @@ export function maxScoreFor(lights, seq) {
   return left === 0 || lights.length === seq.length ? total : null;
 }
 
-// 그 판의 공 순서. 오늘의 10구는 날짜로 정해지고(자정을 넘겨 끝난 판을 위해 전날 순서도 본다), 10구 도전은 게임이 보낸 시드로 만든다.
-// mode가 없는 예전 게임은 오늘의 10구로 본다
-function sequencesFor(b, day) {
+// 그 판의 공 순서를 만들 시드. 오늘의 10구는 날짜로 정해지고(자정을 넘겨 끝난 판을 위해 전날 순서도 본다), mode가 없는 예전 게임도
+// 오늘의 10구로 본다. 2026-10-30에 없어져서 그날까지 친 판만 받는다(열어 둔 예전 탭).
+// 10구 도전은 서버가 내준 표(seeds.js, ticket)의 시드로만 본다. 게임이 보낸 시드는 쓰지 않는다
+function seedsFor(b, day, ticket, playerId, pitches, nowMs) {
   const mode = b.mode ?? 'daily';
-  if (mode === 'daily') return [dailySeed(day), dailySeed(addDays(day, -1))];
-  if (mode !== 'challenge') return null;
-  const seed = b.seed;
-  return typeof seed === 'number' && Number.isFinite(seed) && seed > 0 && seed < 2 ** 32 ? [seed] : null;
+  if (mode === 'daily') return day > DAILY_LAST_DAY ? { error: 'mode_removed' } : { seeds: [dailySeed(day), dailySeed(addDays(day, -1))] };
+  if (mode !== 'challenge') return { error: 'bad_mode' };
+  if (!b.token) return { error: 'seed_required' };
+  if (!ticket || ticket.player_id !== playerId) return { error: 'bad_seed' };   // 없는 표이거나 남의 표
+  if (ticket.used_at != null) return { error: 'seed_used' };
+  if (nowMs - ticket.issued_at > SEED_TTL_MS) return { error: 'seed_expired' };
+  if (nowMs - ticket.issued_at < pitches * MIN_PITCH_MS) return { error: 'too_fast' };   // 표를 받고 나서 그 판을 칠 시간도 지나지 않았다
+  return { seeds: [ticket.seed] };
 }
 const seqOf = (seed) => makeSequence(seed, pitcherHand(seed) === 'L');
 
@@ -59,8 +66,8 @@ export function validateProfile(b) {
 
 // 10구 판 점수 한 건을 검사한다. 그 판의 공 순서로 나올 수 없는 전광판과, 그 전광판으로 낼 수 없는 점수를 거른다.
 // 타이밍은 게임이 재서 보내므로 사람이 친 것인지까지는 가릴 수 없다(정타만 쳤다고 꾸민 점수는 막지 못한다).
-// 사람 ID는 보낸 내용이 아니라 로그인 표에서 꺼낸 값을 받는다
-export function validateSubmission(b, nowMs, playerId) {
+// 사람 ID는 보낸 내용이 아니라 로그인 표에서 꺼낸 값을 받는다. ticket은 10구 도전 점수와 함께 온 표를 DB에서 꺼낸 줄(없으면 null)
+export function validateSubmission(b, nowMs, playerId, ticket = null) {
   if (!/^[a-z0-9-]{8,40}$/.test(String(playerId ?? ''))) return { ok: false, error: 'bad_player' };
   const profile = validateProfile(b);
   if (!profile.ok) return profile;
@@ -70,9 +77,9 @@ export function validateSubmission(b, nowMs, playerId) {
   const today = kstDay(nowMs);
   if (day < addDays(today, -2) || day > addDays(today, 1)) return { ok: false, error: 'stale_day' };   // 늦게 보낸 기록은 이틀까지 받는다
   if (!/^[GYR]{1,40}$/.test(lights)) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
-  const seeds = sequencesFor(b, day);
-  if (!seeds) return { ok: false, error: 'bad_seed' };
-  const maxes = seeds.map((s) => maxScoreFor(lights, seqOf(s))).filter((m) => m !== null);
+  const found = seedsFor(b, day, ticket, playerId, lights.length, nowMs);
+  if (found.error) return { ok: false, error: found.error };
+  const maxes = found.seeds.map((s) => maxScoreFor(lights, seqOf(s))).filter((m) => m !== null);
   if (!maxes.length) return { ok: false, error: 'bad_lights' };
   if (!Number.isInteger(score) || score < 0 || score > Math.max(...maxes)) return { ok: false, error: 'bad_score' };
   return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights } };

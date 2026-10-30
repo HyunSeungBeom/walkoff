@@ -1,10 +1,11 @@
-// walkoff 랭킹 서버(Cloudflare Workers + D1). 10구 판(오늘의 10구 첫 판, 10구 도전) 점수를 받아
-// 이번 주(한국 시간 월~일) 최고 기록으로 개인·팀 순위를 돌려준다. 점수는 카카오로 로그인한 사람만 낼 수 있다(2026-10-28 사용자 결정).
+// walkoff 랭킹 서버(Cloudflare Workers + D1). 10구 도전 점수를 받아 이번 주(한국 시간 월~일) 최고 기록으로 개인·팀 순위를 돌려준다.
+// 점수는 카카오로 로그인한 사람만 낼 수 있고(2026-10-28 사용자 결정), 서버가 판마다 내준 시드로 친 판만 받는다(2026-10-30, seeds.js).
 // 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다)
 import { kstDay, weekStart, addDays, validateSubmission, validateProfile, aggregate } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
 import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
 import { validateEvent, recordEvent } from './stats.js';
+import { issueSeed, findSeed, useSeed } from './seeds.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -92,19 +93,13 @@ async function account(request, env, now) {
 // 게임에 돌려주는 지갑: 코인, 산 물건, 착용(look)
 const wallet = (a) => { const owned = ownedOf(a.owned); return { coins: a.coins, owned, look: lookOf(a.equipped, owned) }; };
 
-// 판마다 코인을 준다(점수의 1/100). 오늘의 10구 첫 판 2배는 하루 한 번이고, 20초 안에 또 오면 주지 않는다.
+// 판마다 코인을 준다(점수의 1/100). 20초 안에 또 오면 주지 않는다.
 // 조건을 UPDATE 안에 넣어서 같은 판을 두 번 보내도(네트워크 오류 뒤 다시 보내기 등) 한 번만 준다
-async function earnCoins(db, playerId, score, daily, day, now) {
-  const cutoff = now - COIN_GAP_MS;
-  if (daily) {
-    const r = await db.prepare('UPDATE accounts SET coins = coins + ?, coin_at = ?, daily_bonus_day = ? WHERE player_id = ? AND coin_at <= ? AND daily_bonus_day <> ?')
-      .bind(coinsFor(score, true), now, day, playerId, cutoff, day).run();
-    if (r.meta.changes > 0) return { earned: coinsFor(score, true), bonus: true };
-  }
-  const earned = coinsFor(score, false);
-  if (earned <= 0) return { earned: 0, bonus: false };
-  const r = await db.prepare('UPDATE accounts SET coins = coins + ?, coin_at = ? WHERE player_id = ? AND coin_at <= ?').bind(earned, now, playerId, cutoff).run();
-  return { earned: r.meta.changes > 0 ? earned : 0, bonus: false };
+async function earnCoins(db, playerId, score, now) {
+  const earned = coinsFor(score);
+  if (earned <= 0) return 0;
+  const r = await db.prepare('UPDATE accounts SET coins = coins + ?, coin_at = ? WHERE player_id = ? AND coin_at <= ?').bind(earned, now, playerId, now - COIN_GAP_MS).run();
+  return r.meta.changes > 0 ? earned : 0;
 }
 
 export default {
@@ -127,25 +122,34 @@ export default {
         return new Response(null, { status: 204, headers: HEADERS });
       }
 
-      const acct = ['/scores', '/me', '/shop/buy', '/shop/equip'].includes(url.pathname) ? await account(request, env, now) : null;
+      const acct = ['/seeds', '/scores', '/me', '/shop/buy', '/shop/equip'].includes(url.pathname) ? await account(request, env, now) : null;
+      // 10구 도전 한 판의 시드와 일회용 표(seeds.js). 게임은 기다리지 않고 시작하려고 다음 판 표를 미리 받아 둔다
+      if (url.pathname === '/seeds' && method === 'POST') {
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        const issued = await issueSeed(env.DB, acct.player_id, now);
+        return json(issued, issued.ok ? 200 : 429);
+      }
       if (url.pathname === '/scores' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
         const body = await request.json().catch(() => null);
-        const checked = validateSubmission(body, now, acct.player_id);
+        const ticket = body?.mode === 'challenge' ? await findSeed(env.DB, body.token) : null;
+        const checked = validateSubmission(body, now, acct.player_id, ticket);
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const s = checked.value;
         // 같은 사람·같은 날은 그날 가장 높은 판만 남긴다(주간 순위는 이번 주 최고 기록). accepted는 그날 기록이 새로 생기거나 올랐다는 뜻.
-        // 계정에는 마지막으로 쓴 닉네임·팀을 적어 둔다
+        // 계정에는 마지막으로 쓴 닉네임·팀을 적어 둔다. 10구 도전의 표는 같은 묶음에서 쓴 것으로 적는다(점수가 못 들어가면 표도 남는다).
+        // 같은 표로 동시에 두 번 보내면 둘 다 들어갈 수 있지만, 같은 공 순서라 그날 가장 높은 점수 하나만 남고 코인은 20초 간격으로 한 번이다
         const [res] = await env.DB.batch([
           env.DB.prepare(`INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (player_id, day) DO UPDATE SET score = excluded.score, lights = excluded.lights, nick = excluded.nick, team = excluded.team
             WHERE excluded.score > daily_scores.score`)
             .bind(s.playerId, s.day, s.week, s.nick, s.team, s.score, s.lights),
           env.DB.prepare('UPDATE accounts SET nick = ?, team = ? WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
+          ...(ticket ? [useSeed(env.DB, ticket, now)] : []),
         ]);
-        const coin = await earnCoins(env.DB, s.playerId, s.score, body.mode === 'daily', s.day, now);
+        const earned = await earnCoins(env.DB, s.playerId, s.score, now);
         const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId), accountById(env.DB, s.playerId)]);
-        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, coins: after.coins, earned: coin.earned, bonus: coin.bonus });
+        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, coins: after.coins, earned });
       }
       if (url.pathname === '/me') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
@@ -163,6 +167,7 @@ export default {
         if (method === 'DELETE') {   // 기록 지우기: 점수와 계정을 모두 지운다
           await env.DB.batch([
             env.DB.prepare('DELETE FROM daily_scores WHERE player_id = ?').bind(acct.player_id),
+            env.DB.prepare('DELETE FROM seed_tokens WHERE player_id = ?').bind(acct.player_id),
             env.DB.prepare('DELETE FROM accounts WHERE player_id = ?').bind(acct.player_id),
           ]);
           return json({ ok: true });
