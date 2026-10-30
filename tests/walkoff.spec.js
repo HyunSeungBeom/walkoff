@@ -168,6 +168,21 @@ const setPlayedDays = (page, ago, legacy = []) => page.evaluate(({ ago, legacy }
   for (const n of legacy) walkoff.store.set('daily.' + day(n), { score: 1500, lights: 'GGRYGRRRRRR', bats: 'R', date: day(n) });
 }, { ago, legacy });
 
+// 지금 공이 홈플레이트에 닿는 시각보다 dt(ms) 늦게(-면 빠르게) 스페이스를 누른다. 파울(90~140ms)처럼 폭이 좁은 판정을 노릴 때 쓴다.
+// 게임은 한 화면에 시간을 0.05초까지만 보내서(frame의 dt) 화면이 느리면 게임 시간이 실제 시간보다 늦게 간다. 그래서 실제 시간으로
+// 재서 누르면 부하에 따라 늦거나(2026-10-30 CI, 115ms가 140ms를 넘어 헛스윙) 빨라졌다(같은 날 로컬, 안타). 게임 시간이 목표 0.08초
+// 앞까지 오기를 화면마다 보고, 마지막 화면 뒤로 남은 만큼만 기다렸다가 누른다(키를 누른 시각은 마지막 화면 시각부터 실제 시간으로 더한다)
+const pressAt = (page, dt) => page.evaluate((dt) => new Promise((resolve) => {
+  const g = walkoff.game, target = g.seq[g.i].T + dt / 1000;
+  const tick = () => {
+    if (walkoff.ballTime() < target - 0.08) { requestAnimationFrame(tick); return; }
+    const at = g.clockAt + (target - walkoff.ballTime()) * 1000;
+    while (performance.now() < at) { /* 누를 시각까지 기다린다 */ }
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' })); resolve();
+  };
+  requestAnimationFrame(tick);
+}), dt);
+
 // 공이 홈플레이트에 닿는 시각보다 dt(ms)만큼 빠르게(-)/늦게(+) 스페이스를 보낸다. dt가 null이면 치지 않는다
 async function playPitch(page, dt) {
   await page.waitForFunction(() => ['windup', 'pitch'].includes(walkoff.game.state));
@@ -790,10 +805,7 @@ test.describe('화면', () => {
     const errors = await open(page);
     await page.evaluate(() => walkoff.startGame('challenge'));
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
-    await page.evaluate(() => new Promise((resolve) => {   // 115ms 늦게 휘두르면 파울(90~140ms)
-      const g = walkoff.game, p = g.seq[g.i], now = walkoff.ballTime() + (performance.now() - g.clockAt) / 1000;
-      setTimeout(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' })); resolve(); }, Math.max(0, (p.T - now) * 1000 + 115));
-    }));
+    await pressAt(page, 115);   // 115ms 늦게 휘두르면 파울(90~140ms)
     await page.waitForFunction(() => walkoff.game.state === 'result');
     expect(await page.evaluate(() => walkoff.game.outcome.kind)).toBe('foul');
     await page.waitForFunction(() => Math.hypot(walkoff.view.panX, walkoff.view.panY) > 300, null, { timeout: 5000 });   // 화면이 파울공을 따라 돌아갔다
@@ -852,13 +864,9 @@ test.describe('화면', () => {
       const roar = walkoff.Sound.roar;
       walkoff.Sound.roar = (level) => { window.roars.push(level); roar(level); };
     });
-    const swingAt = (dt) => page.evaluate((dt) => new Promise((resolve) => {
-      const g = walkoff.game, p = g.seq[g.i], now = walkoff.ballTime() + (performance.now() - g.clockAt) / 1000;
-      setTimeout(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' })); resolve(); }, Math.max(0, (p.T - now) * 1000 + dt));
-    }), dt);
     await page.evaluate(() => walkoff.startGame('challenge'));
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
-    await swingAt(115);   // 115ms 늦으면 파울
+    await pressAt(page, 115);   // 115ms 늦으면 파울
     await page.waitForFunction(() => walkoff.game.state === 'result');
     expect(await page.evaluate(() => [walkoff.game.outcome.kind, walkoff.crowd.power])).toEqual(['foul', 0]);
     await page.waitForTimeout(400);
@@ -867,7 +875,7 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.4);
     await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
-    await swingAt(0);   // 정타(seed 42의 두 번째 공은 가운데라 앞으로 날아간다)
+    await pressAt(page, 0);   // 정타(seed 42의 두 번째 공은 가운데라 앞으로 날아간다)
     await page.waitForFunction(() => walkoff.game.state === 'result');
     const r = await page.evaluate(() => ({ kind: walkoff.game.outcome.kind, hit: walkoff.game.outcome.hit, power: walkoff.crowd.power }));
     expect(r.hit).toBe(true);
