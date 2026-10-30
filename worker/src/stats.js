@@ -25,10 +25,10 @@ export async function recordEvent(db, e, day) {
   return true;
 }
 
-// 최근 7일(한국 시간) 표. 날짜마다 한 줄: 기기 수, 그중 터치 기기, 시작한 판·끝낸 판, 모드별 시작한 판(npm run stats)
+// 최근 7일(한국 시간) 표. 날짜마다 한 줄: 기기 수, 그중 터치 기기, 시작한 판·끝낸 판, 모드별 시작한 판(npm run stats).
+// 오늘의 10구는 2026-10-30에 없어져서 칸을 뺐다. 그 전 날짜의 오늘의 10구 판은 시작한 판·끝낸 판 합계에만 들어간다
 export const STATS_SQL = `SELECT d.day AS "날짜", d.devices AS "기기", d.touch AS "터치 기기",
   COALESCE(SUM(s.starts), 0) AS "시작한 판", COALESCE(SUM(s.ends), 0) AS "끝낸 판",
-  COALESCE(SUM(CASE s.mode WHEN 'daily' THEN s.starts END), 0) AS "오늘의 10구",
   COALESCE(SUM(CASE s.mode WHEN 'challenge' THEN s.starts END), 0) AS "10구 도전",
   COALESCE(SUM(CASE s.mode WHEN 'scenario' THEN s.starts END), 0) AS "끝내기 상황",
   COALESCE(SUM(CASE s.mode WHEN 'practice' THEN s.starts END), 0) AS "연습"

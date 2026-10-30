@@ -66,6 +66,6 @@ test('npm run stats 표: 최근 7일만, 날짜마다 한 줄', async () => {
   await env.DB.prepare("INSERT INTO play_stats (day, mode, starts, ends) VALUES (?, 'daily', 5, 5)").bind(old).run();
   assert.deepEqual(env.DB.rows(STATS_SQL), [{
     날짜: today, 기기: 2, '터치 기기': 1, '시작한 판': 3, '끝낸 판': 1,
-    '오늘의 10구': 1, '10구 도전': 1, '끝내기 상황': 1, 연습: 0,
+    '10구 도전': 1, '끝내기 상황': 1, 연습: 0,
   }]);
 });
