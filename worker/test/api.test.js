@@ -2,7 +2,7 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { sign, verify, allowedReturn } from '../src/auth.js';
-import { kstDay } from '../src/rules.js';
+import { kstDay, maxScoreFor } from '../src/rules.js';
 import { makeSequence, pitcherHand, zoneMiss } from '../src/pitches.js';
 import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
 import { memoryD1 } from './d1.js';
@@ -149,8 +149,11 @@ test('10구 도전은 서버가 내준 표로만 받는다: 표 하나에 한 �
   assert.deepEqual(await post(noTicket), [400, 'seed_required']);   // 게임이 정한 시드만 보낸 판(예전 게임, ?seed= 판)
   assert.deepEqual(await post({ ...score(t), token: crypto.randomUUID() }), [400, 'bad_seed']);   // 서버에 없는 표
   assert.deepEqual(await post(score(t), other), [400, 'bad_seed']);   // 남이 받은 표
-  const otherSeed = t.seed === 7 ? 8 : 7;
-  if (played(otherSeed) !== played(t.seed)) assert.deepEqual(await post(score(t, { seed: otherSeed, lights: played(otherSeed) })), [400, 'bad_lights']);   // 게임이 보낸 시드는 쓰지 않는다
+  // 게임이 보낸 시드는 쓰지 않는다. 표의 시드는 무작위라 다른 시드를 7로 고정하면 그 전광판이 우연히 표의 공 순서에도 들어맞아
+  // 12%쯤 실패했다(2026-10-30 CI). 표의 공 순서로는 나올 수 없는 전광판을 내는 시드를 고른다
+  const seqOfTicket = makeSequence(t.seed, pitcherHand(t.seed) === 'L');
+  const otherSeed = Array.from({ length: 40 }, (_, i) => i + 7).find((s) => maxScoreFor(played(s), seqOfTicket) === null);
+  assert.deepEqual(await post(score(t, { seed: otherSeed, lights: played(otherSeed) })), [400, 'bad_lights']);
   assert.deepEqual(await post(score(t)), [200, 'ok']);
   assert.deepEqual(await post(score(t)), [400, 'seed_used']);   // 같은 표로 또
   assert.deepEqual(env.DB.rows('SELECT used_at IS NOT NULL AS used FROM seed_tokens WHERE id = ?', t.token), [{ used: 1 }]);
