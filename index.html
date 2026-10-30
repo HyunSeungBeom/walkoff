@@ -217,7 +217,20 @@ function judgeSwing(p, dt, bats = 'R') {
   r.perfect = adt <= PERFECT_MS && miss === 0;
   r.dist = carry(r.ev, r.la);
   classify(r, p, miss);
+  if (r.perfect && r.kind === 'out') throughGap(r, p, miss);
   return r;
+}
+
+// 정타는 아웃이 되지 않는다(2026-10-30 사용자 결정, 사용자 목소리 '정타를 쳤는데 아웃'). 정타는 타이밍이 맞아 가운데로 가는데
+// 가운데에는 중견수가 있고 담장도 가장 멀어서, 존 안 정타의 28%가 중견수 직선타·담장 앞 뜬공으로 잡혔다(같은 공을 30ms 늦게 치면 2루타였다).
+// 잡힐 정타만 가장 가까운 수비 빈틈으로 보내 다시 판정한다. 빈틈은 수비 위치의 가운데: 땅볼은 3유간·투수 옆·1·2루간, 뜬 타구는 좌중간·우중간
+const between = (list) => list.slice(1).map((f, i) => (list[i].a + f.a) / 2);
+const GAPS = { ground: between(INFIELDERS.slice(0, 4)), air: between(OUTFIELDERS) };
+function throughGap(r, p, miss) {
+  const gaps = r.type === 'ground' ? GAPS.ground : GAPS.air;
+  r.spray = gaps.reduce((best, g) => (Math.abs(g - r.spray) < Math.abs(best - r.spray) ? g : best));
+  Object.assign(r, { dist: carry(r.ev, r.la), fielder: undefined, gap: undefined, wall: undefined, split: true });
+  classify(r, p, miss);
 }
 
 function classify(r, p, miss) {
@@ -271,6 +284,7 @@ function classify(r, p, miss) {
 
 function reasonFor(r, p, miss) {
   if (r.kind === 'hr') return r.perfect ? '완벽한 타이밍이에요' : `${Math.round(r.dist)}m 날아갔어요`;
+  if (r.split) return '정타라 수비 사이로 빠졌어요';
   if (miss > 0) return '존 밖 공이라 힘이 덜 실렸어요';
   if (p.type === 'fork' && r.type === 'ground') return '포크는 끝에서 떨어져서 공 윗부분을 치기 쉬워요';
   if (r.wall) return '조금만 더 갔으면 홈런이었어요';
@@ -1614,7 +1628,8 @@ function drawResultCard() {
   if (hr) { text(`${r.name} · ${Math.round(r.dist)}m`, cx, y, { size: m ? 15 : 18, shadow: true }); y += m ? 28 : 30; }
   const chips = [];
   if (!r.took) {
-    const label = r.perfect ? '정타!' : Math.abs(r.dt) <= PERFECT_MS ? '타이밍 정확' : `${Math.abs(r.dt)}ms ${r.dt < 0 ? '빠름' : '늦음'}`;
+    // 정타가 아닌데 ±15ms 안이면 존 밖 공이다. 그냥 '타이밍 정확'이라 쓰면 정타로 읽혀서, 잡혔을 때 '정타인데 아웃'으로 들렸다
+    const label = r.perfect ? '정타!' : Math.abs(r.dt) <= PERFECT_MS ? '타이밍 정확 · 존 밖 공' : `${Math.abs(r.dt)}ms ${r.dt < 0 ? '빠름' : '늦음'}`;
     chips.push(r.perfect ? [label, '#f2c94c', '#1b1405'] : [label, 'rgba(0,0,0,0.5)', '#fff']);
   }
   if (game.gained > 0) chips.push([`+${game.gained.toLocaleString()}${game.lastChance ? ' (2배)' : ''}`, 'rgba(0,0,0,0.5)', '#f2c94c']);

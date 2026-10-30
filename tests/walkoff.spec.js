@@ -237,6 +237,54 @@ test.describe('판정 계산', () => {
     expect(s.L).toBe(-s.R);
   });
 
+  // 2026-10-30 사용자 목소리 '정타를 쳤는데 아웃': 정타는 가운데(중견수 정면, 담장이 가장 먼 쪽)로 가서 존 안 정타의 28%가 잡혔다
+  test('정타(존 안 공, ±15ms)는 아웃이 되지 않는다. 잡힐 타구만 가장 가까운 수비 빈틈으로 가고, 정타가 아닌 타구는 그대로 잡힌다', async ({ page }) => {
+    await open(page);
+    const r = await page.evaluate(() => {
+      const res = { perfect: 0, outs: [], moved: new Set(), otherOuts: 0 }, round = (v) => Math.round(v * 100) / 100;
+      for (const [type, def] of Object.entries(walkoff.PITCHES)) for (const kmh of def.kmh)
+        for (let i = 0; i <= 10; i++) for (let j = 0; j <= 12; j++) for (let dt = -45; dt <= 45; dt += 3) for (const bats of ['R', 'L']) {
+          const p = { type, kmh, tx: round(-0.25 + i * 0.05), ty: round(0.5 + j * 0.05) }, x = walkoff.judgeSwing(p, dt, bats);
+          if (x.perfect) {
+            res.perfect++;
+            if (x.kind === 'out') res.outs.push(`${type} ${kmh}km ${p.tx},${p.ty} ${dt}ms ${bats} ${x.name}`);
+            if (x.split) res.moved.add(x.spray);
+          } else if (Math.abs(dt) > 15 && x.kind === 'out') res.otherOuts++;
+        }
+      return { ...res, moved: [...res.moved].sort((a, b) => a - b) };
+    });
+    expect(r.perfect).toBeGreaterThan(30000);   // 존 안 공 격자 전체(구종·속도 양끝·좌우·높이·±15ms·좌우타)
+    expect(r.outs).toEqual([]);
+    expect(r.moved).toEqual([-23, -14, 0, 14, 23]);   // 3유간·좌중간·투수 옆·우중간·1·2루간(수비 위치의 가운데)
+    expect(r.otherOuts).toBeGreaterThan(1000);   // 정타가 아니면 지금처럼 잡힌다
+  });
+
+  test('가운데 커브를 정타로 치면 예전의 중견수 직선타가 좌중간 2루타가 된다. 30ms 늦게 친 우중간 2루타는 그대로다', async ({ page }) => {
+    await open(page);
+    const r = await page.evaluate(() => {
+      const curve = { type: 'curve', kmh: 120, tx: 0, ty: 0.8 };
+      const pick = (x) => ({ kind: x.kind, name: x.name, spray: x.spray, reason: x.reason, split: !!x.split });
+      return { perfect: pick(walkoff.judgeSwing(curve, 0, 'R')), late: pick(walkoff.judgeSwing(curve, 30, 'R')) };
+    });
+    expect(r.perfect).toEqual({ kind: 'double', name: '좌중간 2루타', spray: -14, reason: '정타라 수비 사이로 빠졌어요', split: true });
+    expect(r.late).toEqual({ kind: 'double', name: '우중간 2루타', spray: 14, reason: '늦어서 밀어친 타구예요', split: false });
+  });
+
+  test('존 밖 공을 정확한 타이밍으로 치면 칩이 "타이밍 정확 · 존 밖 공"이다(정타 칩과 헷갈리지 않게)', async ({ page }) => {
+    const errors = await open(page);
+    await page.evaluate(() => walkoff.startGame('practice'));
+    await page.evaluate(() => {
+      const g = walkoff.game, p = { ...g.seq[g.i], type: 'slider', kmh: 137, tx: 0.33, ty: 0.8 };   // 존 밖이지만 배트가 닿는 공
+      const r = walkoff.judgeSwing(p, 0);
+      g.seq[g.i] = p;
+      Object.assign(g, { state: 'result', outcome: r, resultT: 3, flightT: 3, revealAt: 0, swingAt: p.T, replayed: true });
+    });
+    const texts = await drawnTexts(page);
+    expect(texts).toContain('타이밍 정확 · 존 밖 공');
+    expect(texts).not.toContain('정타!');
+    expect(errors).toEqual([]);
+  });
+
   test('같은 시드는 같은 공 순서다', async ({ page }) => {
     await open(page);
     const r = await page.evaluate(() => ({
