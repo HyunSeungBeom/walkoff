@@ -987,6 +987,27 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('공 회전: 커브는 앞면이 아래로 굴러 떨어지고(앞회전), 직구는 위로, 슬라이더는 가운데를 두고 돌고, 포크는 거의 안 돈다', async ({ page }) => {
+    const errors = await open(page);
+    // 카메라 쪽(z > 0.5) 실밥 점들이 0.01초 동안 움직인 평균(단위 구 기준, y는 위)
+    const motion = (type, lefty = false) => page.evaluate(([type, lefty]) => {
+      const a = walkoff.seamPoints({ type, n: 3, t: 0.2, lefty }), b = walkoff.seamPoints({ type, n: 3, t: 0.21, lefty });
+      let dx = 0, dy = 0, move = 0, n = 0;
+      a.forEach((p, i) => { if (p[2] > 0.5) { dx += b[i][0] - p[0]; dy += b[i][1] - p[1]; move += Math.hypot(b[i][0] - p[0], b[i][1] - p[1]); n++; } });
+      return { n, dx: dx / n, dy: dy / n, move: move / n };
+    }, [type, lefty]);
+    const curve = await motion('curve'), lcurve = await motion('curve', true), fast = await motion('fastball'), slider = await motion('slider'), fork = await motion('fork');
+    for (const m of [curve, lcurve, fast, slider, fork]) expect(m.n).toBeGreaterThan(3);
+    expect(curve.dy).toBeLessThan(-0.1);                                  // 앞회전: 앞면이 아래로
+    expect(Math.abs(curve.dy)).toBeGreaterThan(Math.abs(curve.dx) * 2);
+    expect(lcurve.dy).toBeLessThan(-0.1);                                 // 좌완 커브도 앞회전(거울로 뒤집어도)
+    expect(fast.dy).toBeGreaterThan(0.1);                                 // 백스핀: 앞면이 위로
+    expect(Math.abs(slider.dy)).toBeLessThan(Math.abs(curve.dy) * 0.4);   // 자이로: 위아래로는 거의 안 가고 가운데를 두고 돈다
+    expect(slider.move).toBeGreaterThan(0.03);
+    expect(fork.move).toBeLessThan(curve.move * 0.2);                     // 포크는 거의 안 돈다
+    expect(errors).toEqual([]);
+  });
+
   test('관중은 안타·홈런에 일어나 함성을 지르고(홈런이 더 크다), 파울에는 그대로다. 새 물건을 입고 쳐도 오류가 없다', async ({ page }) => {
     const errors = await open(page);
     await page.evaluate(() => {

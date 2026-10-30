@@ -1074,9 +1074,51 @@ function drawZone(alpha) {
   ctx.stroke();
 }
 
-const SPIN = { fastball: -32, slider: 26, curve: 30, change: -18, fork: 3 };   // 실밥이 도는 빠르기(라디안/초). 포크는 거의 안 돈다
+// 공 회전(2026-10-30 유저 목소리 '커브가 무회전으로 온다'). 전에는 빨간 호 두 개를 화면 안에서 돌려서(바람개비) 커브의 앞회전으로
+// 보이지 않았고, 폰에서는 공이 작아(반지름 3.5px 아래) 날아오는 처음 40%쯤 실밥이 안 보였다. 이제 실밥을 공 위의 3D 곡선으로 두고
+// 구종마다 실제 회전축대로 돌린다. 축은 화면 기준(x 오른쪽, y 위, z 카메라 쪽, 우투수 기준)이고 w는 오른손 법칙 방향의 라디안/초다.
+// 실제 회전(초당 200라디안 이상)은 60fps 화면에서 오히려 멈춰 보여서 한 장면에 0.25~0.4라디안쯤 돌게 줄였다
+const SPIN = {
+  fastball: { axis: [-0.94, -0.34, 0], w: 22 },   // 백스핀: 앞면이 위로, 조금 팔 쪽(화면 왼쪽)으로
+  slider:   { axis: [0.3, -0.2, 0.93], w: 20 },   // 자이로: 축이 타자 쪽이라 가운데를 두고 돈다
+  curve:    { axis: [0.97, 0.24, 0], w: 24 },     // 앞회전: 앞면이 아래로 굴러 떨어진다
+  change:   { axis: [-0.8, -0.6, 0], w: 14 },     // 느린 백스핀, 팔 쪽으로 더 기울었다
+  fork:     { axis: [1, 0.2, 0], w: 2.5 },        // 거의 안 돈다
+};
+// 야구공 실밥: 단위 구 위의 닫힌 곡선 (a cos t + b cos 3t, a sin t − b sin 3t, 2√(ab) sin 2t), a + b = 1이면 구 위에 놓인다
+const SEAM = Array.from({ length: 64 }, (_, i) => {
+  const t = i / 64 * Math.PI * 2, a = 0.7, b = 0.3;
+  return [a * Math.cos(t) + b * Math.cos(3 * t), a * Math.sin(t) - b * Math.sin(3 * t), 2 * Math.sqrt(a * b) * Math.sin(2 * t)];
+});
+// v를 단위 축 k 둘레로 th만큼 돌린다(로드리게스 공식)
+function rotateAbout(v, k, th) {
+  const c = Math.cos(th), sn = Math.sin(th), d = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+  const cr = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
+  return [0, 1, 2].map((i) => v[i] * c + cr[i] * sn + k[i] * d * (1 - c));
+}
+// 회전 상태 spin = { type, n, t, lefty }의 실밥 점들(화면 기준 단위 구). 공마다 처음 방향을 공 번호로 다르게 두고,
+// 좌완은 거울로 뒤집는다(축의 x 성분과 회전 방향이 반대라 커브는 좌완도 앞회전이다). spin이 없으면(맞은 공·송구) 고정 방향
+function seamPoints(spin, ahead = 0) {
+  const def = spin ? SPIN[spin.type] ?? SPIN.fastball : null;
+  const phase = spin ? ((spin.n ?? 0) * 2.399) % (Math.PI * 2) : 0.6;
+  const pre = SEAM.map((v) => rotateAbout(v, [0.6, 0.8, 0], phase));   // 처음 방향
+  if (!def) return pre;
+  const len = Math.hypot(...def.axis), k = def.axis.map((x) => x / len), m = spin.lefty ? -1 : 1;
+  const axis = [k[0] * m, k[1], k[2]], th = (def.w * spin.t + ahead) * m;
+  return pre.map((v) => rotateAbout(v, axis, th));
+}
+// 실밥 그리기: 카메라 쪽(z > 0) 조각만, 가장자리로 갈수록 옅게
+function drawSeam(c, r, pts, lw, alpha) {
+  ctx.lineWidth = lw; ctx.lineCap = 'round';
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    if (a[2] <= 0 || b[2] <= 0) continue;
+    ctx.strokeStyle = `rgba(210,59,59,${(alpha * (0.35 + 0.65 * (a[2] + b[2]) / 2)).toFixed(3)})`;
+    ctx.beginPath(); ctx.moveTo(c.x + a[0] * r, c.y - a[1] * r); ctx.lineTo(c.x + b[0] * r, c.y - b[1] * r); ctx.stroke();
+  }
+}
 
-function drawBall(pos, { alpha = 1, spin = 0, scale = 1.5, shadow = true, glow = false } = {}) {
+function drawBall(pos, { alpha = 1, spin = null, scale = 1.5, shadow = true, glow = false } = {}) {
   const p = project(pos.x, pos.y, pos.z);
   if (!p) return;
   const r = Math.max(glow ? 2.5 : 1.6, BALL_R * scale * p.s);
@@ -1095,13 +1137,21 @@ function drawBall(pos, { alpha = 1, spin = 0, scale = 1.5, shadow = true, glow =
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r * 4, 0, Math.PI * 2); ctx.fill();
   }
   ctx.fillStyle = '#fbfaf5';
-  ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
-  if (r > 3.5) {
+  ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  if (r > 2.2) {   // 둥글게 보이도록 위쪽은 밝고 가장자리는 조금 어둡게
+    const g = ctx.createRadialGradient(p.x - r * 0.35, p.y - r * 0.35, r * 0.1, p.x, p.y, r);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#dedad0'); ctx.fillStyle = g;
+  }
+  ctx.fill();
+  if (r > 2.2) {   // 폰에서는 공이 작아서 전에는 3.5px부터라 처음 40%쯤 실밥이 안 보였다
     ctx.clip();
-    ctx.translate(p.x, p.y); ctx.rotate(spin);
-    ctx.strokeStyle = '#d23b3b'; ctx.lineWidth = Math.max(1, r * 0.13);
-    ctx.beginPath(); ctx.arc(-r * 1.35, 0, r * 0.95, -0.9, 0.9); ctx.stroke();
-    ctx.beginPath(); ctx.arc(r * 1.35, 0, r * 0.95, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
+    const lw = Math.max(1, r * 0.13);
+    if (spin) {   // 바로 앞 두 장면의 실밥을 옅게 겹쳐 빠르게 도는 느낌을 준다
+      const step = (SPIN[spin.type]?.w ?? 0) / 60;
+      drawSeam(p, r, seamPoints(spin, -2 * step), lw, 0.18);
+      drawSeam(p, r, seamPoints(spin, -step), lw, 0.32);
+    }
+    drawSeam(p, r, seamPoints(spin), lw, 1);
   }
   ctx.restore();
 }
@@ -3455,7 +3505,7 @@ function render(time) {
     const u = (game.replay != null ? game.replay : bt) / p.T;
     const hiddenByHit = hasBattedBall() && game.replay == null;
     const seen = game.replay == null && hardMatchup(p) ? clamp((u - 0.12) / 0.05, 0, 1) : 1;   // 좌타 대 좌완이면 처음 12%는 안 보인다
-    if (!hiddenByHit && u <= 1.06 && seen > 0) drawBall(ballPos(p, u), { spin: (game.replay ?? bt) * SPIN[p.type] * (p.lefty ? -1 : 1), alpha: seen });
+    if (!hiddenByHit && u <= 1.06 && seen > 0) drawBall(ballPos(p, u), { spin: { type: p.type, n: p.n, t: game.replay ?? bt, lefty: !!p.lefty }, alpha: seen });
     if (!hiddenByHit && u >= 1) drawPitchMark(p);   // 홈플레이트 앞면을 지난 뒤로 판정한 자리를 남긴다
   }
   if (hasBattedBall() && game.replay == null) {
@@ -3531,7 +3581,7 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff, seamPoints };
 </script>
 </body>
 </html>
