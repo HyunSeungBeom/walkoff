@@ -139,15 +139,14 @@ const drawnTexts = (page) => page.evaluate(() => new Promise((resolve) => {
   requestAnimationFrame(next);
 }));
 
-// 오늘의 10구를 친 날을 이 브라우저 기록(daily.날짜)으로 둔다. ago는 며칠 전에 쳤는지(0은 오늘)
-const setPlayedDays = (page, ago) => page.evaluate((ago) => {
-  for (const k of walkoff.store.keys('daily.')) walkoff.store.remove(k);
-  const t = Date.parse(walkoff.today() + 'T00:00:00Z');
-  for (const n of ago) {
-    const date = new Date(t - n * 864e5).toISOString().slice(0, 10);
-    walkoff.store.set('daily.' + date, { score: 1500, hr: 0, hits: 3, balls: 1, far: 82, lights: 'GGRYGRRRRRR', bats: 'R', day: walkoff.dayNumber(date), date });
-  }
-}, ago);
+// 10구 도전을 끝까지 친 날을 이 브라우저 기록(played.날짜)으로 둔다. ago는 며칠 전에 쳤는지(0은 오늘).
+// legacy는 그 날들을 없앤 오늘의 10구 기록(daily.날짜)으로 둔다(예전 기록도 연속 기록에 들어간다)
+const setPlayedDays = (page, ago, legacy = []) => page.evaluate(({ ago, legacy }) => {
+  for (const k of [...walkoff.store.keys('played.'), ...walkoff.store.keys('daily.')]) walkoff.store.remove(k);
+  const t = Date.parse(walkoff.today() + 'T00:00:00Z'), day = (n) => new Date(t - n * 864e5).toISOString().slice(0, 10);
+  for (const n of ago) walkoff.store.set('played.' + day(n), 1);
+  for (const n of legacy) walkoff.store.set('daily.' + day(n), { score: 1500, lights: 'GGRYGRRRRRR', bats: 'R', date: day(n) });
+}, { ago, legacy });
 
 // 공이 홈플레이트에 닿는 시각보다 dt(ms)만큼 빠르게(-)/늦게(+) 스페이스를 보낸다. dt가 null이면 치지 않는다
 async function playPitch(page, dt) {
@@ -203,16 +202,14 @@ test.describe('판정 계산', () => {
     expect(s.L).toBe(-s.R);
   });
 
-  test('같은 시드와 같은 날짜는 같은 공 순서다', async ({ page }) => {
+  test('같은 시드는 같은 공 순서다', async ({ page }) => {
     await open(page);
     const r = await page.evaluate(() => ({
       sameSeed: JSON.stringify(walkoff.makeSequence(7)) === JSON.stringify(walkoff.makeSequence(7)),
+      otherSeed: JSON.stringify(walkoff.makeSequence(7)) !== JSON.stringify(walkoff.makeSequence(8)),
       length: walkoff.makeSequence(7).length,
-      sameDay: walkoff.dailySeed('2026-10-28') === walkoff.dailySeed('2026-10-28'),
-      nextDay: walkoff.dailySeed('2026-10-28') !== walkoff.dailySeed('2026-10-29'),
-      dayOne: walkoff.dayNumber('2026-10-28'),
     }));
-    expect(r).toEqual({ sameSeed: true, length: 40, sameDay: true, nextDay: true, dayOne: 1 });   // 볼은 기회를 안 써서 공을 40개 미리 만든다
+    expect(r).toEqual({ sameSeed: true, otherSeed: true, length: 40 });   // 볼은 기회를 안 써서 공을 40개 미리 만든다
   });
 
   test('끝내기 상황: 밀어내기, 희생플라이, 2스트라이크 파울, 끝내기 홈런', async ({ page }) => {
@@ -235,9 +232,9 @@ test.describe('판정 계산', () => {
 
   test('공유 글 형식', async ({ page }) => {
     await open(page);
-    const text = await page.evaluate(() => walkoff.shareText({ day: 3, bats: 'L', lights: 'GYRRG', score: 2100, hr: 1, far: 128 }));
+    const text = await page.evaluate(() => walkoff.shareText({ bats: 'L', lights: 'GYRRG', score: 2100, hr: 1, far: 128 }));
     expect(text.split('\n')).toEqual([
-      'walkoff 오늘의 10구 #3 (좌타)',
+      'walkoff 10구 도전 (좌타)',
       '🟢🟡🔴🔴🟢',
       '2,100점 · 홈런 1 · 최장 128m',
       'https://hyunseungbeom.github.io/walkoff/',
@@ -315,29 +312,28 @@ test.describe('한 판 끝까지', () => {
     expect(errors).toEqual([]);
   });
 
-  test('오늘의 10구: 첫 판만 기록되고(어제도 쳤으면 2일 연속), 다시 누르면 기록을 보여 준다', async ({ page }) => {
+  test('시작 화면에서 누르면 늘 10구 도전이고, 끝까지 치면 점수를 보내고 연속 기록이 이어진다(어제도 쳤으면 2일 연속)', async ({ page }) => {
     test.slow();
-    const errors = await open(page, '', { login: true });
+    const errors = await open(page, '?seed=42', { login: true });
     await setPlayedDays(page, [1]);   // 어제도 쳤다
-    await page.keyboard.press('Space');   // 오늘 아직 안 쳤으면 오늘의 10구로 시작
-    expect(await page.evaluate(() => walkoff.game.mode)).toBe('daily');
+    await page.keyboard.press('Space');   // 오늘의 10구는 2026-10-30에 없앴다
+    expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
     await playUntilOver(page, 0);
-    const saved = await page.evaluate(() => walkoff.store.get('daily.' + walkoff.today(), null));
-    expect(saved && saved.score).toBe(await page.evaluate(() => walkoff.game.score));
-    // 첫 판 점수가 로그인 표와 함께 랭킹 서버로 한 번 가고, 끝 화면에 이번 주 순위가 붙는다
+    // 점수가 로그인 표와 시드를 붙여 랭킹 서버로 한 번 가고, 끝 화면에 이번 주 순위가 붙는다
     await expect.poll(() => sentScores(errors).length).toBe(1);
     const sent = sentScores(errors)[0], today = await page.evaluate(() => walkoff.today());
+    const game = await page.evaluate(() => ({ score: walkoff.game.score, lights: walkoff.game.summary.lights }));
     expect(sent.auth).toBe(`Bearer ${SESSION}`);
-    expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, score: saved.score, lights: saved.lights, mode: 'daily' });   // 사람 ID는 서버가 로그인 표에서 꺼낸다. mode는 코인 2배 판단용
+    expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, ...game, mode: 'challenge', seed: 42 });   // 사람 ID는 서버가 로그인 표에서 꺼낸다
     const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    expect(rules.validateSubmission(sent.body, Date.now(), 'p-test-0001')).toMatchObject({ ok: true });   // 실제로 친 판은 서버 검사(그날 공 순서·점수 상한)를 통과한다
+    expect(rules.validateSubmission(sent.body, Date.now(), 'p-test-0001')).toMatchObject({ ok: true });   // 실제로 친 판은 서버 검사를 통과한다
     await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain('이번 주 최고 기록! 3위 · 랭킹 보기 ›');
-    expect((await drawnTexts(page)).some((t) => / · 2일 연속( · |$)/.test(t))).toBe(true);   // 방금 친 판까지 세서 점수 아래 줄(코인 앞)에 붙는다
+    expect(await drawnTexts(page)).toContain('10구 도전 · 2일 연속');   // 방금 친 판까지 세서 제목 옆에 붙는다
+    expect(await page.evaluate(() => walkoff.store.get('played.' + walkoff.today(), 0))).toBe(1);
     await page.keyboard.press('Escape');
-    await page.keyboard.press('Space');   // 오늘 친 뒤에는 10구 도전으로 시작
-    expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
-    expect(sentScores(errors).length).toBe(1);   // 10구 도전은 판이 끝나야 보낸다
+    await page.keyboard.press('Space');   // 다시 눌러도 10구 도전(하루 한 판 제한이 없다)
+    expect(await page.evaluate(() => [walkoff.game.mode, walkoff.game.state])).toEqual(['challenge', 'windup']);
     expect(errors).toEqual([]);
   });
 });
@@ -359,13 +355,13 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.state === 'title' && walkoff.ui.buttons.some((b) => b.label === '좌타'));
     const vp = page.viewportSize();
     await page.mouse.click(20, vp.height - 20);   // 버튼이 없는 왼쪽 아래 빈 곳
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');   // 로그인 안 했으면 오늘의 10구 전에 로그인을 권한다
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');   // 로그인 안 했으면 10구 도전 전에 로그인을 권한다
     await tap(page, '나중에 하기');
-    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'challenge' });
     expect(errors).toEqual([]);
   });
 
-  test('로그인 안 한 사람은 오늘의 10구 전에 하루 한 번 카카오 로그인을 권한다', async ({ page }) => {
+  test('로그인 안 한 사람은 10구 도전 전에 하루 한 번 카카오 로그인을 권한다', async ({ page }) => {
     const errors = await open(page);
     await page.keyboard.press('Space');
     await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
@@ -375,7 +371,7 @@ test.describe('화면', () => {
     await page.keyboard.press('Space');
     await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
     await tap(page, '나중에 하기');
-    await expect.poll(() => page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
+    await expect.poll(() => page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'challenge' });
     await reloadUntil(page, () => walkoff.store.get('loginLater', '') === walkoff.today());   // 다시 열어도 남아 있다
     await page.keyboard.press('Space');   // 나중에 하기를 누른 날은 다시 묻지 않는다
     await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('windup');
@@ -404,30 +400,26 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('오늘의 10구 연속 기록: 시작 화면 아래 줄과 끝 화면에 이어 친 날 수가 나오고, 하루 빠지면 끊긴다', async ({ page }) => {
+  test('연속 기록: 시작 화면 아래 줄과 10구 도전 끝 화면 제목에 이어 친 날 수가 나오고, 하루 빠지면 끊긴다(없앤 오늘의 10구 기록도 센다)', async ({ page }) => {
     const errors = await open(page, '');
-    const day = await page.evaluate(() => walkoff.dayNumber(walkoff.today()));
-    const titleLine = async () => (await drawnTexts(page)).find((t) => t.startsWith(`오늘의 10구 #${day}`));
+    const titleLine = async () => (await drawnTexts(page)).find((t) => t.endsWith('주간 랭킹은 이번 주 최고 기록이에요') || t.includes('오늘 치면'));
     await setPlayedDays(page, [2, 3]);   // 어제를 걸러서 끊겼다
-    expect(await titleLine()).toBe(`오늘의 10구 #${day} · 주간 랭킹은 이번 주 최고 기록이에요`);
+    expect(await titleLine()).toBe('주간 랭킹은 이번 주 최고 기록이에요');
     await setPlayedDays(page, [1, 3]);
-    expect(await titleLine()).toBe(`오늘의 10구 #${day} · 오늘 치면 2일 연속`);
-    await setPlayedDays(page, [1, 2]);
-    expect(await titleLine()).toBe(`오늘의 10구 #${day} · 2일 연속 중 · 오늘 치면 3일`);
+    expect(await titleLine()).toBe('오늘 치면 2일 연속');
+    await setPlayedDays(page, [1], [2]);   // 그저께는 없앤 오늘의 10구로 쳤다
+    expect(await titleLine()).toBe('2일 연속 중 · 오늘 치면 3일');
     await setPlayedDays(page, [0, 1, 2]);
-    expect(await titleLine()).toBe(`오늘의 10구 #${day} 1,500점 기록 · 3일 연속 · 지금은 10구 도전`);
-    // 끝 화면(메뉴의 오늘의 10구 결과 보기)은 점수 아래 줄에 붙는다
-    const streakLine = async () => (await drawnTexts(page)).find((t) => t.includes('일 연속'));
-    await tap(page, '메뉴');
-    await tap(page, '오늘의 10구 결과 보기');
+    expect(await titleLine()).toBe('3일 연속 · 주간 랭킹은 이번 주 최고 기록이에요');
+    // 끝 화면은 제목 옆에 붙는다(어제·그저께 친 뒤 오늘 한 판을 끝까지 쳤다)
+    await setPlayedDays(page, [1, 2]);
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝낸다
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'over');
-    expect(await streakLine()).toBe('주전 타자 · 3일 연속');
-    // 오늘만 이어졌으면(어제를 걸렀으면) 끝 화면에도 시작 화면에도 없다
-    await setPlayedDays(page, [0, 2]);
-    expect(await streakLine()).toBeUndefined();
-    await page.keyboard.press('Escape');
-    await page.waitForFunction(() => walkoff.game.state === 'title');
-    expect(await titleLine()).toBe(`오늘의 10구 #${day} 1,500점 기록 · 지금은 10구 도전`);
+    expect(await drawnTexts(page)).toContain('10구 도전 · 3일 연속');
+    await setPlayedDays(page, [0, 2]);   // 어제를 걸렀으면 붙지 않는다
+    expect((await drawnTexts(page)).some((t) => t.includes('일 연속'))).toBe(false);
     expect(errors).toEqual([]);
   });
 
@@ -459,7 +451,7 @@ test.describe('화면', () => {
     await expect(nick).toBeHidden();
     const vp = page.viewportSize();
     await page.mouse.click(20, vp.height - 20);
-    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'daily' });
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'challenge' });
     expect(await page.evaluate(() => walkoff.game.opponent !== 'hanwha' && walkoff.pitcherColors().navy !== '#1d2f5c')).toBe(true);   // 투수는 상대 팀 색
     await reloadUntil(page, () => walkoff.settings.team === 'hanwha');
     expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick, jersey: walkoff.batterColors().jersey })))
@@ -500,7 +492,7 @@ test.describe('화면', () => {
 
   test('로그인하지 않으면 점수를 남겨 두고, 끝 화면에서 카카오로 로그인하면 그때 올린다', async ({ page }) => {
     const errors = await open(page);
-    await page.evaluate(() => { walkoff.startGame('daily'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝낸다
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝낸다
     await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
     await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'over');
@@ -556,7 +548,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('10구 도전은 공을 보고 처음부터 다시 할 수 있고, 끝내지 않은 판은 보내지 않는다. 오늘의 10구에는 없다', async ({ page }) => {
+  test('10구 도전은 공을 보고 처음부터 다시 할 수 있고, 끝내지 않은 판은 보내지 않는다', async ({ page }) => {
     const errors = await open(page, '?seed=42', { login: true });
     const resultShown = () => page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
     await page.evaluate(() => walkoff.startGame('challenge'));
@@ -565,10 +557,6 @@ test.describe('화면', () => {
     await expect.poll(() => page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode, i: walkoff.game.i, results: walkoff.game.results.length, score: walkoff.game.score })))
       .toEqual({ state: 'windup', mode: 'challenge', i: 0, results: 0, score: 0 });
     expect(sentScores(errors)).toEqual([]);
-    await page.evaluate(() => walkoff.startGame('daily'));
-    await resultShown();
-    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('다음 공')));
-    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).not.toContain('처음부터');   // 모두 같은 공이라 다시 보고 칠 수 없게
     expect(errors).toEqual([]);
   });
 
@@ -732,20 +720,6 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('오늘의 10구 끝 화면의 다시 하기는 10구 도전(매번 다른 공)을 시작하고, 오늘 기록은 그대로다', async ({ page }) => {
-    const errors = await open(page, '');
-    await setPlayedDays(page, [0]);
-    await tap(page, '메뉴');
-    await tap(page, '오늘의 10구 결과 보기');
-    await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.game.mode === 'daily');
-    await page.waitForFunction(() => ['결과 공유하기', '다시 하기', '처음으로'].every((l) => walkoff.ui.buttons.some((b) => b.label === l)));
-    const before = await page.evaluate(() => JSON.stringify(walkoff.store.get('daily.' + walkoff.today(), null)));
-    await tap(page, '다시 하기');
-    expect(await page.evaluate(() => [walkoff.game.mode, walkoff.game.seed !== walkoff.dailySeed(walkoff.today())])).toEqual(['challenge', true]);   // 같은 공으로 다시 치면 순서를 외울 수 있다
-    expect(await page.evaluate(() => JSON.stringify(walkoff.store.get('daily.' + walkoff.today(), null)))).toBe(before);   // 하루 첫 판 기록은 그대로
-    expect(errors).toEqual([]);
-  });
-
   test('팀을 바꿀 때 기록은 그날 팀으로 남는다고 알리고, 서버 저장이 실패하면 알린 뒤 다음에 열 때 다시 저장한다(옛 팀으로 돌아가지 않는다)', async ({ page }) => {
     const NOTE = '이미 친 기록은 그날 팀으로 남아요 · 새 팀은 다음 판부터';
     const api = { account: { nick: '테스트', team: 'lg' }, failProfile: true };
@@ -794,12 +768,12 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.wallet.look.trail === 'trail-fire');
     expect(await page.evaluate(() => ({ helmet: walkoff.batterColors().helmet, jersey: walkoff.batterColors().jersey, accent: walkoff.batterColors().accent })))
       .toEqual({ helmet: '#e3b322', jersey: '#eceef2', accent: '#a50034' });   // 홈 유니폼은 흰 바탕에 소매·스타킹은 팀 색(LG)
-    await page.evaluate(() => { walkoff.startGame('daily'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
     const o = await playPitch(page, 0);
     expect(o.kind).not.toBe('whiff');
     await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.game.rankInfo?.status === 'ok');
-    expect(await page.evaluate(() => ({ note: walkoff.coinNote(), coins: walkoff.wallet.coins }))).toEqual({ note: ' · +64코인(2배)', coins: 64 });
-    expect(sentScores(errors)[0].body.mode).toBe('daily');
+    expect(await page.evaluate(() => ({ note: walkoff.coinNote(), coins: walkoff.wallet.coins }))).toEqual({ note: ' · +64코인', coins: 64 });   // 오늘의 10구 2배는 오늘의 10구와 함께 없앴다
+    expect(sentScores(errors)[0].body.mode).toBe('challenge');
     expect(errors).toEqual([]);
   });
 
@@ -992,7 +966,6 @@ test.describe('결과 공유', () => {
   }
 
   const MODES = [
-    ['오늘의 10구', 'daily', /^walkoff 오늘의 10구 #\d+ \(우타\)$/, '처음으로'],
     ['10구 도전', 'challenge', /^walkoff 10구 도전 \(우타\)$/, '다시 하기'],
     ['끝내기 상황', 'scenario', /^walkoff 끝내기 상황 \(우타\)$/, '다시 하기'],
   ];
@@ -1020,7 +993,7 @@ test.describe('결과 공유', () => {
       navigator.share = (data) => { window.__calls.push(data); return new Promise((resolve) => { window.__close = resolve; }); };   // 공유 창은 닫을 때까지 떠 있다
     });
     const errors = await open(page);
-    await endAfterOnePitch(page, 'daily');
+    await endAfterOnePitch(page, 'challenge');
     await page.waitForFunction(() => walkoff.game.shareCard?.file != null);
     await tap(page, '결과 공유하기');
     await tap(page, '결과 공유하기');   // 공유 창이 떠 있는 동안 또 누른다
@@ -1030,7 +1003,7 @@ test.describe('결과 공유', () => {
       return { files: d.files?.length ?? 0, type: f?.type, w: img?.width, h: img?.height, text: d.text };
     });
     expect(sent).toMatchObject({ files: 1, type: 'image/png', w: 1080, h: 1080 });
-    expect(sent.text.split('\n')[0]).toMatch(/^walkoff 오늘의 10구 #\d+ \(우타\)$/);
+    expect(sent.text.split('\n')[0]).toMatch(/^walkoff 10구 도전 \(우타\)$/);
     expect(sent.text.split('\n').at(-1)).toBe('https://hyunseungbeom.github.io/walkoff/');
     // 그림 공유가 안 되는 브라우저는 예전처럼 글만 보낸다
     await page.evaluate(() => { window.__close(); window.__filesOk = false; });
@@ -1041,7 +1014,7 @@ test.describe('결과 공유', () => {
     expect(errors).toEqual([]);
   });
 
-  test('결과 카드에는 끝 화면의 큰 줄과 주소가 들어간다(오늘의 10구는 연속 일수, 10구 도전은 새 최고 기록, 끝내기 상황은 결과)', async ({ page }) => {
+  test('결과 카드에는 끝 화면의 큰 줄과 주소가 들어간다(10구 도전은 등급·새 최고 기록과 연속 일수, 끝내기 상황은 결과)', async ({ page }) => {
     const errors = await open(page);
     // 카드를 그릴 때 쓴 글자를 차례대로 모은다
     const cardTexts = (s, mode) => page.evaluate(({ s, mode }) => {
@@ -1051,10 +1024,9 @@ test.describe('결과 공유', () => {
       return seen;
     }, { s, mode });
     await setPlayedDays(page, [0, 1, 2]);
-    const day = await page.evaluate(() => walkoff.dayNumber(walkoff.today()));
-    const base = { score: 2350, hr: 1, hits: 3, balls: 2, far: 118, lights: 'GRYGRRYGRRRR', bats: 'R', day };
-    expect(await cardTexts(base, 'daily')).toEqual(['끝내기', 'walkoff', `오늘의 10구 #${day} · 우타`, '2,350', '주전 타자 · 3일 연속', '홈런 1 · 안타 3 · 볼 2 · 가장 멀리 118m', 'walkoff · hyunseungbeom.github.io/walkoff']);
-    expect((await cardTexts({ ...base, bats: 'L', newBest: true }, 'challenge')).slice(2, 5)).toEqual(['10구 도전 · 좌타', '2,350', '새 최고 기록!']);
+    const base = { score: 2350, hr: 1, hits: 3, balls: 2, far: 118, lights: 'GRYGRRYGRRRR', bats: 'R' };
+    expect(await cardTexts(base, 'challenge')).toEqual(['끝내기', 'walkoff', '10구 도전 · 우타', '2,350', '주전 타자 · 3일 연속', '홈런 1 · 안타 3 · 볼 2 · 가장 멀리 118m', 'walkoff · hyunseungbeom.github.io/walkoff']);
+    expect((await cardTexts({ ...base, bats: 'L', newBest: true }, 'challenge')).slice(2, 5)).toEqual(['10구 도전 · 좌타', '2,350', '새 최고 기록! · 3일 연속']);
     const scn = await cardTexts({ end: 'win', away: 3, home: 4, pa: 'RGYG', pitches: 9, label: '2아웃 만루', bats: 'R' }, 'scenario');
     expect(scn.slice(2, 6)).toEqual(['끝내기 상황 · 우타', '끝내기 승리!', expect.stringMatching(/^\S+ 3 : 4 \S+ · 9회말$/), '타석 4 · 안타 2 · 볼넷 1 · 투구 9개']);
     expect(errors).toEqual([]);
@@ -1075,14 +1047,12 @@ test.describe('랭킹 규칙', () => {
   test('게임과 서버가 같은 공 순서를 만든다(서버가 전광판·점수를 그 순서로 맞춰 본다)', async ({ page }) => {
     const srv = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'pitches.js')).href);
     await open(page);
-    const days = ['2026-10-28', '2026-10-30', '2027-01-01'];
+    const days = ['2026-10-28', '2026-10-30', '2027-01-01'];   // 서버는 예전 탭이 보내는 오늘의 10구도 그날 시드로 검사한다
     const seeds = [1, 42, 1793319865, 2147483646, ...days.map(srv.dailySeed)];
-    const game = await page.evaluate(({ days, seeds }) => ({
-      daily: days.map(walkoff.dailySeed),
+    const game = await page.evaluate((seeds) => ({
       hands: seeds.map(walkoff.pitcherHand),
       seqs: seeds.flatMap((s) => [false, true].map((lefty) => walkoff.makeSequence(s, lefty))),
-    }), { days, seeds });
-    expect(game.daily).toEqual(days.map(srv.dailySeed));
+    }), seeds);
     expect(game.hands).toEqual(seeds.map(srv.pitcherHand));
     expect(game.seqs).toEqual(seeds.flatMap((s) => [false, true].map((lefty) => srv.makeSequence(s, lefty))));
   });
@@ -1117,11 +1087,11 @@ test.describe('이용 통계', () => {
     await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
     await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'over');
-    for (const mode of ['daily', 'scenario', 'practice']) await page.evaluate((m) => walkoff.startGame(m), mode);   // 다른 모드는 시작만
+    for (const mode of ['scenario', 'practice']) await page.evaluate((m) => walkoff.startGame(m), mode);   // 다른 모드는 시작만(오늘의 10구는 없앴다)
     const beacons = await page.evaluate(() => window.__beacons);
     expect(beacons.map((b) => [b.url, b.body.mode, b.body.type])).toEqual([
       [`${API}/events`, 'challenge', 'start'], [`${API}/events`, 'challenge', 'end'],
-      [`${API}/events`, 'daily', 'start'], [`${API}/events`, 'scenario', 'start'], [`${API}/events`, 'practice', 'start'],
+      [`${API}/events`, 'scenario', 'start'], [`${API}/events`, 'practice', 'start'],
     ]);
     for (const b of beacons) {
       expect(Object.keys(b.body).sort()).toEqual(['device', 'mobile', 'mode', 'type']);
