@@ -844,6 +844,90 @@ test.describe('화면', () => {
   });
 });
 
+test.describe('수비', () => {
+  // 판정이 정한 결과 하나를 놓고 수비 진행(누가 언제 어디 있고 공이 어디 있는지)을 계산해 본다. 화면 크기와 상관없어서 PC에서만
+  test.skip(({ isMobile }) => isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+
+  const near = (a, b, m) => Math.hypot(a.x - b.x, a.z - b.z) <= m;
+
+  test('유격수 땅볼: 유격수가 잡아 1루로 던지고, 1루수가 베이스에서 받는 순간 결과 글자가 뜬다', async ({ page }) => {
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const f = walkoff.FIELDERS.find((x) => x.pos === '유격수'), r = { kind: 'out', type: 'ground', spray: -13, dist: 40, ev: 120, la: 2, fielder: f };
+      const pl = walkoff.fieldPlay(r), dur = walkoff.flightDuration(r);
+      const who = (t, pos) => { const q = walkoff.fieldersAt(r, t).find((x) => x.f.pos === pos); return { x: q.spot[0], z: q.spot[1], pose: q.pose }; };
+      return { dur, reveal: pl.reveal, end: pl.end, base1: { x: walkoff.BASE1[0], z: walkoff.BASE1[1] },
+        caught: { ball: pl.ball(dur + 0.05), ss: who(dur + 0.05, '유격수') },
+        mid: pl.ball((dur + pl.end) / 2 + 0.1), arrive: { ball: pl.ball(pl.end), b1: who(pl.end, '1루수') } };
+    });
+    expect(d.reveal).toBeCloseTo(d.end, 5);   // 결과 글자는 공이 1루에 닿는 순간
+    expect(d.end).toBeGreaterThan(d.dur);
+    expect(near(d.caught.ball, d.caught.ss, 0.8)).toBe(true);   // 굴러간 공은 유격수 글러브에
+    expect(d.mid.x).toBeGreaterThan(d.caught.ss.x);   // 1루 쪽으로 날아가는 중
+    expect(d.mid.x).toBeLessThan(d.base1.x);
+    expect(near(d.arrive.ball, d.base1, 1)).toBe(true);   // 끝에는 1루 베이스에
+    expect(near(d.arrive.b1, d.base1, 0.6)).toBe(true);   // 1루수도 베이스 위에서
+    expect(d.arrive.b1.pose).toBe('stretch');               // 몸을 뻗어 받는다
+    expect(errors).toEqual([]);
+  });
+
+  test('중견수 뜬공: 떨어지는 자리로 뛰어가 머리 위에서 잡고, 잡는 순간 결과 글자가 뜬다', async ({ page }) => {
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const f = walkoff.FIELDERS.find((x) => x.pos === '중견수'), r = { kind: 'out', type: 'fly', spray: 5, dist: 92, ev: 140, la: 30, fielder: f };
+      const pl = walkoff.fieldPlay(r), dur = walkoff.flightDuration(r), home = walkoff.fieldersAt(r, 0).find((x) => x.f.pos === '중견수');
+      const cf = (t) => { const q = walkoff.fieldersAt(r, t).find((x) => x.f.pos === '중견수'); return { x: q.spot[0], z: q.spot[1], pose: q.pose }; };
+      return { dur, reveal: pl.reveal, home: { x: home.spot[0], z: home.spot[1] }, atCatch: { ball: pl.ball(pl.reveal), cf: cf(pl.reveal) }, later: pl.ball(pl.reveal + 1) };
+    });
+    expect(d.reveal).toBeLessThanOrEqual(d.dur);
+    expect(d.atCatch.ball.y).toBeGreaterThan(1.5);   // 땅에 떨어지기 전에 머리 위 글러브로 잡는다
+    expect(near(d.atCatch.ball, d.atCatch.cf, 0.5)).toBe(true);
+    expect(near(d.atCatch.cf, d.home, 1)).toBe(false);   // 제자리에서 기다린 게 아니라 뛰어갔다
+    expect(d.atCatch.cf.pose).toBe('catchHigh');
+    expect([d.later.x, d.later.y, d.later.z]).toEqual([d.atCatch.ball.x, d.atCatch.ball.y, d.atCatch.ball.z]);   // 잡은 공은 글러브에 남는다
+    expect(errors).toEqual([]);
+  });
+
+  test('좌전 안타: 공이 먼저 떨어지고(그때 결과 글자), 좌익수가 뒤에 와서 주워 2루로 던진다', async ({ page }) => {
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const r = { kind: 'single', hit: true, type: 'line', spray: -25, dist: 70, ev: 140, la: 15 };
+      const pl = walkoff.fieldPlay(r), dur = walkoff.flightDuration(r);
+      const who = (t, pos) => { const q = walkoff.fieldersAt(r, t).find((x) => x.f.pos === pos); return { x: q.spot[0], z: q.spot[1], pose: q.pose }; };
+      const lf = pl.moves.find((m) => m.f.pos === '좌익수');
+      return { dur, reveal: pl.reveal, pickup: lf.t1, landed: pl.ball(dur), lfAtLanding: who(dur, '좌익수'), lfAtPickup: who(lf.t1, '좌익수'),
+        end: { ball: pl.ball(pl.end), cover: who(pl.end, '2루수') }, base2: { x: walkoff.BASE2[0], z: walkoff.BASE2[1] } };
+    });
+    expect(d.reveal).toBeCloseTo(d.dur, 5);   // 결과 글자는 공이 떨어질 때
+    expect(d.landed.y).toBeLessThan(0.1);      // 아무도 못 잡고 떨어진다
+    expect(d.pickup).toBeGreaterThan(d.dur);
+    expect(near(d.lfAtLanding, d.landed, 1)).toBe(false);   // 떨어질 때는 아직 공에 못 왔다
+    expect(near(d.lfAtPickup, d.landed, 0.5)).toBe(true);   // 뒤에 와서 줍는다
+    expect(near(d.end.ball, d.base2, 1)).toBe(true);        // 2루로 던진다
+    expect(near(d.end.cover, d.base2, 1)).toBe(true);       // 공 반대쪽 2루수가 2루에 들어가 받는다
+    expect(errors).toEqual([]);
+  });
+
+  test('실제 화면: 땅볼 송구가 1루에 닿는 순간 1루가 화면 안에 있고(카메라가 받는 쪽을 미리 봄), 다시 보기 중에는 수비수가 제자리다', async ({ page }) => {
+    const errors = await open(page);
+    await page.evaluate(() => walkoff.startGame('practice'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    const end = await page.evaluate(() => {   // 판정은 그대로 두고 결과만 넣어 화면이 따라가는지 본다
+      const f = walkoff.FIELDERS.find((x) => x.pos === '유격수'), r = { kind: 'out', name: '유격수 땅볼', type: 'ground', spray: -13, dist: 40, ev: 120, la: 2, fielder: f, points: 0, reason: '', dt: 0 };
+      Object.assign(walkoff.game, { state: 'result', outcome: r, resultT: 0, flightT: 0, swingAt: walkoff.ballTime(), revealAt: walkoff.fieldPlay(r).reveal });
+      return walkoff.fieldPlay(r).end;
+    });
+    await page.waitForFunction((end) => walkoff.game.flightT >= end, end, { timeout: 10_000 });   // 공이 1루에 닿는 순간(결과 글자가 뜰 때)
+    const b = await page.evaluate(() => { const q = walkoff.project(walkoff.BASE1[0], 0, walkoff.BASE1[1]); return { x: q.x, y: q.y, w: walkoff.view.w, h: walkoff.view.h }; });
+    expect(b.x).toBeGreaterThan(0); expect(b.x).toBeLessThan(b.w);
+    expect(b.y).toBeGreaterThan(0); expect(b.y).toBeLessThan(b.h);
+    await page.evaluate(() => walkoff.startReplay());
+    const spots = await page.evaluate(() => walkoff.fieldersNow().map((q) => [q.pose, Math.hypot(q.spot[0] - Math.sin(q.f.a * Math.PI / 180) * q.f.d, q.spot[1] - Math.cos(q.f.a * Math.PI / 180) * q.f.d)]));
+    expect(spots.every(([pose, off]) => pose === 'ready' && off < 0.01)).toBe(true);
+    expect(errors).toEqual([]);
+  });
+});
+
 test.describe('결과 공유', () => {
   // 모바일은 공유 창, PC는 클립보드로 나간다. 둘 다 가로채서 나간 글을 window.__shared에 남긴다
   test.beforeEach(async ({ page }) => {
