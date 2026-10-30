@@ -1872,7 +1872,8 @@ async function sendPending() {
 async function submitScore(s, mode) {
   if (!settings.team) return;
   if (!settings.nick) saveTeamAndNick(settings.team, defaultNick());
-  keepPending({ nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode });
+  // 서버는 그 판의 공 순서를 다시 만들어 전광판·점수를 맞춰 본다. 오늘의 10구는 날짜로 정해지고, 10구 도전은 시드를 함께 보낸다
+  keepPending({ nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, ...(mode === 'challenge' ? { seed: game.seed } : {}) });
   if (!loggedIn()) return;
   game.rankInfo = { status: 'sending' };
   const d = await sendPending();

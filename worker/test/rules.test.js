@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate } from '../src/rules.js';
+import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../src/pitches.js';
 
 test('한국 시간 날짜와 월요일 0시 주 경계', () => {
   assert.equal(kstDay(Date.parse('2026-10-25T14:59:59Z')), '2026-10-25');   // 한국 시간 일요일 23:59:59
@@ -12,42 +13,68 @@ test('한국 시간 날짜와 월요일 0시 주 경계', () => {
   assert.equal(addDays('2026-10-31', 1), '2026-11-01');
 });
 
-test('전광판으로 낼 수 있는 최대 점수', () => {
-  assert.equal(maxScoreFor('G'.repeat(10)), 12100);   // 홈런+정타 10번에 마지막 공 2배
-  assert.equal(maxScoreFor('R'.repeat(10)), 1100);    // 아웃이어도 정타 보너스 100씩
+// 가짜 공: 존 가운데, 존 밖이지만 배트가 닿는 공, 배트가 닿지 않는 공
+const IN = { tx: 0, ty: 0.8 }, BALL = { tx: 0.4, ty: 0.8 }, FAR = { tx: 0.6, ty: 0.8 };
+const seqOf = (s) => s.split('').map((c) => ({ i: IN, b: BALL, f: FAR }[c]));
+
+test('전광판이 그 공 순서로 나올 수 있을 때만 최대 점수를 준다', () => {
+  assert.equal(maxScoreFor('G'.repeat(10), seqOf('i'.repeat(40))), 12100);   // 홈런+정타 10번에 마지막 공 2배
+  assert.equal(maxScoreFor('R'.repeat(10), seqOf('i'.repeat(40))), 1100);    // 아웃이어도 정타 보너스 100씩
+  assert.equal(maxScoreFor('YG', seqOf(`bi${'i'.repeat(38)}`)), null);      // 기회가 남았는데 판이 끝날 수 없다
+  // 마지막 기회(남은 기회 1번)의 볼은 2배. 예전 상한(볼은 100)으로는 이런 정상 판이 거절됐다
+  assert.equal(maxScoreFor(`${'G'.repeat(9)}YYG`, seqOf(`${'i'.repeat(9)}bbi${'i'.repeat(28)}`)), 9 * 1100 + 2 * 200 + 2200);
+  assert.equal(maxScoreFor('Y', seqOf('i')), null);                         // 존 안 공은 볼이 될 수 없다
+  assert.equal(maxScoreFor(`G${'R'.repeat(9)}`, seqOf(`f${'i'.repeat(39)}`)), null);   // 배트가 닿지 않는 공은 안타가 될 수 없다
+  assert.equal(maxScoreFor(`R${'R'.repeat(9)}`, seqOf(`f${'i'.repeat(39)}`)), 8 * 100 + 200);   // 닿지 않는 공에 휘두르면 헛스윙(0점), 마지막 공은 2배
+  assert.equal(maxScoreFor(`${'G'.repeat(10)}${'Y'.repeat(30)}`, seqOf('b'.repeat(40))), null);   // 2026-10-30 조작: 10번째 기회 뒤에 볼 30개
+  assert.equal(maxScoreFor('YYYGG', seqOf('bbbii')), 3 * 100 + 2 * 1100);   // 공을 다 쓰면 기회가 남아도 끝난다(가짜 5개짜리 순서)
 });
 
 const NOW = Date.parse('2026-10-28T03:00:00Z');   // 한국 시간 2026-10-28 12:00(수)
 const PID = 'p-1234abcd';   // 로그인 표에서 꺼낸 사람 ID
-const base = { nick: '타자1234', team: 'lg', day: '2026-10-28', lights: 'GGRRGGRRGR', score: 3000 };
+// 실제 공 순서대로 친 전광판: 존 밖 공은 골라내고(Y), 존 안 공은 쳐서 안타(G). 기회 10번을 다 쓰면 끝
+const played = (seed) => {
+  let out = '', left = 10;
+  for (const p of makeSequence(seed, pitcherHand(seed) === 'L')) { if (!left) break; if (zoneMiss(p) > 0) out += 'Y'; else { out += 'G'; left--; } }
+  return out;
+};
+const DAY = '2026-10-28', LIGHTS = played(dailySeed(DAY));
+const base = { nick: '타자1234', team: 'lg', day: DAY, lights: LIGHTS, score: 3000 };
 const check = (patch, playerId = PID) => validateSubmission({ ...base, ...patch }, NOW, playerId);
 
 test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
-  assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26' } });
+  assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26' } });   // mode가 없는 예전 게임은 오늘의 10구로 본다
+  assert.equal(check({ mode: 'daily' }).ok, true);
   assert.equal(check({ playerId: 'someone-else' }).value.playerId, PID);   // 보낸 내용의 ID는 쓰지 않는다
-  assert.equal(check({ day: '2026-10-26' }).ok, true);                         // 이틀 전까지 받는다
-  assert.equal(check({ day: '2026-10-29' }).ok, true);                         // 기기 시계가 조금 빨라도 받는다
-  assert.equal(check({ lights: 'GGGGGGGGGGY', score: 1000 }).ok, true);        // 볼 1개면 11칸
-  assert.equal(check({ lights: 'YYYYYYGGGGGGGGGG', score: 1000 }).ok, true);   // 볼 6개면 16칸(볼은 기회를 안 쓴다)
-  assert.equal(check({ lights: `${'Y'.repeat(12)}${'G'.repeat(10)}`, score: 1000 }).ok, true);   // 볼 12개, 22칸
-  assert.equal(check({ lights: 'YYYYYYGGGGGGGGG', score: 1000 }).ok, true);    // 예전 게임(볼 5개까지만 기회가 늘던 때)의 15칸
+  assert.equal(check({ day: '2026-10-26', lights: played(dailySeed('2026-10-26')) }).ok, true);   // 이틀 전까지 받는다
+  assert.equal(check({ day: '2026-10-29', lights: LIGHTS }).ok, true);   // 자정을 넘겨 끝난 판은 전날 공 순서로 본다
+  assert.equal(check({ mode: 'challenge', seed: 42, lights: played(42) }).ok, true);   // 10구 도전은 게임이 보낸 시드로 본다
   assert.equal(check({ nick: '가나다라마바사아자차' }).ok, true);                // 한글 10자
   assert.equal(check({ nick: '  공백  ' }).value?.nick, '공백');
 });
 
 test('규칙상 나올 수 없는 값은 거절한다', () => {
+  // 오늘의 10구는 자정을 넘긴 판을 위해 전날 순서도 보므로, 두 날짜 모두에서 나올 수 없어야 거절된다
+  const seqs = [DAY, addDays(DAY, -1)].map((d) => makeSequence(dailySeed(d), pitcherHand(dailySeed(d)) === 'L'));
+  const maxOf = (lights) => Math.max(...seqs.map((q) => maxScoreFor(lights, q)).filter((m) => m !== null));
+  const inBoth = seqs[0].findIndex((p, i) => zoneMiss(p) === 0 && zoneMiss(seqs[1][i]) === 0);
   const cases = {
     bad_team: { team: 'comets' },             // 예전 가상 팀 id
-    bad_lights: { lights: 'GGGGGGGGGGG' },          // 볼이 없는데 11칸
-    bad_score: { score: maxScoreFor(base.lights) + 1 },
+    bad_lights: { lights: `${'G'.repeat(10)}${'Y'.repeat(30)}` },   // 2026-10-30 조작: 10번째 기회 뒤에 볼 30개
+    bad_score: { score: maxOf(LIGHTS) + 1 },
     stale_day: { day: '2026-10-25' },               // 사흘 전
     bad_nick: { nick: '가나다라마바사아자차카' },      // 11자
+    bad_seed: { mode: 'challenge', lights: played(42) },   // 10구 도전인데 시드가 없다
   };
   for (const [error, patch] of Object.entries(cases)) assert.deepEqual(check(patch), { ok: false, error }, error);
+  assert.equal(check({ lights: `${'R'.repeat(inBoth)}Y${'R'.repeat(10 - inBoth)}` }).error, 'bad_lights');   // 존 안 공에 볼
+  assert.equal(check({ lights: `${'Y'.repeat(30)}${'G'.repeat(10)}` }).error, 'bad_lights');   // 순서를 바꿔도 실제 공 순서와 안 맞는다
+  assert.equal(check({ mode: 'challenge', seed: 42, lights: LIGHTS }).ok, played(42) === LIGHTS);   // 다른 판의 전광판(같지 않으면 거절)
+  assert.equal(check({ mode: 'scenario' }).error, 'bad_seed');
+  assert.equal(check({ mode: 'challenge', seed: 'abc', lights: played(42) }).error, 'bad_seed');
   assert.equal(check({ day: '2026-10-30' }).error, 'stale_day');   // 이틀 뒤
   assert.equal(check({ lights: 'GGGGGGGGGX' }).error, 'bad_lights');
-  assert.equal(check({ lights: 'YYYYYYGGGGGGGGGGG' }).error, 'bad_lights');   // 볼 6개인데 17칸(어느 규칙에도 안 맞는다)
-  assert.equal(check({ lights: `${'Y'.repeat(31)}${'G'.repeat(10)}` }).error, 'bad_lights');   // 41칸
+  assert.equal(check({ lights: '' }).error, 'bad_lights');
   assert.equal(check({ score: 10.5 }).error, 'bad_score');
   assert.equal(check({ score: -1 }).error, 'bad_score');
   assert.equal(check({ nick: '' }).error, 'bad_nick');

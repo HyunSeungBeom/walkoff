@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { sign, verify, allowedReturn } from '../src/auth.js';
 import { kstDay } from '../src/rules.js';
+import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../src/pitches.js';
 import { memoryD1 } from './d1.js';
 
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
@@ -44,7 +45,17 @@ async function login(code, pid = '') {
 }
 const me = async (token) => (await call('GET', '/me', { token })).json();
 const profile = ({ ok, playerId, nick, team }) => ({ ok, playerId, nick, team });   // /me에서 지갑을 뺀 계정 정보
-const score = (patch) => ({ nick: '민성', team: 'lg', day: kstDay(Date.now()), lights: 'GGRRGGRRGR', score: 3000, ...patch });
+// 실제 공 순서대로 친 전광판: 존 밖 공은 골라내고(Y), 존 안 공은 쳐서 안타(G). 서버가 그 판의 공 순서로 맞춰 본다
+const played = (seed) => {
+  let out = '', left = 10;
+  for (const p of makeSequence(seed, pitcherHand(seed) === 'L')) { if (!left) break; if (zoneMiss(p) > 0) out += 'Y'; else { out += 'G'; left--; } }
+  return out;
+};
+// 오늘의 10구(mode가 없는 예전 게임도)는 날짜로, 10구 도전은 시드로 공 순서가 정해진다
+const score = (patch = {}) => {
+  const day = patch.day ?? kstDay(Date.now()), seed = patch.mode === 'challenge' ? (patch.seed ?? 42) : dailySeed(day);
+  return { nick: '민성', team: 'lg', day, lights: played(seed), score: 3000, ...(patch.mode === 'challenge' ? { seed } : {}), ...patch };
+};
 
 test('로그인 시작: 카카오로 보내고, 허용하지 않은 돌아갈 주소는 거절한다', async () => {
   const { kakao } = await login('c1');
@@ -106,6 +117,15 @@ test('점수는 로그인해야 받고, 사람 ID는 로그인 표에서 꺼낸�
   assert.deepEqual([higher.accepted, higher.me], [true, { rank: 1, best: 5000, total: 5000, days: 1, team: 'lg' }]);
   assert.deepEqual(env.DB.rows('SELECT player_id, score FROM daily_scores'), [{ player_id: 'p-device-0001', score: 5000 }]);
   assert.deepEqual(profile(await me(token)), { ok: true, playerId: 'p-device-0001', nick: '민성', team: 'lg' });   // 다른 기기에서 이어 줄 팀·닉네임
+});
+
+test('그 판의 공 순서로 나올 수 없는 점수는 거절한다(2026-10-30 조작 사례)', async () => {
+  const token = (await login('c1', 'p-device-0001')).hash.login;
+  const post = async (patch) => { const r = await call('POST', '/scores', { token, body: score(patch) }); return [r.status, (await r.json()).error ?? 'ok']; };
+  assert.deepEqual(await post({ mode: 'daily', score: 15100, lights: `${'G'.repeat(10)}${'Y'.repeat(30)}` }), [400, 'bad_lights']);   // 안타 10개 뒤에 볼 30개
+  assert.deepEqual(await post({ mode: 'challenge', seed: undefined }), [400, 'bad_seed']);   // 10구 도전인데 시드가 없다
+  assert.deepEqual(await post({ mode: 'challenge', seed: 7 }), [200, 'ok']);
+  assert.equal(env.DB.rows('SELECT score FROM daily_scores').length, 1);   // 거절된 판은 남지 않는다
 });
 
 test('팀·닉네임 바꾸기와 기록 지우기', async () => {

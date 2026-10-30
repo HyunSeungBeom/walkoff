@@ -1,4 +1,5 @@
 // 랭킹 규칙. 게임(index.html)도 같은 팀 목록과 주 계산을 써야 해서, 테스트로 둘이 같은지 맞춰 본다
+import { makeSequence, pitcherHand, dailySeed, zoneMiss, CHANCES, REACH_M, POINTS, PERFECT_BONUS } from './pitches.js';
 export const TEAM_IDS = ['kia', 'kt', 'lg', 'nc', 'ssg', 'doosan', 'lotte', 'samsung', 'kiwoom', 'hanwha'];   // KBO 10개 구단(게임의 TEAMS와 같은 순서)
 const DAY_MS = 864e5;
 
@@ -12,12 +13,40 @@ export function weekStart(day) {
   return addDays(day, -((dow + 6) % 7));
 }
 
-// 전광판 한 칸이 낼 수 있는 가장 큰 점수: 안타 칸은 홈런과 정타 보너스, 볼은 100, 나머지도 정타 보너스 100까지
-const LIGHT_MAX = { G: 1100, Y: 100, R: 100 };
-export function maxScoreFor(lights) {
-  const each = lights.split('').map((c) => LIGHT_MAX[c]);
-  return each.reduce((a, b) => a + b, 0) + Math.max(...each);   // 마지막 기회 한 공은 점수 2배
+// 전광판이 그 판의 공 순서(seq)로 실제로 나올 수 있는지 한 칸씩 따라가 보고, 나올 수 있으면 그 전광판으로 낼 수 있는
+// 가장 큰 점수를 돌려준다(나올 수 없으면 null).
+// - 볼(Y)은 존 밖 공을 그냥 보냈을 때만 나오고 기회를 쓰지 않는다. 안타(G)는 배트가 닿는 공(존에서 REACH_M 안)에만 나온다.
+// - 기회 10번을 다 쓰면 판이 끝나서 그 뒤에는 공이 없다. 기회가 남은 채 끝나는 건 공을 다 썼을 때뿐이다.
+// - 남은 기회가 1번일 때(끝내기 찬스)는 볼까지 점수가 2배다. 안타는 홈런+정타 보너스, 나머지 스윙은 정타 보너스까지 준다.
+// 2026-10-30 전에는 칸 수와 칸별 상한만 봐서, 안타 10개 뒤에 볼 30개를 붙인 전광판으로 15,100점이 들어왔다
+export function maxScoreFor(lights, seq) {
+  let left = CHANCES, total = 0;
+  for (let i = 0; i < lights.length; i++) {
+    const p = seq[i];
+    if (!p || left === 0) return null;
+    const c = lights[i], miss = zoneMiss(p), k = left === 1 ? 2 : 1;
+    if (c === 'Y') {
+      if (miss === 0) return null;
+      total += POINTS.ball * k;
+      continue;
+    }
+    if (c === 'G' && miss > REACH_M) return null;
+    total += (c === 'G' ? POINTS.hr + PERFECT_BONUS : miss <= REACH_M ? PERFECT_BONUS : 0) * k;
+    left -= 1;
+  }
+  return left === 0 || lights.length === seq.length ? total : null;
 }
+
+// 그 판의 공 순서. 오늘의 10구는 날짜로 정해지고(자정을 넘겨 끝난 판을 위해 전날 순서도 본다), 10구 도전은 게임이 보낸 시드로 만든다.
+// mode가 없는 예전 게임은 오늘의 10구로 본다
+function sequencesFor(b, day) {
+  const mode = b.mode ?? 'daily';
+  if (mode === 'daily') return [dailySeed(day), dailySeed(addDays(day, -1))];
+  if (mode !== 'challenge') return null;
+  const seed = b.seed;
+  return typeof seed === 'number' && Number.isFinite(seed) && seed > 0 && seed < 2 ** 32 ? [seed] : null;
+}
+const seqOf = (seed) => makeSequence(seed, pitcherHand(seed) === 'L');
 
 // 닉네임(10자까지)과 팀
 export function validateProfile(b) {
@@ -28,7 +57,8 @@ export function validateProfile(b) {
   return { ok: true, value: { nick, team } };
 }
 
-// 10구 판 점수 한 건을 검사한다. 마음먹고 조작한 요청까지 막지는 못하고, 규칙상 나올 수 없는 값만 거른다.
+// 10구 판 점수 한 건을 검사한다. 그 판의 공 순서로 나올 수 없는 전광판과, 그 전광판으로 낼 수 없는 점수를 거른다.
+// 타이밍은 게임이 재서 보내므로 사람이 친 것인지까지는 가릴 수 없다(정타만 쳤다고 꾸민 점수는 막지 못한다).
 // 사람 ID는 보낸 내용이 아니라 로그인 표에서 꺼낸 값을 받는다
 export function validateSubmission(b, nowMs, playerId) {
   if (!/^[a-z0-9-]{8,40}$/.test(String(playerId ?? ''))) return { ok: false, error: 'bad_player' };
@@ -39,11 +69,12 @@ export function validateSubmission(b, nowMs, playerId) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, error: 'bad_day' };
   const today = kstDay(nowMs);
   if (day < addDays(today, -2) || day > addDays(today, 1)) return { ok: false, error: 'stale_day' };   // 늦게 보낸 기록은 이틀까지 받는다
-  if (!/^[GYR]{10,40}$/.test(lights)) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
-  // 기회 10번 + 볼 수. 볼은 기회를 쓰지 않는다(2026-10-29부터). 그 전 게임은 볼 5개까지만 기회가 늘어서, 열어 둔 탭을 위해 그 규칙도 받는다
-  const balls = lights.split('').filter((c) => c === 'Y').length;
-  if (lights.length !== 10 + balls && lights.length !== 10 + Math.min(balls, 5)) return { ok: false, error: 'bad_lights' };
-  if (!Number.isInteger(score) || score < 0 || score > maxScoreFor(lights)) return { ok: false, error: 'bad_score' };
+  if (!/^[GYR]{1,40}$/.test(lights)) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
+  const seeds = sequencesFor(b, day);
+  if (!seeds) return { ok: false, error: 'bad_seed' };
+  const maxes = seeds.map((s) => maxScoreFor(lights, seqOf(s))).filter((m) => m !== null);
+  if (!maxes.length) return { ok: false, error: 'bad_lights' };
+  if (!Number.isInteger(score) || score < 0 || score > Math.max(...maxes)) return { ok: false, error: 'bad_score' };
   return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights } };
 }
 
