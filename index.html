@@ -3197,7 +3197,7 @@ const game = {
   toast: null, newBest: false, best: 0,
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
   opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
-  ticket: null, fixedSeed: false, waitingSeed: false,   // 이번 판에 쓴 서버 시드, 주소의 ?seed=로 친 판인지, 서버 시드를 기다리는 중인지
+  ticket: null, fixedSeed: false, waitingSeed: false, recorded: false,   // 이번 판에 쓴 서버 시드, 주소의 ?seed=로 친 판인지, 서버 시드를 기다리는 중인지, 이번 판을 기록했는지
 };
 
 // 주소 끝 ?seed=숫자. 같은 공 순서를 다시 칠 때 쓴다(랭킹에는 안 올라간다)
@@ -3226,7 +3226,7 @@ function startGame(mode, waited = false) {
   game.ticket = ranked ? takeSeedTicket() : null;
   game.fixedSeed = mode === 'challenge' && urlSeed() != null;
   game.seed = game.ticket?.seed ?? seedFromUrl();
-  Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0 });
+  Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0, recorded: false });
   game.throws = pitcherHand(game.seed);
   game.opponent = pickOpponent(game.seed);
   game.rankInfo = null;
@@ -3300,7 +3300,11 @@ function finish(r) {
   game.resultT = 0; game.flightT = 0;
   game.revealAt = r.took ? 0.15 : r.kind === 'whiff' ? 0.3 : fieldPlay(r).reveal;   // 아웃은 잡거나 1루에 닿을 때, 안타는 떨어질 때
   if (r.kind === 'ball') setTimeout(() => Sound.ding(), 150);
+  if (game.mode === 'challenge' && challengeOver()) recordGame();   // 마지막 기회를 쓰면 '결과 보기'를 누르기 전에 기록한다
 }
+
+// 10구 도전이 끝났는지: 기회를 다 썼거나 미리 만든 공을 다 썼다
+const challengeOver = () => game.left <= 0 || game.i + 1 >= game.seq.length;
 
 function next() {
   if (game.mode === 'practice') {
@@ -3316,13 +3320,17 @@ function next() {
     startPitch();
     return;
   }
-  if (game.left <= 0 || game.i + 1 >= game.seq.length) { finishGame(); return; }
+  if (challengeOver()) { finishGame(); return; }
   game.i++;
   startPitch();
 }
 
-function finishGame() {
-  Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
+// 판을 기록한다: 요약, 연속 기록, 최고 기록, 랭킹 점수(코인은 서버가 준다), 통계 끝 신호. 한 판에 한 번만.
+// 마지막 기회를 쓰는 순간 finish에서 부른다(2026-10-30 사용자 결정 '10구 다 치면 코인'). 전에는 '결과 보기'를 눌러야 기록돼서,
+// 마지막 결과 화면에서 처음부터·Esc·창 닫기로 나가면 기회를 다 쓴 판의 점수·코인·연속 기록이 빠졌다
+function recordGame() {
+  if (game.recorded) return;
+  game.recorded = true;
   game.summary = { ...gameSummary(), bats: settings.bats, date: today() };
   if (game.mode === 'challenge') {
     store.set('played.' + today(), 1);   // 끝까지 친 날(연속 기록)
@@ -3333,8 +3341,13 @@ function finishGame() {
     if (game.newBest) store.set('best', game.score);
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
-  prepareShareCard();
   track('end');
+}
+
+function finishGame() {
+  recordGame();
+  Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
+  prepareShareCard();
 }
 
 // 다시 보기는 타석 시점에서 본다. 전에는 파울공을 따라 돌아간 화면 그대로 재생해서 공이 안 보였다(2026-10-29 사용자 제보).
@@ -3490,11 +3503,11 @@ function render(time) {
       if (hasBattedBall()) drawMiniMap(L.map);
       const m = view.mobile;
       addButton(L.replay, m ? '다시 보기' : '다시 보기 (R)', 'dark', startReplay);
-      const last = game.mode === 'scenario' ? !!game.scn.end : game.mode !== 'practice' && game.left <= 0;
+      const last = game.mode === 'scenario' ? !!game.scn.end : game.mode !== 'practice' && challengeOver();
       addButton(L.next, last ? '결과 보기' : m ? '다음 공' : '다음 공 (Space)', 'primary', next);
       // 10구 도전은 공을 보고 마음에 안 들면 처음부터 다시 한다(2026-10-29 사용자 피드백). 판마다 공이 달라 새 판과 같고,
-      // 끝내지 않은 판은 랭킹에 보내지 않는다
-      if (L.restart) addButton(L.restart, '처음부터', 'dark', () => startGame('challenge'));
+      // 끝내지 않은 판은 랭킹에 보내지 않는다. 마지막 기회 뒤에는 판이 이미 기록돼서(recordGame) '다시 하기'다(2026-10-30 사용자 결정)
+      if (L.restart) addButton(L.restart, last ? '다시 하기' : '처음부터', 'dark', () => startGame('challenge'));
       if (game.mode === 'practice') drawPracticeControls(L);
     }
   }

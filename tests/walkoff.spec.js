@@ -747,6 +747,36 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  // 2026-10-30 사용자 '10구 다 치면 코인': 전에는 '결과 보기'를 눌러야 기록돼서, 마지막 결과 화면의 처음부터·Esc로 나가면 다 친 판이 빠졌다
+  test('기회를 다 쓰면 결과 보기를 누르기 전에 기록된다(점수·코인·연속 기록·최고 기록). 마지막 결과 화면의 버튼은 "다시 하기"이고, 다시 하기나 Esc로 나가도 판마다 한 번씩 보낸다', async ({ page }) => {
+    const errors = await open(page, '', { login: true });
+    const playLast = async () => {   // 지금 판의 남은 기회를 1번으로 줄이고 정타로 친 뒤 결과 화면을 기다린다(결과 보기는 누르지 않는다)
+      await page.evaluate(() => { walkoff.game.left = 1; });
+      await page.waitForFunction(() => walkoff.game.state === 'pitch');
+      await pressAt(page, 0);
+      await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+      return page.evaluate(() => ({ token: walkoff.game.ticket.token, score: walkoff.game.score }));
+    };
+    await seedReady(page);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    const first = await playLast();
+    await expect.poll(() => sentScores(errors).length).toBe(1);   // 결과 보기를 누르기 전에 보냈다
+    await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
+    expect(first.score).toBeGreaterThan(0);
+    expect(await page.evaluate(() => [walkoff.wallet.coins, walkoff.store.get('played.' + walkoff.today(), 0), walkoff.store.get('best', 0)]))
+      .toEqual([Math.floor(first.score / 100), 1, first.score]);   // 코인(가짜 서버는 점수의 1/100), 연속 기록, 최고 기록
+    const labels = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
+    expect(labels).toEqual(expect.arrayContaining(['다시 하기', '결과 보기']));
+    expect(labels).not.toContain('처음부터');
+    await tap(page, '다시 하기');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.i, walkoff.game.results.length, walkoff.game.recorded])).toEqual([0, 0, false]);   // 새 판
+    const second = await playLast();
+    await page.keyboard.press('Escape');   // 마지막 결과 화면에서 바로 나가도
+    await expect.poll(() => sentScores(errors).map((c) => c.body.token)).toEqual([first.token, second.token]);
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+    expect(errors).toEqual([]);
+  });
+
   test('진동이 되는 폰(안드로이드)에서는 맞히면 울리고, 메뉴에서 끌 수 있다', async ({ page, isMobile }) => {
     test.skip(!isMobile, '진동은 터치 화면 폰에서만 쓴다');
     await page.addInitScript(() => { window.__vibes = []; navigator.vibrate = (p) => { window.__vibes.push(p); return true; }; });
