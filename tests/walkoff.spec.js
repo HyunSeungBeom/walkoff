@@ -765,6 +765,27 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('상점: 물건을 하나씩 골라 미리 입혀 봐도 오류가 없고, 물건이 가장 많은 탭도 닫기까지 화면에 들어간다(폰은 키가 작은 360×640)', async ({ page, isMobile }) => {
+    if (isMobile) await page.setViewportSize({ width: 360, height: 640 });
+    const errors = await open(page);
+    await page.evaluate(() => walkoff.openShop('shop'));
+    for (const [slot, label] of await page.evaluate(() => walkoff.SHOP_SLOTS)) {
+      await tap(page, label);
+      const names = await page.evaluate((slot) => walkoff.SHOP_ITEMS.filter((i) => i.slot === slot).map((i) => i.name), slot);
+      await expect.poll(() => page.evaluate((names) => walkoff.ui.buttons.filter((b) => names.includes(b.label)).length, names)).toBe(names.length);
+      for (const name of names) {   // 누른 칸의 물건이 골라져야 한다(칸 자리가 맞는지)
+        await tap(page, name);
+        await expect.poll(() => page.evaluate(() => walkoff.SHOP_ITEMS.find((i) => i.id === walkoff.game.shop.sel)?.name)).toBe(name);
+      }
+      const fit = await page.evaluate(() => {
+        const close = walkoff.ui.buttons.find((b) => b.label === '닫기').r;
+        return { close: close.y + close.h <= innerHeight, inside: walkoff.ui.buttons.every((b) => b.r.x >= 0 && b.r.x + b.r.w <= innerWidth + 0.5) };
+      });
+      expect(fit, label).toEqual({ close: true, inside: true });
+    }
+    expect(errors).toEqual([]);
+  });
+
   test('파울 뒤 다시 보기를 누르면 화면이 타석으로 돌아오고, 다시 보기가 끝나도 파울공을 다시 따라가지 않는다', async ({ page, isMobile }) => {
     const errors = await open(page);
     await page.evaluate(() => walkoff.startGame('challenge'));
@@ -822,8 +843,15 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('관중은 안타·홈런에 일어나 환호하고, 파울에는 그대로다', async ({ page }) => {
+  test('관중은 안타·홈런에 일어나 함성을 지르고(홈런이 더 크다), 파울에는 그대로다. 새 물건을 입고 쳐도 오류가 없다', async ({ page }) => {
     const errors = await open(page);
+    await page.evaluate(() => {
+      // 불꽃 배트·호랑이 헬멧·오리발·번개 꼬리·폭탄 소리를 입고 친다(효과를 그리는 길에 오류가 없는지)
+      walkoff.setWallet({ look: { bat: 'bat-fire', helmet: 'helmet-tiger', shoe: 'shoe-duck', trail: 'trail-lightning', sound: 'sound-bomb' } });
+      window.roars = [];
+      const roar = walkoff.Sound.roar;
+      walkoff.Sound.roar = (level) => { window.roars.push(level); roar(level); };
+    });
     const swingAt = (dt) => page.evaluate((dt) => new Promise((resolve) => {
       const g = walkoff.game, p = g.seq[g.i], now = walkoff.ballTime() + (performance.now() - g.clockAt) / 1000;
       setTimeout(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' })); resolve(); }, Math.max(0, (p.T - now) * 1000 + dt));
@@ -833,6 +861,9 @@ test.describe('화면', () => {
     await swingAt(115);   // 115ms 늦으면 파울
     await page.waitForFunction(() => walkoff.game.state === 'result');
     expect(await page.evaluate(() => [walkoff.game.outcome.kind, walkoff.crowd.power])).toEqual(['foul', 0]);
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => window.roars)).toEqual([]);   // 파울에는 함성이 없다
+    await expect.poll(() => page.evaluate(() => walkoff.Sound.crowdReady()), { timeout: 10_000 }).toBe(true);   // 첫 키에 소리를 켜면서 관중 함성 녹음(crowd.mp3)을 받아 둔다
     await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.4);
     await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
@@ -841,6 +872,8 @@ test.describe('화면', () => {
     const r = await page.evaluate(() => ({ kind: walkoff.game.outcome.kind, hit: walkoff.game.outcome.hit, power: walkoff.crowd.power }));
     expect(r.hit).toBe(true);
     expect(r.power).toBe(r.kind === 'hr' ? 2 : 1);
+    await expect.poll(() => page.evaluate(() => window.roars)).toEqual([r.kind === 'hr' ? 2 : 1]);   // 맞고 0.25~0.3초 뒤 함성
+    await page.waitForFunction(() => walkoff.game.flightT > 0.5);   // 번개 꼬리를 단 공이 날아가는 동안에도 오류가 없다
     expect(errors).toEqual([]);
   });
 

@@ -31,6 +31,22 @@ test.describe('링크 미리보기', () => {
   });
 });
 
+test.describe('배포 파일', () => {
+  test.skip(({ isMobile }) => isMobile, '파일은 화면 크기와 상관없어서 PC에서만 본다');
+
+  test('게임이 받아 쓰는 파일(미리보기 그림, 관중 함성 녹음)을 배포 단계가 함께 올린다', () => {
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    const crowd = html.match(/CROWD_URL = '([^']+)'/)?.[1] ?? '';
+    expect(crowd).toBe('crowd.mp3');
+    const copied = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8').match(/cp (.+) _site\//)?.[1].split(/\s+/);
+    for (const f of ['index.html', 'og.png', crowd]) {
+      expect(copied, f).toContain(f);   // 빠지면 배포된 게임에서는 녹음 대신 합성 함성이 난다
+      expect(fs.existsSync(path.join(ROOT, f)), f).toBe(true);
+    }
+    expect(fs.statSync(path.join(ROOT, crowd)).size).toBeLessThan(150_000);   // 폰에서 처음 소리를 켤 때 받는다
+  });
+});
+
 test.describe('버전 표시', () => {
   test('오른쪽 아래 커밋 번호 위를 눌러도 캔버스가 받아 경기가 시작된다', async ({ page }) => {
     const errors = [];

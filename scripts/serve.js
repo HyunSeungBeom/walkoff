@@ -7,7 +7,7 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = Number(process.argv[2] || process.env.PORT || 4173);
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.json': 'application/json' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.json': 'application/json', '.mp3': 'audio/mpeg' };
 
 http.createServer((req, res) => {
   const file = path.join(ROOT, decodeURIComponent(new URL(req.url || '/', 'http://x').pathname));
