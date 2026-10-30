@@ -1786,10 +1786,11 @@ function drawScenarioOver() {
 }
 
 // 10구 도전·끝내기 상황 끝 화면: [결과 공유하기 | 다시 하기] 아래에 처음으로. 스페이스바가 다시 하기라서 그쪽을 강조한다
-function drawRetryShareButtons(y, bw, retry) {
+// shareFirst면 공유가 주 버튼이다(오늘의 10구는 스페이스바가 공유)
+function drawRetryShareButtons(y, bw, retry, shareFirst = false) {
   const cx = view.w / 2, [a, b] = rowRects(cx, y, bw, 48, 2);
-  addButton(a, '결과 공유하기', 'secondary', shareResult);
-  addButton(b, '다시 하기', 'primary', retry);
+  addButton(a, '결과 공유하기', shareFirst ? 'primary' : 'secondary', shareResult);
+  addButton(b, '다시 하기', shareFirst ? 'secondary' : 'primary', retry);
   addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
 }
 
@@ -1922,6 +1923,8 @@ function confirmOnboard(how = 'local') {
 }
 
 const UNOFFICIAL = 'KBO·각 구단과 관계없는 비공식 팬 게임이에요';
+// 랭킹 기록은 친 날의 팀으로 남는다. 팀을 바꿨는데 랭킹의 팀이 그대로라는 제보가 있어 알린다(2026-10-30)
+const TEAM_NOTE = '이미 친 기록은 그날 팀으로 남아요 · 새 팀은 다음 판부터';
 function drawTeamChip(r, t, on) {
   roundRect(r.x, r.y, r.w, r.h, 12);
   ctx.fillStyle = on ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)'; ctx.fill();
@@ -1947,6 +1950,10 @@ function drawOnboard() {
     ui.buttons.push({ r, label: t.name, onTap: () => { ob.team = t.id; } });
   });
   y += Math.ceil(TEAMS.length / cols) * (ch + gap) + (m ? 10 : 16);
+  if (ob.next === 'menu') {   // 메뉴에서 팀을 바꿀 때만(처음 온 사람은 기록이 없다)
+    text(TEAM_NOTE, cx, y, { size: m ? 11 : 12, weight: 600, color: 'rgba(242,201,76,0.85)' });
+    y += m ? 18 : 22;
+  }
   text(UNOFFICIAL, cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });   // 구단 이름은 상표라서 공식 게임이 아니라고 밝힌다
   y += m ? 24 : 32;
   text('닉네임 · 랭킹에 보여요(10자까지)', cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
@@ -2110,6 +2117,8 @@ function drawRanking() {
   });
   y += 36 + (m ? 18 : 22);
   text(game.rankTab === 'players' ? '이번 주 최고 기록 순위예요' : '팀원들의 이번 주 최고 기록을 더한 순위예요', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  y += m ? 16 : 20;
+  text(TEAM_NOTE, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
   y += m ? 26 : 32;
   const note = (s) => text(s, cx, y + 20, { size: m ? 13 : 15, weight: 500, color: 'rgba(255,255,255,0.75)' });
   if (rk.status === 'loading') note('불러오는 중…');
@@ -2189,7 +2198,8 @@ async function syncAccount() {
     settings.playerId = acct.playerId; store.set('playerId', acct.playerId);
     setWallet(acct);
     let msg = '카카오로 로그인했어요';
-    if (teamById(acct.team)) {
+    if (store.get('profileDirty', 0) && teamById(settings.team)) await pushProfile();   // 지난번에 바꾼 팀을 못 적었으면 서버의 옛 팀으로 덮지 않고 다시 보낸다
+    else if (teamById(acct.team)) {
       if (acct.team !== settings.team || (acct.nick && acct.nick !== settings.nick)) msg = `이어서 해요 · ${teamById(acct.team).short} ${acct.nick || settings.nick}`;
       saveTeamAndNick(acct.team, acct.nick || settings.nick || defaultNick());
       if (game.state === 'onboard' && game.onboard.next === 'start') goTitle();
@@ -2201,12 +2211,21 @@ async function syncAccount() {
 }
 
 // 팀·닉네임을 계정에도 적는다. 다른 기기에서 이어 가고, 랭킹의 이름이 바로 바뀐다
+// 저장하지 못하면(네트워크·서버 오류) 알리고 이 브라우저에 표시해 둔다. 다음에 열 때 syncAccount가 서버의 옛 팀으로 덮지 않고 다시 보낸다.
+// 전에는 조용히 넘어가서, 다음에 열면 팀이 옛 팀으로 돌아갔다(2026-10-30 '팀이 안 바뀐다' 제보)
 async function pushProfile() {
-  if (!auth.token || !settings.team) return;
+  if (!auth.token || !settings.team) return true;
   try {
     const res = await api('/me', { method: 'PUT', body: { nick: settings.nick || defaultNick(), team: settings.team } });
-    if (res.status === 401) logout('expired');
-  } catch { /* 다음에 점수를 보낼 때 함께 적힌다 */ }
+    if (res.status === 401) { logout('expired'); return false; }
+    if (!res.ok) throw new Error(`profile ${res.status}`);
+    store.remove('profileDirty');
+    return true;
+  } catch {
+    store.set('profileDirty', 1);
+    toast('팀·닉네임을 서버에 저장하지 못했어요. 다음에 열 때 다시 저장할게요');
+    return false;
+  }
 }
 
 function logout(reason) {
@@ -2713,11 +2732,10 @@ function drawGameOver() {
       addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
       y += m ? 32 : 38;
     }
-    const [a, b] = rowRects(cx, y, bw, 48, 2);
-    addButton(a, '결과 공유하기', 'primary', shareResult);
-    addButton(b, '처음으로', 'secondary', goTitle);
-    y += 48 + 26;
-    const note = game.firstDaily ? ['오늘 기록으로 남았어요.', '내일 0시(한국 시간)에 새 공이 나와요.'] : ['오늘은 이미 쳤어요.', '내일 0시(한국 시간)에 새 공이 나와요.'];
+    // 다시 하기는 10구 도전(매번 다른 공). 같은 공으로 다시 치면 순서를 외울 수 있어 하루 첫 판 규칙이 깨진다(2026-10-30 사용자 승인)
+    drawRetryShareButtons(y, bw, () => startGame('challenge'), true);
+    y += 48 + 58 + 24;
+    const note = [game.firstDaily ? '오늘 기록으로 남았어요.' : '오늘은 이미 쳤어요.', '다시 하기는 매번 다른 공으로 치는 10구 도전이에요.', '내일 0시(한국 시간)에 새 공이 나와요.'];
     (m ? note : [note.join(' ')]).forEach((l, i) => text(l, cx, y + i * 20, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.6)' }));
   } else {
     if (game.mode === 'challenge' && settings.team) {   // 10구 도전도 주간 최고 기록 한 줄

@@ -42,6 +42,7 @@ async function mockApi(page, opts = {}) {
     }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
     if (['/me', '/scores', '/shop/buy', '/shop/equip'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (url.pathname === '/me' && req.method() === 'PUT' && opts.failProfile) return reply({ ok: false, error: 'server_error' }, 500);   // 팀·닉네임 저장 실패(테스트 중에 바꿀 수 있게 요청 때 읽는다)
     if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet() } : { ok: true });
     if (url.pathname === '/scores') {
       const { score, mode } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
@@ -728,6 +729,46 @@ test.describe('화면', () => {
     const r = await page.evaluate(() => ({ kind: walkoff.game.outcome.kind, hit: walkoff.game.outcome.hit, power: walkoff.crowd.power }));
     expect(r.hit).toBe(true);
     expect(r.power).toBe(r.kind === 'hr' ? 2 : 1);
+    expect(errors).toEqual([]);
+  });
+
+  test('오늘의 10구 끝 화면의 다시 하기는 10구 도전(매번 다른 공)을 시작하고, 오늘 기록은 그대로다', async ({ page }) => {
+    const errors = await open(page, '');
+    await setPlayedDays(page, [0]);
+    await tap(page, '메뉴');
+    await tap(page, '오늘의 10구 결과 보기');
+    await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.game.mode === 'daily');
+    await page.waitForFunction(() => ['결과 공유하기', '다시 하기', '처음으로'].every((l) => walkoff.ui.buttons.some((b) => b.label === l)));
+    const before = await page.evaluate(() => JSON.stringify(walkoff.store.get('daily.' + walkoff.today(), null)));
+    await tap(page, '다시 하기');
+    expect(await page.evaluate(() => [walkoff.game.mode, walkoff.game.seed !== walkoff.dailySeed(walkoff.today())])).toEqual(['challenge', true]);   // 같은 공으로 다시 치면 순서를 외울 수 있다
+    expect(await page.evaluate(() => JSON.stringify(walkoff.store.get('daily.' + walkoff.today(), null)))).toBe(before);   // 하루 첫 판 기록은 그대로
+    expect(errors).toEqual([]);
+  });
+
+  test('팀을 바꿀 때 기록은 그날 팀으로 남는다고 알리고, 서버 저장이 실패하면 알린 뒤 다음에 열 때 다시 저장한다(옛 팀으로 돌아가지 않는다)', async ({ page }) => {
+    const NOTE = '이미 친 기록은 그날 팀으로 남아요 · 새 팀은 다음 판부터';
+    const api = { account: { nick: '테스트', team: 'lg' }, failProfile: true };
+    const errors = await open(page, '?seed=42', { login: true, api });
+    const puts = () => errors.calls.filter((c) => c.method === 'PUT' && c.path === '/me');
+    await page.waitForFunction(() => walkoff.wallet.coins != null);   // 계정을 받아 왔다
+    await page.evaluate(() => walkoff.openOnboard('menu'));
+    expect(await drawnTexts(page)).toContain(NOTE);
+    await tap(page, 'KIA 타이거즈');
+    await tap(page, '저장');
+    await expect.poll(() => page.evaluate(() => walkoff.game.toast?.text ?? '')).toContain('저장하지 못했어요');   // 예전에는 조용히 넘어갔다
+    expect(await page.evaluate(() => [walkoff.settings.team, walkoff.store.get('profileDirty', 0)])).toEqual(['kia', 1]);
+    const tried = puts().length;
+    // 다음에 열면 서버의 옛 팀(LG)으로 덮지 않고 KIA를 다시 보낸다
+    await reloadUntil(page, () => walkoff.settings.team === 'kia' && walkoff.store.get('profileDirty', 0) === 1);
+    await expect.poll(() => puts().length).toBeGreaterThan(tried);
+    expect(await page.evaluate(() => walkoff.settings.team)).toBe('kia');
+    api.failProfile = false;   // 서버가 살아나면 저장되고 표시가 지워진다
+    await reloadUntil(page, () => walkoff.settings.team === 'kia');
+    await expect.poll(() => page.evaluate(() => walkoff.store.get('profileDirty', 0))).toBe(0);
+    expect(puts().at(-1).body).toMatchObject({ team: 'kia' });
+    await page.evaluate(() => walkoff.openRanking('title'));   // 랭킹 화면에도 같은 안내
+    expect(await drawnTexts(page)).toContain(NOTE);
     expect(errors).toEqual([]);
   });
 
