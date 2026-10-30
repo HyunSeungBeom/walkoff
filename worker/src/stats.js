@@ -1,7 +1,7 @@
 // 하루 이용 통계(2026-10-29 사용자 결정). 사람이 아니라 게임이 기기에 저장한 무작위 번호로 센다.
 // 랭킹 ID·닉네임·카카오 계정과는 잇지 않고, 날짜·모드별 판 수와 그날 기기 수만 남긴다
 export const MODES = ['daily', 'challenge', 'scenario', 'practice'];
-export const EVENT_CAP = 300;   // 한 기기가 하루에 보내는 신호는 이만큼까지만 센다(새로고침 반복이나 장난으로 숫자가 부풀지 않게)
+export const EVENT_CAP = 3000;   // 한 기기가 하루에 보내는 신호는 이만큼까지만 센다(새로고침 반복이나 장난으로 숫자가 부풀지 않게)
 
 export function validateEvent(b) {
   if (!b || typeof b !== 'object') return { ok: false, error: 'bad_body' };

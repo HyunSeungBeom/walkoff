@@ -51,7 +51,7 @@ test(`이용 통계: 한 기기가 하루에 ${EVENT_CAP}번을 넘게 보내면
   const env = { DB: memoryD1() };
   await send(env, ev());
   await env.DB.prepare('UPDATE play_devices SET events = ?').bind(EVENT_CAP - 1).run();
-  await send(env, ev());   // 300번째까지는 센다
+  await send(env, ev());   // 상한 바로 전까지는 센다
   assert.equal((await send(env, ev())).status, 204);   // 넘긴 신호도 받기는 받지만
   assert.deepEqual(env.DB.rows('SELECT starts FROM play_stats'), [{ starts: 2 }]);   // 판 수는 그대로다
   assert.equal((await send(env, ev({ device: 'd-device-0002' }))).status, 204);   // 다른 기기는 그대로 센다
