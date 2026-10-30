@@ -903,6 +903,60 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('연속 홈런이면 백투백 +500을 더하고 끝내기만큼 환호한다(seed 42는 첫 두 공을 정확히 치면 둘 다 홈런)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => {
+      window.roars = [];
+      const roar = walkoff.Sound.roar;
+      walkoff.Sound.roar = (level) => { window.roars.push(level); roar(level); };
+      walkoff.startGame('challenge');
+    });
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    expect(await page.evaluate(() => [walkoff.game.outcome.kind, walkoff.game.outcome.streak, walkoff.game.outcome.streakBonus])).toEqual(['hr', 1, 0]);
+    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.4);
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    const r = await page.evaluate(() => { const o = walkoff.game.outcome; return { kind: o.kind, streak: o.streak, bonus: o.streakBonus, perfect: o.perfect, gained: walkoff.game.gained }; });
+    expect(r).toMatchObject({ kind: 'hr', streak: 2, bonus: 500 });
+    expect(r.gained).toBe(1000 + (r.perfect ? 100 : 0) + 500);
+    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.3);
+    const texts = await drawnTexts(page);
+    expect(texts).toContain('백투백 홈런!');
+    expect(texts).toContain('연속 홈런 +500');
+    await expect.poll(() => page.evaluate(() => window.roars)).toEqual([2, 3]);   // 백투백은 끝내기만큼 큰 함성
+    expect(errors).toEqual([]);
+  });
+
+  test('연속 홈런은 볼을 골라내도 이어지고, 다른 결과가 나오면 끊긴다. 세 번째부터는 +1,000', async ({ page }) => {
+    const errors = await open(page);
+    const before = (kinds) => page.evaluate((kinds) => { walkoff.game.results = kinds.map((kind) => ({ kind })); return walkoff.hrStreakBefore(kinds.length); }, kinds);
+    expect(await before(['hr', 'ball', 'hr'])).toBe(2);
+    expect(await before(['hr', 'out', 'hr'])).toBe(1);
+    expect(await before(['hr', 'hr', 'strike'])).toBe(0);
+    expect(await before(['single', 'hr', 'ball', 'ball', 'hr'])).toBe(2);
+    expect(await page.evaluate(() => [1, 2, 3, 4, 10].map(walkoff.hrStreakBonus))).toEqual([0, 500, 1000, 1000, 1000]);
+    expect(errors).toEqual([]);
+  });
+
+  test('존 밖 공을 지켜보면 판정한 자리에 동그라미와 몇 cm 빠졌는지 보여 준다(seed 10의 첫 공은 몸쪽으로 11cm)', async ({ page }) => {
+    const errors = await open(page, '?seed=10');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'result', null, { timeout: 10_000 });   // 휘두르지 않으면 공이 지나간 뒤 판정한다
+    expect(await page.evaluate(() => walkoff.game.outcome.kind)).toBe('ball');
+    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.3);
+    const texts = await drawnTexts(page);
+    expect(texts).toContain('몸쪽 11cm');          // 큰 화면의 동그라미 옆
+    expect(texts).toContain('존 밖 · 몸쪽 11cm');   // 결과의 작은 존
+    expect(await page.evaluate(() => walkoff.judgeTake(walkoff.game.seq[0]).reason)).toBe('존 몸쪽으로 11cm 빠졌어요 · 선구안 보너스');
+    // 좌타자에게는 같은 공이 바깥쪽이다
+    expect(await page.evaluate(() => walkoff.zoneOff(walkoff.game.seq[0], 'L'))).toEqual({ dir: '바깥쪽', cm: 11 });
+    expect(errors).toEqual([]);
+  });
+
   test('관중은 안타·홈런에 일어나 함성을 지르고(홈런이 더 크다), 파울에는 그대로다. 새 물건을 입고 쳐도 오류가 없다', async ({ page }) => {
     const errors = await open(page);
     await page.evaluate(() => {
@@ -1256,6 +1310,13 @@ test.describe('랭킹 규칙', () => {
     const game = await page.evaluate(() => ({ items: walkoff.SHOP_ITEMS.map(({ id, slot, price }) => ({ id, slot, price })), slots: walkoff.SHOP_SLOTS.map(([s]) => s) }));
     expect(game.items).toEqual(shop.ITEMS);
     expect(game.slots).toEqual(shop.SLOTS);
+  });
+
+  test('게임과 서버가 같은 연속 홈런 보너스를 쓴다(서버는 이걸로 점수 상한을 잰다)', async ({ page }) => {
+    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'pitches.js')).href);
+    await open(page);
+    const ns = [0, 1, 2, 3, 4, 5, 10, 40];
+    expect(await page.evaluate((ns) => ns.map(walkoff.hrStreakBonus), ns)).toEqual(ns.map(srv.hrStreakBonus));
   });
 
   test('게임과 서버가 같은 공 순서를 만든다(서버가 전광판·점수를 그 순서로 맞춰 본다)', async ({ page }) => {

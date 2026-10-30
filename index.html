@@ -64,6 +64,15 @@ const POINTS = { hr: 1000, double: 500, single: 300, ball: 100 };
 // 투구 순서는 40개를 미리 만든다. 볼이 30개 넘게 나올 일은 사실상 없고, 다 쓰면 판을 끝낸다
 const CHANCES = 10, SEQ_LEN = 40;
 const PERFECT_BONUS = 100;
+// 연속 홈런(2026-10-30 사용자 결정, 사용자 목소리 '연속 홈런 시 추가점'): 두 번째 연속(백투백)은 +500, 세 번째부터는 +1,000씩.
+// 골라낸 볼은 기회를 쓰지 않아서 연속을 끊지 않고, 끝내기 찬스면 보너스도 2배다. 서버(worker/src/pitches.js)도 같은 값으로 점수 상한을 잰다
+const hrStreakBonus = (n) => (n >= 3 ? 1000 : n === 2 ? 500 : 0);
+// 이번 공 앞으로 이어진 홈런 수. 볼은 건너뛰고, 다른 결과(안타·아웃·파울·헛스윙·루킹 스트라이크)가 나오면 끊긴다
+function hrStreakBefore(i) {
+  let n = 0;
+  for (let j = i - 1; j >= 0; j--) { const kind = game.results[j]?.kind; if (kind === 'ball') continue; if (kind !== 'hr') break; n++; }
+  return n;
+}
 
 // 외야 담장: 파울라인 쪽 100m, 가운데 122m. spray는 타구 방향(도), 음수가 3루 쪽
 const fenceDist = (spray) => 100 + 22 * Math.cos(clamp(spray, -45, 45) * 2 * Math.PI / 180);
@@ -154,6 +163,14 @@ const hardMatchup = (p) => !!p.lefty && settings.bats === 'L';
 function zoneMiss(p) {
   return Math.max(ZONE.left - p.tx, p.tx - ZONE.right, ZONE.bottom - p.ty, p.ty - ZONE.top, 0);
 }
+// 존에서 어느 쪽으로 몇 cm 빠졌는지(공 가장자리와 존 사이). 우타자는 몸쪽이 왼쪽(-x), 좌타자는 오른쪽이다.
+// 판정은 그대로 두고, '걸쳐 보였는데 볼' 같은 공이 실제로 얼마나 빠졌는지 숫자로 알려 준다(2026-10-30)
+function zoneOff(p, bats = settings.bats) {
+  const sides = [['아래', ZONE.bottom - p.ty], ['위', p.ty - ZONE.top], [bats === 'L' ? '바깥쪽' : '몸쪽', ZONE.left - p.tx], [bats === 'L' ? '몸쪽' : '바깥쪽', p.tx - ZONE.right]];
+  const [dir, m] = sides.reduce((a, b) => (b[1] > a[1] ? b : a));
+  return { dir, cm: Math.max(1, Math.round(m * 100)) };
+}
+const offText = (p, bats) => { const o = zoneOff(p, bats); return `존 ${o.dir}${/[래위]$/.test(o.dir) ? '로' : '으로'} ${o.cm}cm`; };
 
 // 발사각별 비거리 비율. 공기 저항 때문에 30도 근처에서 가장 멀리 간다
 const CARRY_BY_LA = [[0, 0], [5, 0.25], [10, 0.45], [15, 0.62], [20, 0.8], [25, 0.93], [30, 1], [35, 0.97],
@@ -189,7 +206,7 @@ function judgeSwing(p, dt, bats = 'R') {
   const slowBall = p.type === 'curve' || p.type === 'change';
   const r = { kind: 'whiff', name: '헛스윙', hit: false, points: 0, dt, ev: 0, la: 0, spray: 0, dist: 0, reason: '', perfect: false };
 
-  if (miss > REACH_M) { r.reason = '존에서 크게 빠진 공이었어요'; return r; }
+  if (miss > REACH_M) { r.reason = `${offText(p, bats)} 빠진 공이었어요`; return r; }
   if (adt > FOUL_MS) {
     r.reason = dt < 0 ? (slowBall ? `${eun(def.name)} 느려요. 더 기다렸다 치세요` : '너무 빨리 휘둘렀어요') : '너무 늦게 휘둘렀어요';
     return r;
@@ -285,7 +302,7 @@ function classify(r, p, miss) {
 function reasonFor(r, p, miss) {
   if (r.kind === 'hr') return r.perfect ? '완벽한 타이밍이에요' : `${Math.round(r.dist)}m 날아갔어요`;
   if (r.split) return '정타라 수비 사이로 빠졌어요';
-  if (miss > 0) return '존 밖 공이라 힘이 덜 실렸어요';
+  if (miss > 0) return `${offText(p)} 빠진 공이라 힘이 덜 실렸어요`;
   if (p.type === 'fork' && r.type === 'ground') return '포크는 끝에서 떨어져서 공 윗부분을 치기 쉬워요';
   if (r.wall) return '조금만 더 갔으면 홈런이었어요';
   if (p.ty > 1.0 && (r.type === 'fly' || r.type === 'pop')) return '높은 공은 뜨기 쉬워요';
@@ -298,7 +315,7 @@ function reasonFor(r, p, miss) {
 function judgeTake(p) {
   return zoneMiss(p) === 0
     ? { kind: 'strike', name: '루킹 스트라이크', points: 0, reason: '존에 들어온 공이었어요', took: true }
-    : { kind: 'ball', name: '볼', points: POINTS.ball, reason: '잘 골라냈어요 · 선구안 보너스', took: true };
+    : { kind: 'ball', name: '볼', points: POINTS.ball, reason: `${offText(p)} 빠졌어요 · 선구안 보너스`, took: true };
 }
 
 // ===== 소리: 파일 없이 Web Audio로 합성 =====
@@ -1026,6 +1043,22 @@ function drawFielders(time) {
 }
 
 // ===== 스트라이크 존과 공 =====
+// 판정한 자리(2026-10-30 사용자 제보 '커브·포크가 존에 걸치는데 볼'). 판정은 공이 홈플레이트 앞면을 지나는 순간인데, 떨어지는 공은
+// 마지막 한 장면(약 0.02초)에 4~5cm씩 떨어져서 바로 앞 장면에서는 존 안에 보이다가 빠진다(존 밖 포크의 78%, 커브·체인지업의 65%쯤이
+// 판정 직전 두 장면에서 존과 겹쳐 보였다). 공이 그 면을 지난 뒤로 그 자리에 공 크기 동그라미를 남기고, 존 밖이면 노랗게 칠하고 몇 cm 빠졌는지 적는다
+function drawPitchMark(p) {
+  const c = project(p.tx, p.ty, 0);
+  if (!c) return;
+  const r = BALL_R * c.s, out = zoneMiss(p) > 0;
+  ctx.save();
+  ctx.lineWidth = Math.max(2, r * 0.2);
+  ctx.strokeStyle = out ? '#facc15' : 'rgba(255,255,255,0.9)';
+  ctx.fillStyle = out ? 'rgba(250,204,21,0.2)' : 'rgba(255,255,255,0.15)';
+  ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  if (out) { const o = zoneOff(p); text(`${o.dir} ${o.cm}cm`, c.x + r + 6, c.y, { size: view.mobile ? 12 : 14, weight: 800, color: '#facc15', align: 'left', shadow: true }); }
+}
+
 function drawZone(alpha) {
   const tl = project(ZONE.left, ZONE.top, 0), br = project(ZONE.right, ZONE.bottom, 0);
   if (!tl || !br) return;
@@ -1623,7 +1656,8 @@ function drawResultCard() {
   const m = view.mobile, k = easeOut((game.resultT - game.revealAt) / 0.25), cx = view.w / 2, hr = r.kind === 'hr';
   ctx.globalAlpha = k;
   let y = (m ? 78 : 86) + (1 - k) * 10;
-  text(hr ? '홈런!' : r.name, cx, y, { size: (m ? 32 : 44) * (hr ? 1.3 : 1), weight: 900, color: KIND_COLOR[r.kind], shadow: true });
+  const title = !hr ? r.name : r.streak >= 3 ? `${r.streak}연속 홈런!` : r.streak === 2 ? '백투백 홈런!' : '홈런!';
+  text(title, cx, y, { size: (m ? 32 : 44) * (hr ? 1.3 : 1), weight: 900, color: KIND_COLOR[r.kind], shadow: true });
   y += hr ? (m ? 38 : 48) : (m ? 32 : 40);
   if (hr) { text(`${r.name} · ${Math.round(r.dist)}m`, cx, y, { size: m ? 15 : 18, shadow: true }); y += m ? 28 : 30; }
   const chips = [];
@@ -1632,6 +1666,7 @@ function drawResultCard() {
     const label = r.perfect ? '정타!' : Math.abs(r.dt) <= PERFECT_MS ? '타이밍 정확 · 존 밖 공' : `${Math.abs(r.dt)}ms ${r.dt < 0 ? '빠름' : '늦음'}`;
     chips.push(r.perfect ? [label, '#f2c94c', '#1b1405'] : [label, 'rgba(0,0,0,0.5)', '#fff']);
   }
+  if (r.streakBonus) chips.push([`연속 홈런 +${r.streakBonus.toLocaleString()}`, 'rgba(255,90,40,0.85)', '#ffffff']);
   if (game.gained > 0) chips.push([`+${game.gained.toLocaleString()}${game.lastChance ? ' (2배)' : ''}`, 'rgba(0,0,0,0.5)', '#f2c94c']);
   if (r.bonus) chips.push(['기회 +1', 'rgba(61,220,110,0.22)', '#8ef0a8']);
   if (game.mode === 'scenario' && game.scnEvent) {
@@ -1659,7 +1694,8 @@ function drawPitchInfo(rect) {
   ctx.strokeRect(sx(ZONE.left), sy(ZONE.top), sx(ZONE.right) - sx(ZONE.left), sy(ZONE.bottom) - sy(ZONE.top));
   ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(sx(clamp(p.tx, -0.58, 0.58)), sy(clamp(p.ty, 0.03, 1.47)), 5, 0, Math.PI * 2); ctx.fill();
   const tx = box.x + box.w + 12, inZone = zoneMiss(p) === 0;
-  text(inZone ? '스트라이크 존' : '존 밖', tx, box.y + 10, { size: 13, align: 'left', color: inZone ? '#fff' : '#facc15' });
+  const off = inZone ? null : zoneOff(p);
+  text(inZone ? '스트라이크 존' : `존 밖 · ${off.dir} ${off.cm}cm`, tx, box.y + 10, { size: 13, align: 'left', color: inZone ? '#fff' : '#facc15' });
   const cm = (v) => Math.round(Math.abs(v) * 100);
   const lines = [];
   if (cm(def.brk.x) >= 5) lines.push(`${def.brk.x * (p.lefty ? -1 : 1) > 0 ? '→' : '←'}${cm(def.brk.x)}cm`);
@@ -3226,6 +3262,7 @@ function swing(eventTime) {
   game.swingAt = bt;
   const dtMs = Math.round((bt - p.T) * 1000 - settings.offset);
   const r = judgeSwing(p, dtMs, settings.bats);
+  if (game.mode === 'challenge' && r.kind === 'hr') { r.streak = hrStreakBefore(game.i) + 1; r.streakBonus = hrStreakBonus(r.streak); r.points += r.streakBonus; }
   if (r.kind === 'whiff') Sound.whoosh();
   else {
     game.contactPos = ballPos(p, bt / p.T);
@@ -3233,7 +3270,7 @@ function swing(eventTime) {
     game.flash = 1;
     view.shake = r.kind === 'hr' ? 12 : r.kind === 'foul' ? 3 : 3 + r.ev / 45;
     if (r.kind === 'foul') { Sound.foul(); buzz(15); } else { Sound.crack(clamp((r.ev - 80) / 100, 0, 1), currentLook().sound); buzz(r.kind === 'hr' ? [50, 40, 110] : 30); }
-    if (r.kind === 'hr') { setTimeout(() => Sound.roar(2), 250); cheerCrowd(2, 3, 0.25); }
+    if (r.kind === 'hr') { const big = r.streak >= 2; setTimeout(() => Sound.roar(big ? 3 : 2), 250); cheerCrowd(big ? 3 : 2, big ? 3.5 : 3, 0.25); }   // 연속 홈런은 끝내기만큼 환호
     else if (r.hit) { setTimeout(() => Sound.roar(1), 300); cheerCrowd(1, 1.6, 0.3); }
   }
   finish(r);
@@ -3406,6 +3443,7 @@ function render(time) {
     const hiddenByHit = hasBattedBall() && game.replay == null;
     const seen = game.replay == null && hardMatchup(p) ? clamp((u - 0.12) / 0.05, 0, 1) : 1;   // 좌타 대 좌완이면 처음 12%는 안 보인다
     if (!hiddenByHit && u <= 1.06 && seen > 0) drawBall(ballPos(p, u), { spin: (game.replay ?? bt) * SPIN[p.type] * (p.lefty ? -1 : 1), alpha: seen });
+    if (!hiddenByHit && u >= 1) drawPitchMark(p);   // 홈플레이트 앞면을 지난 뒤로 판정한 자리를 남긴다
   }
   if (hasBattedBall() && game.replay == null) {
     const fp = fieldPlay(r).ball(game.flightT);
@@ -3480,7 +3518,7 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff };
 </script>
 </body>
 </html>

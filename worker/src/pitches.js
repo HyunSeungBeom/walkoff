@@ -6,6 +6,8 @@ export const ZONE = { left: -0.25, right: 0.25, bottom: 0.5, top: 1.1 };   // �
 export const REACH_M = 0.2;   // 존 밖으로 이만큼 넘게 빠지면 배트가 닿지 않음
 export const POINTS = { hr: 1000, double: 500, single: 300, ball: 100 };
 export const PERFECT_BONUS = 100;
+// 연속 홈런 보너스(2026-10-30): 두 번째 연속은 +500, 세 번째부터 +1,000씩. 게임의 hrStreakBonus와 같아야 하고 테스트가 맞춰 본다
+export const hrStreakBonus = (n) => (n >= 3 ? 1000 : n === 2 ? 500 : 0);
 
 const PITCHES = { fastball: { kmh: [146, 153] }, slider: { kmh: [134, 140] }, curve: { kmh: [116, 124] }, change: { kmh: [125, 131] }, fork: { kmh: [132, 138] } };
 const PITCH_MIX = { fastball: 3, slider: 2, curve: 1.5, change: 2, fork: 1.5 };

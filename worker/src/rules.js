@@ -1,5 +1,5 @@
 // 랭킹 규칙. 게임(index.html)도 같은 팀 목록과 주 계산을 써야 해서, 테스트로 둘이 같은지 맞춰 본다
-import { makeSequence, pitcherHand, dailySeed, zoneMiss, CHANCES, REACH_M, POINTS, PERFECT_BONUS } from './pitches.js';
+import { makeSequence, pitcherHand, dailySeed, zoneMiss, CHANCES, REACH_M, POINTS, PERFECT_BONUS, hrStreakBonus } from './pitches.js';
 import { SEED_TTL_MS, MIN_PITCH_MS } from './seeds.js';
 export const TEAM_IDS = ['kia', 'kt', 'lg', 'nc', 'ssg', 'doosan', 'lotte', 'samsung', 'kiwoom', 'hanwha'];   // KBO 10개 구단(게임의 TEAMS와 같은 순서)
 const DAY_MS = 864e5;
@@ -20,9 +20,10 @@ export function weekStart(day) {
 // - 볼(Y)은 존 밖 공을 그냥 보냈을 때만 나오고 기회를 쓰지 않는다. 안타(G)는 배트가 닿는 공(존에서 REACH_M 안)에만 나온다.
 // - 기회 10번을 다 쓰면 판이 끝나서 그 뒤에는 공이 없다. 기회가 남은 채 끝나는 건 공을 다 썼을 때뿐이다.
 // - 남은 기회가 1번일 때(끝내기 찬스)는 볼까지 점수가 2배다. 안타는 홈런+정타 보너스, 나머지 스윙은 정타 보너스까지 준다.
+// - 안타(G)는 모두 홈런일 수 있다고 보고 연속 홈런 보너스(hrStreakBonus)까지 준다. 볼(Y)은 연속을 끊지 않고 다른 결과(R)는 끊는다(2026-10-30).
 // 2026-10-30 전에는 칸 수와 칸별 상한만 봐서, 안타 10개 뒤에 볼 30개를 붙인 전광판으로 15,100점이 들어왔다
 export function maxScoreFor(lights, seq) {
-  let left = CHANCES, total = 0;
+  let left = CHANCES, total = 0, streak = 0;
   for (let i = 0; i < lights.length; i++) {
     const p = seq[i];
     if (!p || left === 0) return null;
@@ -33,7 +34,8 @@ export function maxScoreFor(lights, seq) {
       continue;
     }
     if (c === 'G' && miss > REACH_M) return null;
-    total += (c === 'G' ? POINTS.hr + PERFECT_BONUS : miss <= REACH_M ? PERFECT_BONUS : 0) * k;
+    streak = c === 'G' ? streak + 1 : 0;
+    total += (c === 'G' ? POINTS.hr + PERFECT_BONUS + hrStreakBonus(streak) : miss <= REACH_M ? PERFECT_BONUS : 0) * k;
     left -= 1;
   }
   return left === 0 || lights.length === seq.length ? total : null;

@@ -18,17 +18,27 @@ test('한국 시간 날짜와 월요일 0시 주 경계', () => {
 const IN = { tx: 0, ty: 0.8 }, BALL = { tx: 0.4, ty: 0.8 }, FAR = { tx: 0.6, ty: 0.8 };
 const seqOf = (s) => s.split('').map((c) => ({ i: IN, b: BALL, f: FAR }[c]));
 
+test('연속 홈런 보너스: 볼은 연속을 끊지 않고, 다른 결과는 끊는다(2026-10-30)', () => {
+  const tenIn = seqOf('i'.repeat(40)), base = 1100;
+  // G G R G G G R R R R: 두 번째 +500, 끊긴 뒤 다시 두 번째 +500, 세 번째 +1,000. 아웃(R)은 정타 보너스 100, 마지막 공은 2배
+  assert.equal(maxScoreFor('GGRGGGRRRR', tenIn), base + (base + 500) + 100 + base + (base + 500) + (base + 1000) + 100 * 3 + 200);
+  // G Y G: 볼(Y) 사이에 두고도 백투백이다
+  assert.equal(maxScoreFor(`GYG${'R'.repeat(8)}`, seqOf(`ibi${'i'.repeat(37)}`)), base + 100 + (base + 500) + 100 * 7 + 200);
+});
+
 test('전광판이 그 공 순서로 나올 수 있을 때만 최대 점수를 준다', () => {
-  assert.equal(maxScoreFor('G'.repeat(10), seqOf('i'.repeat(40))), 12100);   // 홈런+정타 10번에 마지막 공 2배
+  // 홈런+정타 10번에 마지막 공 2배, 연속 홈런 보너스(두 번째 +500, 세 번째부터 +1,000)까지: 1100 + 1600 + 2100×7 + 2100×2
+  assert.equal(maxScoreFor('G'.repeat(10), seqOf('i'.repeat(40))), 1100 + 1600 + 2100 * 7 + 2100 * 2);
   assert.equal(maxScoreFor('R'.repeat(10), seqOf('i'.repeat(40))), 1100);    // 아웃이어도 정타 보너스 100씩
   assert.equal(maxScoreFor('YG', seqOf(`bi${'i'.repeat(38)}`)), null);      // 기회가 남았는데 판이 끝날 수 없다
   // 마지막 기회(남은 기회 1번)의 볼은 2배. 예전 상한(볼은 100)으로는 이런 정상 판이 거절됐다
-  assert.equal(maxScoreFor(`${'G'.repeat(9)}YYG`, seqOf(`${'i'.repeat(9)}bbi${'i'.repeat(28)}`)), 9 * 1100 + 2 * 200 + 2200);
+  // 볼은 연속 홈런을 끊지 않아서 마지막 G도 10번째 연속 홈런(+1,000)이다
+  assert.equal(maxScoreFor(`${'G'.repeat(9)}YYG`, seqOf(`${'i'.repeat(9)}bbi${'i'.repeat(28)}`)), 1100 + 1600 + 2100 * 7 + 2 * 200 + 2100 * 2);
   assert.equal(maxScoreFor('Y', seqOf('i')), null);                         // 존 안 공은 볼이 될 수 없다
   assert.equal(maxScoreFor(`G${'R'.repeat(9)}`, seqOf(`f${'i'.repeat(39)}`)), null);   // 배트가 닿지 않는 공은 안타가 될 수 없다
   assert.equal(maxScoreFor(`R${'R'.repeat(9)}`, seqOf(`f${'i'.repeat(39)}`)), 8 * 100 + 200);   // 닿지 않는 공에 휘두르면 헛스윙(0점), 마지막 공은 2배
   assert.equal(maxScoreFor(`${'G'.repeat(10)}${'Y'.repeat(30)}`, seqOf('b'.repeat(40))), null);   // 2026-10-30 조작: 10번째 기회 뒤에 볼 30개
-  assert.equal(maxScoreFor('YYYGG', seqOf('bbbii')), 3 * 100 + 2 * 1100);   // 공을 다 쓰면 기회가 남아도 끝난다(가짜 5개짜리 순서)
+  assert.equal(maxScoreFor('YYYGG', seqOf('bbbii')), 3 * 100 + 1100 + 1600);   // 공을 다 쓰면 기회가 남아도 끝난다(가짜 5개짜리 순서). 두 번째 G는 백투백 +500
 });
 
 const NOW = Date.parse('2026-10-28T03:00:00Z');   // 한국 시간 2026-10-28 12:00(수)
