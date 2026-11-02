@@ -209,6 +209,29 @@ async function playUntilOver(page, dt, max = 40) {
 }
 
 test.describe('판정 계산', () => {
+  test('체인지업·포크도 잘 맞히면 홈런이 나오고(전에는 정타여도 포크 0%·체인지업 4%), 빗맞은 포크는 여전히 땅볼이 많다', async ({ page }) => {
+    const errors = await open(page);
+    const t = await page.evaluate(() => {
+      const t = {};
+      for (let sd = 1; sd <= 120; sd++) {
+        const seq = walkoff.makeSequence(sd, false);
+        for (let i = 0; i < 16; i++) for (let dt = -60; dt <= 60; dt += 3) for (const bats of ['R', 'L']) {
+          const p = seq[i];
+          if (p.type !== 'fork' && p.type !== 'change') continue;
+          const r = walkoff.judgeSwing(p, dt, bats), c = (t[p.type] ??= { perfect: 0, hr: 0, mis: 0, gb: 0 });
+          if (r.kind === 'whiff' || r.kind === 'foul') continue;
+          if (r.perfect) { c.perfect++; if (r.kind === 'hr') c.hr++; }
+          if (Math.abs(dt) > 30) { c.mis++; if (r.type === 'ground') c.gb++; }
+        }
+      }
+      return t;
+    });
+    expect(t.change.hr / t.change.perfect).toBeGreaterThan(0.18);
+    expect(t.fork.hr / t.fork.perfect).toBeGreaterThan(0.06);
+    expect(t.fork.gb / t.fork.mis).toBeGreaterThan(0.25);
+    expect(errors).toEqual([]);
+  });
+
   test.skip(({ isMobile }) => isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
 
   test('가운데 직구를 정타로 치면 홈런, 체인지업을 직구 타이밍에 치면 파울이나 헛스윙', async ({ page }) => {
@@ -1001,6 +1024,34 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('연속 안타는 볼을 골라내도 이어지고 다른 결과는 끊는다. 2연속 +100, 3연속 +200, 4연속부터 +300', async ({ page }) => {
+    const errors = await open(page);
+    const before = (rs) => page.evaluate((rs) => { walkoff.game.results = rs.map((kind) => ({ kind, hit: ['single', 'double', 'hr'].includes(kind) })); return walkoff.hitStreakBefore(rs.length); }, rs);
+    expect(await before(['single', 'ball', 'double'])).toBe(2);
+    expect(await before(['single', 'out', 'double'])).toBe(1);
+    expect(await before(['hr', 'single', 'foul'])).toBe(0);
+    expect(await before(['out', 'hr', 'single', 'ball', 'double'])).toBe(3);
+    expect(await page.evaluate(() => [1, 2, 3, 4, 10].map(walkoff.hitStreakBonus))).toEqual([0, 100, 200, 300, 300]);
+    expect(errors).toEqual([]);
+  });
+
+  test('실제 판: 안타 뒤 안타면 연속 안타 +100 칩, 홈런은 연속 홈런 보너스와 더하지 않고 큰 쪽만(seed 42 첫 두 공은 홈런)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);                                                          // 첫 공 홈런
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.4);
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);                                                          // 둘째 공도 홈런: 연속 홈런 +500(연속 안타 +100보다 크다)
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    const r = await page.evaluate(() => { const o = walkoff.game.outcome; return { kind: o.kind, streakBonus: o.streakBonus, hitBonus: o.hitBonus ?? 0, gained: walkoff.game.gained, perfect: o.perfect }; });
+    expect(r).toMatchObject({ kind: 'hr', streakBonus: 500, hitBonus: 0 });
+    expect(r.gained).toBe(1000 + (r.perfect ? 100 : 0) + 500);
+    expect(errors).toEqual([]);
+  });
+
   test('존 밖 공을 지켜보면 판정한 자리에 동그라미와 몇 cm 빠졌는지 보여 준다(seed 10의 첫 공은 몸쪽으로 11cm)', async ({ page }) => {
     const errors = await open(page, '?seed=10');
     await page.evaluate(() => walkoff.startGame('challenge'));
@@ -1779,6 +1830,14 @@ test.describe('랭킹 규칙', () => {
     const game = await page.evaluate(() => ({ items: walkoff.SHOP_ITEMS.map(({ id, slot, price }) => ({ id, slot, price })), slots: walkoff.SHOP_SLOTS.map(([s]) => s) }));
     expect(game.items).toEqual(shop.ITEMS);
     expect(game.slots).toEqual(shop.SLOTS);
+  });
+
+  test('연속 안타 보너스는 n번째마다 서버의 연속 홈런 보너스 이하라 서버 점수 상한을 넘지 않는다', async ({ page }) => {
+    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'pitches.js')).href);
+    await open(page);
+    const ns = Array.from({ length: 41 }, (_, i) => i);
+    const hit = await page.evaluate((ns) => ns.map(walkoff.hitStreakBonus), ns);
+    ns.forEach((n) => expect(hit[n] <= srv.hrStreakBonus(n) || n < 2, `${n}연속`).toBe(true));
   });
 
   test('게임과 서버가 같은 연속 홈런 보너스를 쓴다(서버는 이걸로 점수 상한을 잰다)', async ({ page }) => {

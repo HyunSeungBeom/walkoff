@@ -51,8 +51,8 @@ const PITCHES = {
   fastball: { name: '직구',     kmh: [146, 153], brk: { x: 0.02, y: 0.06 },  late: 2.0, la: 4,   color: '#ffffff' },
   slider:   { name: '슬라이더', kmh: [134, 140], brk: { x: 0.32, y: -0.08 }, late: 2.6, la: -3,  color: '#7fd1ff' },
   curve:    { name: '커브',     kmh: [116, 124], brk: { x: 0.16, y: -0.55 }, late: 2.0, la: -6,  color: '#c49bff' },
-  change:   { name: '체인지업', kmh: [125, 131], brk: { x: -0.14, y: -0.24 }, late: 2.2, la: -7, color: '#8ef0a8' },
-  fork:     { name: '포크',     kmh: [132, 138], brk: { x: 0.0, y: -0.5 },   late: 3.0, la: -14, color: '#ffb86b' },
+  change:   { name: '체인지업', kmh: [125, 131], brk: { x: -0.14, y: -0.24 }, late: 2.2, la: -7, lift: 6, color: '#8ef0a8' },
+  fork:     { name: '포크',     kmh: [132, 138], brk: { x: 0.0, y: -0.5 },   late: 3.0, la: -14, lift: 9, color: '#ffb86b' },
 };
 
 // 실제 150km 직구는 0.4초 남짓이지만 게임에서는 0.75초쯤으로 늦춘다
@@ -71,6 +71,15 @@ const hrStreakBonus = (n) => (n >= 3 ? 1000 : n === 2 ? 500 : 0);
 function hrStreakBefore(i) {
   let n = 0;
   for (let j = i - 1; j >= 0; j--) { const kind = game.results[j]?.kind; if (kind === 'ball') continue; if (kind !== 'hr') break; n++; }
+  return n;
+}
+// 연속 안타(2026-11-03 사용자 결정 '연속 안타 보너스, 밸런스 있게'): 두 번째 연속 +100, 세 번째 +200, 네 번째부터 +300씩. 홈런·2루타·내야 안타도 안타다.
+// 연속 홈런처럼 골라낸 볼은 끊지 않고 다른 결과는 끊는다. 홈런이면 연속 홈런 보너스와 더하지 않고 큰 쪽만 준다. 그래서 n번째마다 연속 홈런
+// 보너스보다 작거나 같아, 서버 점수 상한(전광판 안타를 모두 홈런·연속 홈런 보너스로 본다)을 넘지 않는다
+const hitStreakBonus = (n) => (n >= 4 ? 300 : n === 3 ? 200 : n === 2 ? 100 : 0);
+function hitStreakBefore(i) {
+  let n = 0;
+  for (let j = i - 1; j >= 0; j--) { const r = game.results[j]; if (r?.kind === 'ball') continue; if (!r?.hit) break; n++; }
   return n;
 }
 
@@ -290,7 +299,9 @@ function judgeSwing(p, dt, bats = 'R') {
   const reach = 1 - miss / REACH_M;
   const q = tq * (0.35 + 0.65 * reach);
   r.ev = Math.round(75 + 100 * Math.pow(q, 1.2) + (p.kmh - 135) * 0.25);
-  r.la = Math.round(24 + (p.ty - 0.8) * 40 + def.la + dt * 0.2);     // 높은 공은 뜨고, 빠르면 덮어 친다
+  // 높은 공은 뜨고, 빠르면 덮어 친다. 체인지업·포크는 잘 맞힐수록(tq의 세제곱) lift만큼 덜 깔린다(2026-11-03 유저 목소리 '포크·체인지업은 홈런이 안 나온다'.
+  // 전에는 정타여도 포크 홈런 0%, 체인지업 4%였고 이제 11%·28%다. 세제곱이라 빗맞은 포크는 그대로 땅볼이 많다(45% → 38%))
+  r.la = Math.round(24 + (p.ty - 0.8) * 40 + def.la + (def.lift ?? 0) * tq * tq * tq + dt * 0.2);
   // 빠르면 당겨치고 늦으면 밀어친다. 당기는 쪽이 우타는 3루 쪽(음수), 좌타는 1루 쪽(양수)
   const side = bats === 'L' ? -1 : 1;
   r.spray = Math.round(side * dt / FAIR_MS * 42 + p.tx * 40);
@@ -3453,6 +3464,7 @@ function drawResultCard() {
     chips.push(r.perfect ? [label, '#f2c94c', '#1b1405'] : [label, 'rgba(0,0,0,0.5)', '#fff']);
   }
   if (r.streakBonus) chips.push([`연속 홈런 +${r.streakBonus.toLocaleString()}`, 'rgba(255,90,40,0.85)', '#ffffff']);
+  if (r.hitBonus) chips.push([`${r.hitStreak}연속 안타 +${r.hitBonus}`, 'rgba(61,220,110,0.85)', '#0b1424']);
   if (game.gained > 0) chips.push([`+${game.gained.toLocaleString()}${game.lastChance ? ' (2배)' : ''}`, 'rgba(0,0,0,0.5)', '#f2c94c']);
   if (r.bonus) chips.push(['기회 +1', 'rgba(61,220,110,0.22)', '#8ef0a8']);
   if (game.mode === 'scenario' && game.scnEvent) {
@@ -5080,7 +5092,12 @@ function swing(eventTime) {
   game.swingAt = bt;
   const dtMs = Math.round((bt - p.T) * 1000 - settings.offset);
   const r = judgeSwing(p, dtMs, settings.bats);
-  if (game.mode === 'challenge' && r.kind === 'hr') { r.streak = hrStreakBefore(game.i) + 1; r.streakBonus = hrStreakBonus(r.streak); r.points += r.streakBonus; }
+  if (game.mode === 'challenge' && r.hit) {   // 연속 홈런·연속 안타 보너스 중 큰 쪽 하나
+    const hits = hitStreakBefore(game.i) + 1, hb = hitStreakBonus(hits);
+    if (r.kind === 'hr') { r.streak = hrStreakBefore(game.i) + 1; r.streakBonus = hrStreakBonus(r.streak); }
+    if (hb > (r.streakBonus ?? 0)) { r.streakBonus = 0; r.hitStreak = hits; r.hitBonus = hb; }
+    r.points += (r.streakBonus ?? 0) + (r.hitBonus ?? 0);
+  }
   if (r.kind === 'whiff') Sound.whoosh();
   else {
     game.contactPos = ballPos(p, bt / p.T);
@@ -5364,7 +5381,7 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook };
 </script>
 </body>
 </html>
