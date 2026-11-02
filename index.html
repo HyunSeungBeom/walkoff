@@ -2681,7 +2681,7 @@ const SLIDE_BRAKE = 10, SLIDE_IN = 0.12, SLIDE_DOWN = 0.5, SLIDE_UP = 0.45;
 // elbow 팔꿈치 굽힘(도, 앞으로 올 때 elbowAmp만큼 더 접혀 손이 얼굴 앞에 오고 뒤로 갈 때 그만큼 펴져 손이 엉덩이 뒤로 간다),
 // lean 다 빨라졌을 때 숙임, start 출발할 때 더 숙임(라디안), Dstart 출발할 때 더 오래 디딤, drive 출발할 때 몸 뒤를 디뎌 미는 거리(m), dust 발을 찰 때 흙먼지
 const SPRINT = { top: 8.3, tau: 0.8, cad: [1.75, 0.045], D: 0.2, heel: 0.74, knee: 0.46, arm: 60, armMid: -4, elbow: 90, elbowAmp: 25, lean: 0.26, start: 0.62, Dstart: 0.1, drive: 0.45, dust: 1 };
-const JOG = { top: 5.4, tau: 1.2, cad: [1.45, 0.06], D: 0.28, heel: 0.3, knee: 0.26, arm: 22, armMid: 6, elbow: 95, elbowAmp: 8, lean: 0.06, start: 0.12, Dstart: 0.04, drive: 0.05, dust: 0 };
+const JOG = { top: 5.4, tau: 1.2, cad: [1.45, 0.06], D: 0.28, heel: 0.3, knee: 0.26, arm: 22, armMid: 6, elbow: 95, elbowAmp: 8, lean: 0.06, start: 0.12, Dstart: 0.04, drive: 0.05, dust: 0, bank: 0.45 };   // bank: 베이스를 돌 때 기우는 정도(전력의 45%)
 const TROT = { ...JOG, top: 3.2, tau: 0.6 };
 const unitTo = (a, b) => { const dx = b[0] - a[0], dz = b[1] - a[1], d = Math.hypot(dx, dz) || 1; return [dx / d, dz / d]; };
 // 지나는 점들을 부드러운 곡선(캣멀-롬)으로 이어 촘촘한 꺾은선으로 만든다(모서리에서 방향이 갑자기 꺾이지 않게)
@@ -2701,6 +2701,29 @@ function smoothRoute(pts) {
 const batsOf = (r) => (r && r.bats === 'L') || (!(r && r.bats) && batSide() < 0) ? 'L' : 'R';
 const RUN_FREE_1B = { R: 4.458, L: 4.275 };
 const runStartOf = (bats) => RUN_START + RUN_TO_1B[bats] - RUN_FREE_1B[bats];
+// 홈런 주루 길(2026-11-02 사용자 '홈런 때 주자가 도는 게 어색하다, 부드럽게'): 베이스 사이는 곧게, 베이스마다 반지름 5m 원호로 돌며 원호 가운데가
+// 베이스를 지난다(그래서 베이스 6~7m 앞부터 바깥으로 2m쯤 벌어진다). 전에는 베이스 앞뒤 2m에만 점을 둔 곡선(캣멀-롬)이라 베이스마다 S자로 출렁여
+// 몸이 좌우로 20도씩 번갈아 기울었다
+const TROT_R = 5;
+function trotRoute(S) {
+  const corners = [S], bases = [BASE1, BASE2, BASE3], next = [BASE2, BASE3, [0, 0.3]];
+  bases.forEach((b, i) => {   // 원호 가운데가 베이스에 오도록 꼭짓점을 바깥으로 옮긴다(90도로 꺾일 때 0.414R)
+    const u = unitTo(i ? bases[i - 1] : [0, 0.3], b), v = unitTo(b, next[i]), w = unitTo([0, 0], [u[0] - v[0], u[1] - v[1]]);
+    const half = Math.acos(clamp(-(u[0] * v[0] + u[1] * v[1]), -1, 1)) / 2;   // 꺾인 안쪽 각의 반
+    corners.push([b[0] + w[0] * TROT_R * (1 / Math.sin(half) - 1), b[1] + w[1] * TROT_R * (1 / Math.sin(half) - 1)]);
+  });
+  corners.push([0, 0.3]);
+  const out = [S];
+  for (let i = 1; i < corners.length - 1; i++) {   // 꼭짓점마다 두 직선에 닿는 원호(필렛)
+    const P = corners[i], u = unitTo(corners[i - 1], P), v = unitTo(P, corners[i + 1]);
+    const half = Math.acos(clamp(-(u[0] * v[0] + u[1] * v[1]), -1, 1)) / 2, t = TROT_R / Math.tan(half), turn = Math.PI - 2 * half;
+    const a = [P[0] - u[0] * t, P[1] - u[1] * t], left = [-u[1], u[0]], c = [a[0] + left[0] * TROT_R, a[1] + left[1] * TROT_R];   // 반시계로 돌아 중심은 왼쪽
+    const a0 = Math.atan2(a[1] - c[1], a[0] - c[0]), n = Math.ceil(turn * TROT_R / 0.5);
+    for (let k = 0; k <= n; k++) { const th = a0 + turn * k / n; out.push([c[0] + Math.cos(th) * TROT_R, c[1] + Math.sin(th) * TROT_R]); }
+  }
+  out.push([0, 0.3]);
+  return out;
+}
 function runPlan(r) {
   if (r.runPlan !== undefined) return r.runPlan;
   // 길은 폰 그림 이동(batterShift) 없이 타석에서 잰다. 판정(1루 경주)과 1루를 밟는 때가 같아야 해서다. 폰에서는 그림만 처음 8m 동안 옮긴다(runnerAt)
@@ -2713,10 +2736,10 @@ function runPlan(r) {
   else if (r.kind === 'out') plan = { pts: [S, on1(10, 0.5), on1(26.9, 0.45), on1(33.5, 0.5)], until: catchTime(r) };
   else if (r.kind === 'single') plan = { pts: [...banana, toward(BASE1, BASE2, 4.5)] };
   else if (r.kind === 'double') plan = { pts: [...banana, toward(BASE1, BASE2, 7), toward(BASE2, BASE1, 0.95)], brake: SLIDE_BRAKE, slide: true };
-  else if (r.kind === 'hr') plan = { pts: [...banana, toward(BASE1, BASE2, 4), toward(BASE2, BASE1, 2), toward(BASE2, BASE3, 2), toward(BASE3, BASE2, 2), toward(BASE3, [0, 0], 2), [0, 0]], gait: JOG, delay: 0.5 };
+  else if (r.kind === 'hr') plan = { route: trotRoute(S), gait: JOG, delay: 0.5, brake: 3 };   // 홈에서는 천천히 줄여 밟는다
   if (plan) {
     plan.gait ??= SPRINT; plan.until ??= Infinity; plan.delay ??= 0;
-    plan.route = smoothRoute(plan.pts);
+    plan.route ??= smoothRoute(plan.pts);
     plan.total = plan.route.slice(1).reduce((sum, q, i) => sum + flatDist(plan.route[i], q), 0);
     plan.track = runTrack(plan);
     if (plan.slide) { const V = plan.track.V; plan.slideAt = plan.track.T[V.findIndex((v, i) => i > 0 && v < V[i - 1])]; }   // 줄이기 시작하는 때 = 미끄러지기 시작
@@ -2834,7 +2857,7 @@ function routeState(route, track, gait, tt) {
   const braking = s > 1 && v < trackAt(track, Math.max(0, tt - 0.05)).v - 0.01;
   // 베이스를 돌 때는 안쪽으로 기운다(구심력). turn은 1.2m 사이에 꺾이는 각의 사인이고, 왼쪽(+)으로 돌면 왼쪽으로 기운다
   const dir = unitTo(p, q), q2 = alongRoute(route, s + 2.4), d2 = unitTo(q, q2), turn = Math.hypot(q2[0] - q[0], q2[1] - q[1]) > 0.05 ? dir[0] * d2[1] - dir[1] * d2[0] : 0;
-  const bank = clamp(v * v * Math.asin(clamp(turn, -1, 1)) / 1.2 / 9.8, -0.35, 0.35);
+  const bank = clamp(v * v * Math.asin(clamp(turn, -1, 1)) / 1.2 / 9.8 * (gait.bank ?? 1), -0.35, 0.35);
   return { x: p[0], z: p[1], dir, bank, t: tt, speed: v, dist: s, ph, gait, route, track, braking };
 }
 // ===== 끝내기 상황의 누상 주자(2026-11-02 사용자 '끝내기에는 왜 주자가 없나, 1·2루라고 표시는 돼 있는데') =====
