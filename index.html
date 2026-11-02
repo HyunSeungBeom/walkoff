@@ -995,7 +995,6 @@ function smoothPath(pts) {
 }
 
 // 점들을 부드럽게 이은 닫힌 도형
-function smoothShape(pts, fill) { if (smoothPath(pts)) { ctx.fillStyle = fill; ctx.fill(); } }
 
 function ellipseAt(p, rx, ry, color) {
   if (!p) return;
@@ -1024,17 +1023,7 @@ function drawPitcher(t, holdingBall, lefty) {
   const pal = { jersey: C.jersey, shade: C.shade, pants: C.pants, pantsShade: C.shade, accent: C.navy, helmet: C.navy, brim: C.brim, belt: C.navy,
     skin: C.skin, shoe: C.shoe, glove: C.glove, pocket: C.pocket, sleeve: C.navy };
   if (holdingBall) k.ball = k.ballHand;
-  drawBatterFigure(k, () => BATTER_COLOR.rim, -1);
   drawBatterFigure(k, (name) => pal[name], 0);
-}
-
-// 투수의 모자와 얼굴(멀리 있어서 단순하게): 얼굴, 모자 윗부분, 홈 쪽으로 난 챙
-function drawCapHead(h, brim, col, detail) {
-  const s = h.s;
-  ellipseAt(h, 0.1 * s, 0.115 * s, col('skin'));
-  ctx.fillStyle = col('helmet');
-  ctx.beginPath(); ctx.ellipse(h.x, h.y - 0.03 * s, 0.112 * s, 0.1 * s, 0, Math.PI, 0); ctx.fill();
-  if (brim) ellipseAt({ x: lerp(h.x, brim.x, 0.8), y: h.y - 0.03 * s }, 0.13 * s, 0.03 * s, detail ? col('brim') : col('helmet'));
 }
 
 // 판의 첫 공이나 투수 손이 바뀐 공의 와인드업 동안 투수 머리 위에 던지는 손을 적는다
@@ -1911,7 +1900,7 @@ function batPose(tau, pre = null) {
 
 const BATTER_COLOR = {
   jersey: '#8b93a6', shade: '#6c7487', pants: '#a0a7b7', pantsShade: '#7f8696', accent: '#74182a', helmet: '#74182a', belt: '#1b1d24',
-  skin: '#c18f69', shoe: '#121418', glove: '#e9e9ec', bat: '#c8955a', batEnd: '#8a5e32', rim: 'rgba(225,232,245,0.6)', sleeve: '#596173',
+  skin: '#c18f69', shoe: '#121418', glove: '#e9e9ec', bat: '#c8955a', batEnd: '#8a5e32', sleeve: '#596173',
 };
 
 // ===== 팀 =====
@@ -2190,62 +2179,321 @@ function drawShoe(f, s, front, col, fx, detail) {
 }
 
 // 한 번은 빛 테두리 색으로 조금 위에, 한 번은 제 색으로 그려서 조명을 등진 윤곽을 만든다
-function drawBatterFigure(k, col, dy) {
-  // 뼈대는 우타 기준으로 만들고, 좌타는 그릴 때 좌우만 뒤집는다
-  const P = (p) => { const q = k.world ? project(p[0], p[1], p[2]) : batterPoint(p); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };   // 주자는 화면 기준 좌표
-  const seg = (a, b, wa, wb, c) => { const pa = P(a), pb = P(b); if (pa && pb) segment(pa, pb, wa * pa.s, wb * pb.s, col(c)); };
-  const ring = (c, l, f, rw, rd, y) => Array.from({ length: 12 }, (_, i) => {
-    const a = i / 12 * Math.PI * 2;
-    return P(V.add(V.add(c, [0, y, 0]), V.add(V.mul(l, rw * Math.cos(a)), V.mul(f, rd * Math.sin(a)))));
-  });
-  const { lc, fc, lp, fp } = k.axes ?? { lc: k.left(k.shTurn), fc: k.facing(k.shTurn), lp: k.left(k.hipTurn), fp: k.facing(k.hipTurn) };   // 동작을 섞을 때는 axes로 받는다
-  const look = k.plain ? {} : currentLook(), detail = dy === 0;   // 투수(plain)에게는 상점 물건을 입히지 않는다
-  const parts = [];
-  for (const side of ['l', 'r']) {
-    const other = side === 'l' ? 'r' : 'l', far = k.world ? k.shoulders[side][2] > k.shoulders[other][2] : side === 'l';   // 카메라에서 먼 쪽 팔다리는 조금 어둡다(타자는 왼쪽)
-    parts.push({ depth: k.knees[side][2], draw: () => {
-      const ankle = V.add(k.knees[side], V.mul(V.sub(k.feet[side], k.knees[side]), 0.62));   // 긴 바지 아래로 양말(보조색)이 조금 보인다
-      seg(k.hips[side], k.knees[side], 0.19, 0.13, far ? 'pantsShade' : 'pants');
-      seg(k.knees[side], ankle, 0.13, 0.1, far ? 'pantsShade' : 'pants');
-      seg(ankle, k.feet[side], 0.09, 0.08, 'accent');
-      const f = P(k.feet[side]);
-      if (f) drawShoe(f, f.s, k.front ?? batSide(), col, fxOf(look.shoe), detail);
-      if (f && detail && k.soles?.[side] > 0.05) ellipseAt({ x: f.x, y: f.y - 0.03 * f.s }, 0.055 * f.s, 0.1 * f.s, `rgba(232,228,218,${(0.95 * k.soles[side]).toFixed(2)})`);   // 차올린 발의 밑창(발끝이 아래로 선 세로 모양)
-    } });
-    parts.push({ depth: k.elbows[side][2], draw: () => {
-      const hand = k.hands?.[side] ?? k.hand;   // 주자는 손이 둘이다
-      seg(k.shoulders[side], k.elbows[side], 0.12, 0.095, far ? 'shade' : 'jersey');
-      seg(k.elbows[side], hand, 0.09, 0.07, 'sleeve');
-      const hp = k.hands ? P(hand) : null;
-      if (hp && k.mitt === side) {   // 투수의 글러브
-        ellipseAt(hp, 0.1 * hp.s, 0.115 * hp.s, col('glove'));
-        if (detail) ellipseAt({ x: hp.x, y: hp.y + 0.02 * hp.s }, 0.05 * hp.s, 0.065 * hp.s, col('pocket'));
-      } else if (hp) {
-        ellipseAt(hp, 0.045 * hp.s, 0.045 * hp.s, col(k.bare ? 'skin' : 'glove'));
-        if (detail && k.ball === side) ellipseAt({ x: hp.x, y: hp.y - 0.03 * hp.s }, 0.045 * hp.s, 0.045 * hp.s, '#ffffff');
-      }
-    } });
+// 사람 몸 그리기(2026-11-02 사용자 결정 '캐릭터가 목탁 같다' → 시안 A '깔끔한 두 톤 명암 + 얇은 윤곽선', 시안은 인프라 세션이 만듦).
+// 뼈대·동작(batterSkeleton, pitcherSkeleton, fielderSkeleton, runnerSkeleton, assembleFigure, bendJoint)은 그대로 두고 그 위에 입히는 몸만 그린다.
+// - 팔다리: 관절 동그라미 없이 이어진 윤곽 하나(허벅지 앞·종아리 뒤 볼록, 끝으로 갈수록 가늘게)
+// - 몸통: 높이마다 단면(타원)을 돌려 척추 양옆으로 가장 바깥 점을 잇는다(볼록 껍질이 아니라 허리가 들어가고 어깨가 생긴다)
+// - 명암: 화면 위쪽(경기장 가운데 쪽)에서 빛이 온다고 보고 반대쪽 가장자리에 경계가 분명한 그늘 띠, 얇은 윤곽선. 자르기(ctx.clip)는 폰에서 느려서 쓰지 않는다
+// 전에는 마디 양 끝에 원을 그려 관절이 모두 공 모양이었고, 몸통을 볼록 껍질로 감싸 허리·어깨선이 없고, 머리가 커서 목각 인형처럼 보였다
+const FIG_SHADE = 'rgba(8,12,30,0.27)', FIG_LINE = 'rgba(10,12,22,0.62)', FIG_HAIR = '#211a16';
+const unit3 = (v) => V.mul(v, 1 / (V.len(v) || 1));
+const n2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
+const dot2 = (a, b) => a.x * b.x + a.y * b.y;
+function drawBatterFigure(k, col, dy = 0) {
+  const P = (p) => { const q = k.world ? project(p[0], p[1], p[2]) : batterPoint(p); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
+  const c0 = P(k.chest), p0 = P(k.pelvis);
+  if (!c0 || !p0) return;
+  const lod = c0.s > 150 ? 2 : c0.s > 30 ? 1 : 0;   // 크기별 자세함: 2 타자(전부), 1 투수·주자·가까운 수비, 0 먼 수비(단순, 팔다리 12% 굵게)
+  const look = k.plain ? {} : currentLook();   // 투수·수비수(plain)에게는 상점 물건을 입히지 않는다
+  const ax = k.axes ?? { lc: k.left(k.shTurn), fc: k.facing(k.shTurn), lp: k.left(k.hipTurn), fp: k.facing(k.hipTurn) };
+  const Ls = n2(c0.x < view.w / 2 ? 0.35 : -0.35, -1);   // 화면에서 빛이 오는 쪽(위, 경기장 가운데 쪽)
+  const lw = Math.max(0.5, Math.min(2.4, 0.011 * c0.s));
+  const nB = [2, 3, 5][lod];   // 뼈 하나를 몇 칸으로 나눠 윤곽을 만들지
+
+  const stroke = (pts) => {
+    if (!smoothPath(pts)) return;
+    ctx.lineJoin = 'round'; ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
+  };
+  const fill = (pts, color, line = true) => {
+    if (!smoothPath(pts)) return false;
+    ctx.fillStyle = color; ctx.fill();
+    if (line) stroke(pts);
+    return true;
+  };
+  // 3D 두 점 사이를 n칸으로 나눈 화면 점과 반지름(px). prof(t)는 { r, fr(앞쪽 볼록), bk(뒤쪽 볼록) } 미터.
+  // 아주 작게 보이는 사람(먼 수비수)은 실제 굵기면 젓가락처럼 보여서 12% 굵게 그린다
+  const thick = lod === 0 ? 1.12 : 1;
+  const samples = (a, b, n, prof, from = 0, to = 1, skipFirst = false) => {
+    const out = [];
+    for (let i = skipFirst ? 1 : 0; i <= n; i++) {
+      const t = lerp(from, to, i / n), q = P(V.add(a, V.mul(V.sub(b, a), t)));
+      if (!q) continue;
+      const pr = prof(i / n), m = q.s * thick;
+      out.push({ x: q.x, y: q.y, r: pr.r * m, fr: (pr.fr ?? 0) * m, bk: (pr.bk ?? 0) * m });
+    }
+    return out;
+  };
+  // 3D 방향 d가 화면에서 어느 쪽인지(길이는 화면에 누운 정도, 카메라 쪽을 보면 0에 가깝다)
+  const screenDir = (p, d) => {
+    const a = P(p), b = P(V.add(p, V.mul(d, 0.1)));
+    if (!a || !b) return null;
+    const m = Math.min(1, Math.hypot(b.x - a.x, b.y - a.y) / (0.1 * a.s)), u = n2(b.x - a.x, b.y - a.y);
+    return { x: u.x * m, y: u.y * m };
+  };
+
+  // 이어진 팔다리 윤곽. 왼쪽(L)·오른쪽(R) 가장자리, 가운데 줄(C), 닫힌 윤곽을 돌려준다. caps는 시작·끝을 둥글게 내미는 정도
+  function limb(pts, front, caps = [0.8, 0.8]) {
+    const L = [], R = [], C = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)], d = n2(b.x - a.x, b.y - a.y), n = { x: -d.y, y: d.x };
+      const q = pts[i], f = front ? dot2(n, front) : 0;
+      const rl = q.r + (f > 0 ? q.fr * f : q.bk * -f), rr = q.r + (f > 0 ? q.bk * f : q.fr * -f);
+      L.push({ x: q.x + n.x * rl, y: q.y + n.y * rl }); R.push({ x: q.x - n.x * rr, y: q.y - n.y * rr }); C.push({ x: q.x, y: q.y, n, rl, rr });
+    }
+    const e = pts[pts.length - 1], e2 = pts[pts.length - 2] ?? e, de = n2(e.x - e2.x, e.y - e2.y);
+    const s0 = pts[0], s1 = pts[1] ?? s0, ds = n2(s0.x - s1.x, s0.y - s1.y);
+    const outline = [...L, { x: e.x + de.x * e.r * caps[1], y: e.y + de.y * e.r * caps[1] }, ...R.slice().reverse(), { x: s0.x + ds.x * s0.r * caps[0], y: s0.y + ds.y * s0.r * caps[0] }];
+    return { L, R, C, outline };
   }
-  parts.push({ depth: k.chest[2], draw: () => {
-    const jersey = hull([...ring(k.chest, lc, fc, 0.21, 0.12, 0), ...ring(k.chest, lc, fc, 0.13, 0.09, 0.07), ...ring(k.pelvis, lp, fp, 0.16, 0.11, 0.1)]);
-    smoothShape(jersey, col('jersey'));
-    smoothShape(hull([...ring(k.pelvis, lp, fp, 0.165, 0.115, 0.1), ...ring(k.pelvis, lp, fp, 0.15, 0.11, -0.06)]), col('pants'));
-    smoothShape(hull([...ring(k.pelvis, lp, fp, 0.167, 0.117, 0.115), ...ring(k.pelvis, lp, fp, 0.167, 0.117, 0.085)]), col('belt'));
-    if (detail && !k.plain) drawBackNumber(k, P, col, jersey);
-    seg(V.add(k.chest, [0.02, 0.05, 0]), V.add(k.head, [0, -0.08, 0]), 0.1, 0.09, 'skin');
-    // 헬멧: 챙은 투수 쪽을 향해 머리 뒤로 조금만 보인다
+  // 빛 반대쪽 가장자리에 그늘 띠(가운데를 조금 넘는 데까지)
+  function shadeLimb(m) {
+    if (m.C.length < 2) return;
+    const mid = m.C[Math.floor(m.C.length / 2)], leftLit = dot2(mid.n, Ls) > 0, sgn = leftLit ? -1 : 1;
+    const outer = leftLit ? m.R : m.L;
+    const inner = m.C.map((c) => { const r = (leftLit ? c.rr : c.rl) * 0.12; return { x: c.x + sgn * c.n.x * r, y: c.y + sgn * c.n.y * r }; });
+    if (smoothPath([...outer, ...inner.reverse()])) { ctx.fillStyle = FIG_SHADE; ctx.fill(); }
+  }
+
+  function drawLeg(side, far) {
+    const hipIn = V.add(k.pelvis, V.add(V.mul(V.sub(k.hips[side], k.pelvis), 0.78), [0, -0.03, 0]));   // 다리 윤곽은 엉덩이 관절보다 조금 안쪽·아래에서 시작(엉덩이가 넓어 보이지 않게)
+    const knee = k.knees[side], foot = k.feet[side], front = screenDir(knee, ax.fp);
+    const pts = [
+      ...samples(hipIn, knee, nB, (t) => ({ r: lerp(0.088, 0.06, t), fr: 0.013 * Math.sin(Math.PI * t), bk: 0.005 * Math.sin(Math.PI * t) })),
+      ...samples(knee, foot, nB, (t) => ({ r: lerp(0.06, 0.054, t) + (t > 0.85 ? 0.004 : 0), bk: 0.012 * Math.sin(Math.PI * Math.min(1, t * 1.25)) }), 0, 0.64, true),   // 바지는 정강이 64%까지
+    ];
+    const sock = samples(knee, foot, Math.max(2, nB - 1), (t) => ({ r: lerp(0.045, 0.036, t), bk: 0.006 * (1 - t) }), 0.6, 0.93);
+    if (sock.length > 1) { const m = limb(sock, front); fill(m.outline, col('accent')); shadeLimb(m); }
+    const m = limb(pts, front);
+    fill(m.outline, col(far ? 'pantsShade' : 'pants'), false);
+    shadeLimb(m);
+    if (lod >= 1 && m.C.length > 2) {   // 바지 바깥 옆줄(보조색): 골반에서 더 먼 쪽 가장자리를 따라간다
+      const mid = Math.floor(m.C.length / 2), off = (q) => Math.abs(dot2({ x: q.x - p0.x, y: q.y - p0.y }, perp));
+      const outerL = off(m.L[mid]) > off(m.R[mid]), sgn = outerL ? 1 : -1;
+      const line = m.C.map((c) => { const r = (outerL ? c.rl : c.rr) * 0.8; return { x: c.x + sgn * c.n.x * r, y: c.y + sgn * c.n.y * r }; });
+      ctx.strokeStyle = col('accent'); ctx.lineWidth = Math.max(0.6, 0.009 * c0.s); ctx.lineJoin = 'round';
+      ctx.beginPath(); line.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.stroke();
+    }
+    stroke(m.outline);
+    drawShoe2(side);
+  }
+  // 신발: 엉덩이가 보는 쪽(조금 바깥)으로 놓인 0.27m 스파이크를 3D로 그린다. 상점 신발(fx)은 지금 그림 그대로
+  function drawShoe2(side) {
+    const f = P(k.feet[side]);
+    if (!f) return;
+    const fx = fxOf(look.shoe), kicked = k.soles?.[side] > 0.05;   // 뒤로 차올린 발은 발끝이 아래로 서서 땅에 누운 신발 모양이 맞지 않는다
+    if (fx) drawShoe(f, f.s, k.front ?? batSide(), col, fx, true);
+    else if (kicked) ellipseAt(f, 0.06 * f.s, 0.12 * f.s, col('shoe'));
+    else {
+      const F = k.feet[side], out = side === 'l' ? ax.lp : V.mul(ax.lp, -1);
+      const d = unit3([ax.fp[0] + out[0] * 0.25, 0, ax.fp[2] + out[2] * 0.25]), w = unit3([out[0], 0, out[2]]), y0 = F[1] - 0.05;
+      const at = (fwd, lat, up) => P([F[0] + d[0] * fwd + w[0] * lat, y0 + up, F[2] + d[2] * fwd + w[2] * lat]);
+      const sole = [at(-0.07, 0.032, 0), at(0.03, 0.046, 0), at(0.14, 0.042, 0), at(0.185, 0.012, 0.012), at(0.185, -0.012, 0.012), at(0.14, -0.042, 0), at(0.03, -0.046, 0), at(-0.07, -0.032, 0), at(-0.085, 0, 0.006)];
+      const top = [at(-0.07, 0.03, 0.13), at(0.0, 0.036, 0.12), at(0.09, 0.03, 0.06), at(0.09, -0.03, 0.06), at(0.0, -0.036, 0.12), at(-0.07, -0.03, 0.13)];
+      fill(hull([...sole, ...top]), col('shoe'));
+      if (lod >= 1) {   // 밑창: 아래 가장자리에 옅은 띠
+        const lowS = sole.filter(Boolean), lowT = lowS.map((p) => ({ x: p.x, y: p.y - 0.012 * f.s }));
+        if (smoothPath([...lowS, ...lowT.reverse()])) { ctx.fillStyle = 'rgba(255,255,255,0.16)'; ctx.fill(); }
+      }
+    }
+    if (kicked) ellipseAt({ x: f.x, y: f.y - 0.03 * f.s }, 0.05 * f.s, 0.1 * f.s, `rgba(232,228,218,${(0.95 * k.soles[side]).toFixed(2)})`);   // 차올린 발의 밑창
+  }
+
+  function drawArm(side, far) {
+    const sh = V.add(k.chest, V.mul(V.sub(k.shoulders[side], k.chest), 0.92)), el = k.elbows[side];
+    let hand = k.hands?.[side] ?? k.hand;
+    if (!k.hands && !k.noBat && side === 'r') hand = V.add(k.hand, V.mul(V.sub(k.tip, k.hand), 0.1));   // 타자 오른손(위 손)은 왼손보다 배트 끝 쪽
+    const wrist = V.add(el, V.mul(V.sub(hand, el), 0.88));
+    const upper = (t) => ({ r: lerp(0.058, 0.041, t) });   // 어깨(삼각근)에서 팔꿈치로 가늘어진다
+    const pts = [
+      ...samples(sh, el, nB, upper),
+      ...samples(el, wrist, nB, (t) => ({ r: t < 0.3 ? lerp(0.041, 0.046, t / 0.3) : lerp(0.046, 0.029, (t - 0.3) / 0.7) }), 0, 1, true),   // 아래팔은 팔꿈치 아래가 볼록
+    ];
+    const arm = limb(pts, null);
+    fill(arm.outline, col('sleeve'), false);
+    shadeLimb(arm);
+    stroke(arm.outline);
+    // 상의 반소매: 팔과 같은 굵기(조금 헐렁하게)로 어깨에서 위팔 55%까지, 끝은 평평하게. 팔 윤곽으로 잘라(clip) 칠하면 폰에서 장면 수가 10%쯤 줄었다
+    const slv = samples(sh, el, Math.max(2, nB - 1), (t) => ({ r: upper(t * 0.55).r + 0.004 }), 0, 0.55);
+    if (slv.length > 1) {
+      const m = limb(slv, null, [0.8, 0]);
+      fill(m.outline, col(far ? 'shade' : 'jersey'), false);
+      shadeLimb(m);
+      // 윤곽선은 소매 옆선에만. 어깨 쪽 둥근 끝까지 그으면 위팔이 카메라 쪽을 볼 때(타자 준비 자세) 어깨에 공 두 개가 붙은 것처럼 보였다
+      for (const edge of [m.L, m.R]) {
+        ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.lineJoin = 'round';
+        ctx.beginPath(); edge.slice(1).forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.stroke();
+      }
+      // 소매 끝 단(보조색 줄)은 소매가 옆으로 누워 보일 때만. 끝에서 본 소매를 가로지르면 끈처럼 보였다
+      const e = m.L.length - 1, s0 = slv[0], s1 = slv[slv.length - 1];
+      if (lod >= 1 && e > 0 && Math.hypot(s1.x - s0.x, s1.y - s0.y) > 1.6 * s1.r) {
+        ctx.strokeStyle = col('accent'); ctx.lineWidth = Math.max(0.6, 0.008 * c0.s);
+        ctx.beginPath(); ctx.moveTo(m.L[e].x, m.L[e].y); ctx.lineTo(m.R[e].x, m.R[e].y); ctx.stroke();
+      }
+    }
+    const hp = k.hands ? P(hand) : null;   // 타자 손은 배트와 함께 그린다
+    if (!hp) return;
+    if (k.mitt === side) {   // 투수·수비수 글러브: 손목에서 손 쪽으로 누운 타원과 주머니
+      const wp = P(wrist), ang = wp ? Math.atan2(hp.y - wp.y, hp.x - wp.x) : 0;
+      ctx.save(); ctx.translate(hp.x, hp.y); ctx.rotate(ang);
+      ctx.fillStyle = col('glove'); ctx.beginPath(); ctx.ellipse(0.02 * hp.s, 0, 0.11 * hp.s, 0.095 * hp.s, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
+      ctx.fillStyle = col('pocket'); ctx.beginPath(); ctx.ellipse(0.03 * hp.s, 0.01 * hp.s, 0.055 * hp.s, 0.05 * hp.s, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    } else {
+      ellipseAt(hp, 0.036 * hp.s, 0.04 * hp.s, col(k.bare ? 'skin' : 'glove'));
+      if (k.ball === side) ellipseAt({ x: hp.x, y: hp.y - 0.03 * hp.s }, 0.037 * hp.s, 0.037 * hp.s, '#ffffff');
+    }
+  }
+
+  // 몸통 단면: 골반(v=0)에서 가슴(v=1, 어깨 높이)까지 축을 섞어 돌리고, 화면에서 척추에 수직인 방향으로 가장 바깥 두 점을 고른다.
+  // extra는 그 높이에서 윤곽에 넣을 3D 점과 반지름(어깨 관절의 삼각근)
+  const spine = unit3(V.sub(k.chest, k.pelvis)), spineLen = V.len(V.sub(k.chest, k.pelvis));
+  const sp = n2(c0.x - p0.x, c0.y - p0.y), perp = { x: -sp.y, y: sp.x }, N = [8, 10, 14][lod];
+  const level = (v, w, d, extra = []) => {
+    const t = clamp(v, 0, 1), a = unit3(V.add(V.mul(ax.lp, 1 - t), V.mul(ax.lc, t))), f = unit3(V.add(V.mul(ax.fp, 1 - t), V.mul(ax.fc, t)));
+    const c = V.add(k.pelvis, V.mul(spine, spineLen * v));
+    let lo = null, hi = null, lv = Infinity, hv = -Infinity;
+    const take = (q) => { const pr = dot2(q, perp); if (pr < lv) { lv = pr; lo = q; } if (pr > hv) { hv = pr; hi = q; } };
+    for (let i = 0; i < N; i++) {
+      const ang = i / N * Math.PI * 2, q = P(V.add(c, V.add(V.mul(a, w * Math.cos(ang)), V.mul(f, d * Math.sin(ang)))));
+      if (q) take(q);
+    }
+    for (const [p3, r] of extra) {
+      const q = P(p3);
+      if (q) for (const e of [-1, 1]) take({ x: q.x + perp.x * r * q.s * e, y: q.y + perp.y * r * q.s * e, s: q.s });
+    }
+    return { lo, hi, f };
+  };
+  const outlineOf = (lvls) => [...lvls.map((l) => l.hi), ...lvls.slice().reverse().map((l) => l.lo)];
+  const frontLine = (lvls, sgn) => lvls.map(([v, d]) => P(V.add(V.add(k.pelvis, V.mul(spine, spineLen * v)), V.mul(level(v, 0.01, d).f, sgn * d)))).filter(Boolean);   // 앞(+1)·뒤(-1) 가운데 줄
+  function shadeTorso(lvls) {   // 빛 반대쪽 30%에 그늘
+    const hiLit = dot2(perp, Ls) > 0, outer = lvls.map((l) => (hiLit ? l.lo : l.hi)), other = lvls.map((l) => (hiLit ? l.hi : l.lo));
+    const inner = outer.map((p, i) => (p && other[i] ? { x: lerp(p.x, other[i].x, 0.3), y: lerp(p.y, other[i].y, 0.3) } : null));
+    if (smoothPath([...outer, ...inner.reverse()])) { ctx.fillStyle = FIG_SHADE; ctx.fill(); }
+  }
+  function backDetail() {   // 등이 보이면(타자처럼 크게 보일 때만) 척추 골과 바지 위로 접힌 셔츠 주름
+    const camL = k.world ? [cam.x, cam.y, cam.z] : [-batterShift(), cam.y, cam.z];   // 타자 뼈대 좌표에서 본 카메라
+    const vis = V.dot(V.mul(ax.fc, -1), unit3(V.sub(camL, k.chest)));
+    if (vis < 0.15) return;
+    const a = Math.min(1, (vis - 0.15) / 0.3), line = frontLine([[1.04, 0.1], [0.86, 0.128], [0.66, 0.12], [0.42, 0.108], [0.26, 0.112]], -1);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = `rgba(0,0,0,${(0.2 * a).toFixed(3)})`;
+    if (line.length > 2) { ctx.lineWidth = 0.012 * c0.s; ctx.beginPath(); line.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.stroke(); }
+    ctx.lineWidth = 0.007 * c0.s;
+    for (const [v, u0, u1, sag] of [[0.3, 0.22, 0.62, 0.012], [0.34, 0.45, 0.85, 0.01], [0.27, 0.55, 0.78, 0.008]]) {
+      const l = level(v, 0.155, 0.11);
+      if (!l.lo || !l.hi) continue;
+      const A = { x: lerp(l.lo.x, l.hi.x, u0), y: lerp(l.lo.y, l.hi.y, u0) }, B = { x: lerp(l.lo.x, l.hi.x, u1), y: lerp(l.lo.y, l.hi.y, u1) };
+      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.quadraticCurveTo((A.x + B.x) / 2 + sp.x * sag * c0.s, (A.y + B.y) / 2 + sp.y * sag * c0.s, B.x, B.y); ctx.stroke();
+    }
+  }
+  function drawTorso() {
+    const delt = (up, r) => ['l', 'r'].map((side) => [V.add(V.add(k.chest, V.mul(V.sub(k.shoulders[side], k.chest), 0.92)), V.mul(spine, up)), r]);   // 어깨 관절(삼각근)
+    // [v, 단면 반폭, 반두께, 더할 점]. 허리(0.42)가 가슴(0.86)보다 좁고, 1.07~1.16은 어깨에서 목으로 내려오는 승모근 비탈
+    const J = (lod === 0 ? [[0.2, 0.158, 0.11], [0.6, 0.168, 0.118], [1.0, 0.19, 0.125, delt(0, 0.05)], [1.16, 0.075, 0.06]]
+      : [[0.2, 0.16, 0.112], [0.42, 0.152, 0.108], [0.66, 0.172, 0.12], [0.86, 0.186, 0.128], [1.0, 0.19, 0.125, delt(0, 0.055)], [1.07, 0.16, 0.1, delt(0.03, 0.04)], [1.16, 0.075, 0.06]])
+      .map(([v, w, d, ex]) => level(v, w, d, ex));
+    const Pn = [[-0.16, 0.15, 0.11], [-0.04, 0.172, 0.125], [0.1, 0.168, 0.118], [0.24, 0.162, 0.114]].map(([v, w, d]) => level(v, w, d));
+    const jersey = outlineOf(J);
+    fill(jersey, col('jersey'), false);
+    shadeTorso(J);
+    if (lod === 2) backDetail();
+    stroke(jersey);
+    fill(outlineOf(Pn), col('pants'));
+    shadeTorso(Pn);
+    const b1 = level(0.17, 0.168, 0.12), b2 = level(0.235, 0.166, 0.118);   // 벨트
+    if (b1.lo && b1.hi && b2.lo && b2.hi) { ctx.fillStyle = col('belt'); ctx.beginPath(); ctx.moveTo(b1.lo.x, b1.lo.y); ctx.lineTo(b1.hi.x, b1.hi.y); ctx.lineTo(b2.hi.x, b2.hi.y); ctx.lineTo(b2.lo.x, b2.lo.y); ctx.closePath(); ctx.fill(); }
+    if (!k.plain && lod >= 1) drawBackNumber(k, P, col, jersey);   // 등번호는 새 상의 윤곽 안으로 자른다
+    if (k.world && lod >= 1 && V.dot(ax.fc, unit3(V.sub([cam.x, cam.y, cam.z], k.chest))) > 0.25) {   // 앞이 보이면 단추선(보조색). 높이마다 그 높이의 앞면을 따라가서 몸이 꼬이면 같이 휜다
+      const line = frontLine([[1.1, 0.09], [0.86, 0.128], [0.66, 0.12], [0.42, 0.108], [0.24, 0.114]], 1);
+      if (line.length > 2) {
+        ctx.strokeStyle = col('accent'); ctx.lineWidth = Math.max(0.6, 0.012 * c0.s); ctx.lineJoin = 'round';
+        ctx.beginPath(); line.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.stroke();
+      }
+    }
+  }
+
+  function drawNeckHead() {
+    const up = unit3(V.sub(k.head, k.chest));
+    const neck = limb(samples(V.add(k.chest, V.mul(up, 0.1)), V.add(k.head, V.mul(up, -0.07)), 2, (t) => ({ r: lerp(0.06, 0.053, t) })), null);
+    fill(neck.outline, col('skin'));
+    shadeLimb(neck);
+    if (k.cap) capHead(); else helmet();
+  }
+  // 투수·수비수: 얼굴(폭 0.15m), 야구 모자, 이마 높이의 챙. 얼굴이 카메라 반대쪽이면 챙을 먼저, 뒷머리를 그린다
+  function capHead() {
     const h = P(k.head);
-    if (h && k.cap) drawCapHead(h, P(k.brim), col, detail);
-    else if (h) drawHelmet(h, h.s, P(k.brim ?? V.add(k.head, [0.03, -0.04, 0.12])), col, fxOf(look.helmet), detail, k.side ?? batSide());
-  } });
+    if (!h) return;
+    const s = h.s, b = k.brim ? P(k.brim) : null;
+    const front = k.brim ? V.dot(unit3(V.sub(k.brim, k.head)), unit3(V.sub([cam.x, cam.y, cam.z], k.head))) : 1;
+    const brim = () => {   // 챙은 이마 높이(챙 점은 머리 가운데보다 낮아서 그 높이를 쓰면 눈을 가렸다)
+      if (b) ellipseAt({ x: lerp(h.x, b.x, 0.8), y: h.y - 0.045 * s }, lerp(0.05, 0.088, Math.abs(front)) * s, 0.022 * s, col('brim'));
+    };
+    if (front < 0) brim();
+    ellipseAt({ x: h.x, y: h.y + 0.005 * s }, 0.074 * s, 0.098 * s, col('skin'));
+    if (lod >= 1) {
+      if (front < -0.15) ellipseAt({ x: h.x, y: h.y + 0.02 * s }, 0.07 * s, 0.07 * s, FIG_HAIR);
+      else {
+        if (front > 0.3) for (const e of [-1, 1]) ellipseAt({ x: h.x + e * 0.074 * s, y: h.y + 0.012 * s }, 0.013 * s, 0.022 * s, col('skin'));   // 귀
+        ctx.fillStyle = 'rgba(40,20,10,0.14)';   // 챙 바로 밑 그늘(진하면 선글라스처럼 보였다)
+        ctx.beginPath(); ctx.ellipse(h.x + (b ? (b.x - h.x) * 0.3 : 0), h.y - 0.04 * s, 0.07 * s, 0.024 * s, 0, 0, Math.PI); ctx.fill();
+      }
+    }
+    ctx.fillStyle = col('helmet'); ctx.beginPath(); ctx.ellipse(h.x, h.y - 0.035 * s, 0.082 * s, 0.072 * s, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
+    if (front >= 0) brim();
+  }
+  // 타자·주자 헬멧(폭 0.21m): 투수 쪽(챙 쪽) 귀 덮개, 반대쪽 귀와 헬멧 아래 뒷머리, 아래쪽 반달 그늘과 위쪽 광택. 동물 헬멧(fx)은 지금 그림을 0.86배로
+  function helmet() {
+    const h = P(k.head);
+    if (!h) return;
+    const s = h.s, side = k.side ?? batSide(), b = P(k.brim ?? V.add(k.head, [0.03, -0.04, 0.12])), fx = fxOf(look.helmet);
+    if (fx) { drawHelmet(h, s * 0.86, b, col, fx, true, side); return; }
+    const c = col('helmet'), bd = b ? Math.sign(b.x - h.x) || side : side, rx = 0.106 * s, ry = 0.112 * s, cy = h.y - 0.012 * s;
+    if (lod >= 1) {
+      ellipseAt({ x: h.x - bd * 0.012 * s, y: h.y + 0.08 * s }, 0.062 * s, 0.032 * s, FIG_HAIR);
+      ellipseAt({ x: h.x - bd * 0.083 * s, y: h.y + 0.04 * s }, 0.017 * s, 0.03 * s, col('skin'));
+    }
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(h.x + bd * 0.056 * s, h.y + 0.045 * s, 0.05 * s, 0.07 * s, bd * 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
+    if (b) ellipseAt(b, 0.085 * b.s, 0.03 * b.s, c);
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(h.x, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = FIG_SHADE; ctx.beginPath();   // 반달 그늘: 아래 반 바깥 테두리를 돌고 안쪽 호로 돌아온다(자르기 없이 헬멧 안에만)
+    ctx.ellipse(h.x, cy, rx, ry, 0, 0, Math.PI);
+    ctx.ellipse(h.x, cy + ry * 0.12, rx * 0.98, ry * 0.5, 0, Math.PI, 0, true);
+    ctx.fill();
+    ellipseAt({ x: h.x + Ls.x * rx * 0.4, y: cy - ry * 0.5 }, rx * 0.38, ry * 0.2, 'rgba(255,255,255,0.35)');
+  }
+
+  const parts = [];
+  for (const side of ['l', 'r']) {   // 깊이(카메라에서 먼 것부터): 다리는 무릎, 팔은 팔꿈치, 몸통은 가슴
+    const other = side === 'l' ? 'r' : 'l', far = k.world ? k.shoulders[side][2] > k.shoulders[other][2] : side === 'l';
+    parts.push({ depth: k.knees[side][2], draw: () => drawLeg(side, far) });
+    parts.push({ depth: k.elbows[side][2], draw: () => drawArm(side, far) });
+  }
+  parts.push({ depth: k.chest[2], draw: () => { drawTorso(); drawNeckHead(); } });
   if (!k.noBat) parts.push({ depth: Math.min(k.hand[2], k.tip[2]) - 0.01, draw: () => {
     const hp = P(k.hand), tp = P(k.tip), h2 = P(V.add(k.hand, V.mul(V.sub(k.tip, k.hand), 0.1)));
     if (!hp || !tp) return;
-    drawBat(hp, tp, 0.034 * hp.s, 0.068 * tp.s, tp.s, col, fxOf(look.bat), detail);
-    ellipseAt(hp, 0.05 * hp.s, 0.05 * hp.s, col('glove'));
-    if (h2) ellipseAt(h2, 0.05 * h2.s, 0.05 * h2.s, col('glove'));
+    drawBat(hp, tp, 0.034 * hp.s, 0.068 * tp.s, tp.s, col, fxOf(look.bat), true);
+    const ang = Math.atan2(tp.y - hp.y, tp.x - hp.x);
+    for (const q of [hp, h2]) {   // 장갑 낀 두 손이 배트를 감싸 쥔다(손가락 마디 두 줄)
+      if (!q) continue;
+      ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(ang);
+      ctx.fillStyle = col('glove'); ctx.beginPath(); ctx.ellipse(0, 0, 0.047 * q.s, 0.042 * q.s, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
+      if (lod === 2) { ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = Math.max(1, 0.005 * q.s); for (const o of [-0.015, 0.015]) { ctx.beginPath(); ctx.moveTo(o * q.s, -0.035 * q.s); ctx.lineTo(o * q.s, 0.035 * q.s); ctx.stroke(); } }
+      ctx.restore();
+    }
   } });
   parts.sort((a, b) => b.depth - a.depth).forEach((p) => p.draw());
+}
+// 타자·주자 발밑 그림자: 골반 아래와 두 발 아래(뜬 발은 옅게). 전에는 몸을 빛 테두리 색으로 한 번 더 그렸다
+function drawFigureShadow(k) {
+  const G = (p) => (k.world ? project(p[0], 0, p[2]) : batterPoint([p[0], 0, p[2]]));
+  for (const [p, rx, ry] of [[k.pelvis, 0.34, 0.06], [k.feet.l, 0.15, 0.05], [k.feet.r, 0.15, 0.05]]) {
+    const g = G(p), lift = Math.max(0, p[1] - (p === k.pelvis ? 0.9 : 0.1)), a = 0.16 * Math.max(0, 1 - lift * 2);
+    if (g && a > 0.01) ellipseAt(g, rx * g.s, ry * g.s, `rgba(0,0,0,${a.toFixed(3)})`);
+  }
 }
 
 const SWING_GLOW = { fire: '255,140,50', lightning: '120,200,255', ice: '200,240,255' };
@@ -2262,7 +2510,7 @@ function drawBatter(tau, pre = null) {
     const rgb = SWING_GLOW[fxOf(currentLook().bat)];   // 불꽃·번개·얼음 배트는 잔상도 그 색으로 남는다
     if (band.length > 2) fill3d(band, `rgba(${rgb ?? '255,255,255'},${(rgb ? 0.48 : 0.34) * (1 - tau / 0.18)})`);
   }
-  drawBatterFigure(k, () => BATTER_COLOR.rim, -2);
+  drawFigureShadow(k);
   const C = batterColors();
   drawBatterFigure(k, (name) => C[name], 0);
 }
@@ -2513,7 +2761,7 @@ function shiftSkeleton(k, dx) {
 function drawRunner(run) {
   const k = shiftSkeleton(runnerSkeleton(run), run.drawShift), C = batterColors(), dust = runDust(run);
   dust.filter((d) => d.z > run.z).forEach(drawDust);   // 주자보다 먼 먼지는 주자 뒤에
-  drawBatterFigure(k, () => BATTER_COLOR.rim, -2);
+  drawFigureShadow(k);
   drawBatterFigure(k, (name) => C[name], 0);
   dust.filter((d) => d.z <= run.z).forEach(drawDust);
 }
@@ -3888,7 +4136,7 @@ function backNumberFit(k, P, str) {
   const sd = k.world ? 1 : batSide(), wx = k.world ? at[0] : sd * (at[0] + batterShift()), d = [cam.x - wx, cam.y - at[1], cam.z - at[2]], len = V.len(d);
   const vis = (sd * -fc[0] * d[0] - fc[2] * d[2]) / len;   // 등 방향과 카메라 방향이 얼마나 같은지(0~1). 주자(화면 기준 좌표)는 뒤집지 않는다
   if (vis <= 0.2) return null;
-  const a = P(V.add(at, V.mul(lc, 0.18))), b = P(V.add(at, V.mul(lc, -0.18)));   // 그 높이의 등 양 끝(상의 폭 0.36m)
+  const a = P(V.add(at, V.mul(lc, 0.17))), b = P(V.add(at, V.mul(lc, -0.17)));   // 그 높이의 등 양 끝(상의 폭 0.34m, drawBatterFigure의 몸통 단면)
   if (!a || !b) return null;
   const size = Math.max(10, 0.26 * q.s), backW = Math.abs(a.x - b.x);
   ctx.font = font(size, 900);
@@ -4081,7 +4329,7 @@ function drawShopPreview(box) {
   roundRect(box.x, box.y, box.w, box.h, 14); ctx.clip();
   if (zoom) { ctx.translate(box.x + box.w / 2, box.y + box.h / 2); ctx.scale(sc, sc); ctx.translate(-(minX + maxX) / 2, -(minY + maxY) / 2); }
   else { ctx.translate(box.x + box.w * (sh.tab === 'trail' ? 0.3 : 0.5), box.y + box.h * 0.05); ctx.scale(sc, sc); ctx.translate(-(minX + maxX) / 2, -minY); }
-  drawBatterFigure(k, () => BATTER_COLOR.rim, -2 * Math.min(1, 1 / sc));   // 크게 당기면 빛 테두리도 같이 두꺼워지지 않게
+  drawFigureShadow(k);
   const C = batterColors();
   drawBatterFigure(k, (name) => C[name], 0);
   ctx.restore();
