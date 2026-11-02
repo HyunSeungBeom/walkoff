@@ -1006,10 +1006,8 @@ test.describe('화면', () => {
     const r = await page.evaluate(() => { const o = walkoff.game.outcome; return { kind: o.kind, streak: o.streak, bonus: o.streakBonus, perfect: o.perfect, gained: walkoff.game.gained }; });
     expect(r).toMatchObject({ kind: 'hr', streak: 2, bonus: 500 });
     expect(r.gained).toBe(1000 + (r.perfect ? 100 : 0) + 500);
-    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.3);
-    const texts = await drawnTexts(page);
-    expect(texts).toContain('백투백 홈런!');
-    expect(texts).toContain('연속 홈런 +500');
+    // 결과 카드는 가운데 전광판이 HOMERUN을 띄운 뒤에 나온다(홈런은 따라가는 카메라가 돌아온 뒤)
+    await expect.poll(async () => { const t = await drawnTexts(page); return t.includes('백투백 홈런!') && t.includes('연속 홈런 +500'); }, { timeout: 12_000 }).toBe(true);
     await expect.poll(() => page.evaluate(() => window.roars)).toEqual([2, 3]);   // 백투백은 끝내기만큼 큰 함성
     expect(errors).toEqual([]);
   });
@@ -2016,6 +2014,33 @@ test.describe('따라가는 카메라', () => {
     });
     expect(await page.evaluate(() => walkoff.game.outcome.type)).toBe('ground');
     for (let i = 0; i < 10; i++) { await page.waitForTimeout(150); expect(await atHome(page)).toBe(true); }
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('가운데 큰 전광판', () => {
+  test('투구 중에는 움직이지 않고(공이 올 때 깜빡이면 타이밍을 방해한다) 위쪽 점수 패널 아래에 있고, 홈런 결과가 뜨면 HOMERUN이 나온다(seed 42 첫 공은 홈런)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    const snap = () => page.evaluate(() => {   // 전광판 자리 픽셀의 해시
+      const R = walkoff.scoreboardRect(), c = document.querySelector('canvas'), d = c.width / walkoff.view.w;
+      const img = c.getContext('2d').getImageData(Math.round(R.x * d), Math.round(R.y * d), Math.round(R.w * d), Math.round(R.h * d)).data;
+      let h = 0; for (let i = 0; i < img.length; i += 8) h = (h * 31 + img[i]) >>> 0;
+      return { h, top: R.y, w: R.w };
+    });
+    const a = await snap(); await page.waitForTimeout(150); const b = await snap();
+    expect(a.h).toBe(b.h);                    // 투구 중 그대로
+    expect(a.top).toBeGreaterThan(50);        // 위쪽 점수 패널(폰 60px·PC 74px까지)과 거의 안 겹친다
+    expect(a.w).toBeGreaterThan(100);
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    // 홈런은 따라가는 카메라가 타석 시점으로 돌아온 뒤 전광판이 HOMERUN을 한 글자씩 띄우고, 그동안 결과 카드는 숨긴다
+    await page.waitForFunction(() => { const bm = walkoff.boardMoment(); return bm && walkoff.game.resultT > bm.t0 + 0.5 && walkoff.game.resultT < bm.t1 - 0.2; }, null, { timeout: 12_000 });
+    const texts = await drawnTexts(page);
+    expect(['H', 'O', 'M', 'E', 'R', 'U', 'N'].every((ch) => texts.includes(ch))).toBe(true);
+    expect(texts).not.toContain('홈런!');
+    await expect.poll(async () => (await drawnTexts(page)).includes('홈런!'), { timeout: 8_000 }).toBe(true);   // 그 뒤 결과 카드
     expect(errors).toEqual([]);
   });
 });
