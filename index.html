@@ -2914,31 +2914,169 @@ function button(r, label, style) {
 
 const inRect = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
+// ===== 전광판 =====
+// 위쪽 줄을 야구장 LED 전광판처럼 그린다(2026-11-02 사용자 '전광판도 꾸며 줘' → 시안 A). 어두운 패널 안에 왼쪽 로고·모드, 가운데 지난 공·남은 기회
+// 전구 불(아래 번호, 마지막 칸 '끝'), 오른쪽 7세그먼트 숫자(남은 기회 초록·점수 노랑). 끝내기 상황은 팀 점수·9회말·B·S·O·누상, 연습은 구종과 정타 수를
+// 같은 패널에 둔다. 끝내기 찬스·끝내기 상황 안내는 패널 아래 깜빡이는 LED 띠다. 전에는 하늘 위에 동그라미와 글자만 떠 있었다.
+// 패널·불·숫자는 보이는 값(boardView)이 바뀔 때만 따로 그려 두고(board.canvas) 붙인다. 매 화면에는 지금 공 불의 깜빡이는 테두리와 LED 띠만 그린다(폰 성능)
+const LED_AMBER = '#ffb52e', LED_GREEN = '#7ef0a0', LED_OFF = 'rgba(255,181,46,0.09)', BOARD_M = 16;   // BOARD_M: 그려 둔 그림의 빛 번짐 여백(px)
+const SEG7 = { 0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc', 5: 'afgcd', 6: 'afgedc', 7: 'abc', 8: 'abcdefg', 9: 'abcdfg', '-': 'g' };
+const board = { key: '', canvas: null, ring: null, renders: 0 };
+// 전광판에 보이는 값. 결과 글자가 뜨기 전에는 이번 공의 불·점수·끝내기 상황판을 공이 맞기 전 그대로 둔다(1루 간발의 결과가 미리 보이지 않게)
+function boardView() {
+  const early = game.state === 'result' && game.resultT <= game.revealAt, playing = game.state !== 'over' && game.state !== 'title';
+  const mode = game.mode === 'scenario' && game.scn ? 'scenario' : game.mode === 'practice' && game.practice ? 'practice' : 'challenge';
+  const v = { mode, label: { challenge: '10구 도전', scenario: '끝내기 상황', practice: '연습' }[game.mode] ?? '', now: playing ? game.i : -1 };
+  if (mode === 'scenario') {
+    const s = early && game.scnBefore ? game.scnBefore : game.scn, [away, home] = sideNames(), first = game.i === 0 && (game.state === 'windup' || game.state === 'pitch');
+    return { ...v, away, home, sa: s.away, sh: s.home, b: s.count.b, s: s.count.s, o: s.outs, bases: s.bases.map(Boolean), note: first ? `${s.label}. 역전하면 끝내기!` : '' };
+  }
+  if (mode === 'practice') {
+    const pr = game.practice;
+    return { ...v, type: `${typeName(pr.type)}${pr.slow ? ' · 느리게' : ''}`, stat: `정타 ${pr.perfect} / 스윙 ${pr.swings}`, avg: `평균 오차 ${pr.swings ? `${Math.round(pr.sumAbs / pr.swings)}ms` : '-'}` };
+  }
+  const lamps = [];   // 칸 수 = 지난 공 + 남은 기회(볼을 골라내면 한 칸 늘어난다)
+  for (let i = 0; i < game.results.length + game.left; i++) { const res = early && i === game.i ? null : game.results[i]; lamps.push(res ? lightColor(res) : null); }
+  return { ...v, score: game.score - (early ? game.gained : 0), left: game.left, lamps,
+    note: game.lastChance && playing && game.state !== 'result' ? '9회말 2아웃 · 끝내기 찬스 · 점수 2배' : '' };   // 결과 화면에서는 결과 글자와 겹쳐서 뺀다
+}
+function boardLayout() {
+  const m = view.mobile, pw = m ? view.w - 12 : Math.min(940, view.w - 240), ph = m ? 54 : 64;
+  return { m, pw, ph, px: (view.w - pw) / 2, py: m ? 6 : 10, pad: m ? 12 : 18, leftW: m ? 66 : 120 };
+}
 function drawTopBar() {
-  const m = view.mobile, pad = m ? 14 : 22, y = m ? 26 : 32;
-  text('walkoff', pad, y, { size: m ? 18 : 22, weight: 800, align: 'left' });
-  const modeLabel = { challenge: '10구 도전', scenario: '끝내기 상황', practice: '연습' }[game.mode];
-  if (modeLabel) text(modeLabel, pad, y + (m ? 17 : 20), { size: m ? 10 : 12, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'left' });
-  // 결과 글자가 뜨기 전에는 이번 공의 불·점수·끝내기 상황판을 공이 맞기 전 그대로 둔다(1루 간발의 결과가 미리 보이지 않게)
-  const early = game.state === 'result' && game.resultT <= game.revealAt;
-  if (game.mode === 'scenario' && game.scn) { drawScenarioBoard(y, early && game.scnBefore ? game.scnBefore : game.scn); return; }
-  if (game.mode === 'practice' && game.practice) { drawPracticeHeader(y); return; }
-  text((game.score - (early ? game.gained : 0)).toLocaleString(), view.w - pad, y, { size: m ? 18 : 22, weight: 800, align: 'right' });
-  text('점수', view.w - pad, y + (m ? 17 : 20), { size: m ? 10 : 12, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'right' });
-  // 전광판 칸 수 = 지난 공 + 남은 기회. 볼을 골라내면 한 칸 늘어난다
-  const slots = game.results.length + game.left, playing = game.state !== 'over' && game.state !== 'title';
-  const gap = Math.min(m ? 19 : 26, (m ? 190 : 380) / Math.max(9, slots - 1)), rad = Math.min(5.5, gap * 0.3), x0 = view.w / 2 - gap * (slots - 1) / 2;
-  for (let i = 0; i < slots; i++) {
-    const res = early && i === game.i ? null : game.results[i], cx = x0 + i * gap, now = i === game.i && playing;
-    if (res) drawLight(cx, y, now ? rad + 1.5 : rad, lightColor(res));
-    else { ctx.beginPath(); ctx.arc(cx, y, now ? rad + 1.5 : rad, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fill(); }
-    if (now && !res) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); }
-    else if (i === slots - 1 && !res) { ctx.strokeStyle = 'rgba(242,201,76,0.85)'; ctx.lineWidth = 1.5; ctx.stroke(); }   // 마지막 기회(끝내기 찬스) 자리
+  const v = boardView(), L = boardLayout(), key = JSON.stringify([view.w, view.h, view.dpr, v]);
+  if (board.key !== key) { renderBoard(v, L); board.key = key; }
+  ctx.drawImage(board.canvas, L.px - BOARD_M, L.py - BOARD_M, L.pw + 2 * BOARD_M, L.ph + 2 * BOARD_M);
+  const q = board.ring;   // 지금 공 자리: 아직 불이 안 켜졌으면 흰 테두리가 깜빡인다
+  if (q) { ctx.strokeStyle = `rgba(255,255,255,${0.65 + 0.35 * Math.sin(performance.now() / 180)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(q.x, q.y, q.r + 3, 0, Math.PI * 2); ctx.stroke(); }
+  if (v.note) ledNote(v.note, L.py + L.ph + (L.m ? 20 : 24));
+}
+// 보이는 값 v를 board.canvas에 그린다. 패널 왼쪽 위가 (BOARD_M, BOARD_M)이다
+function renderBoard(v, L) {
+  const W = L.pw + 2 * BOARD_M, H = L.ph + 2 * BOARD_M, d = view.dpr;
+  board.canvas ??= document.createElement('canvas');
+  const c = board.canvas;
+  if (c.width !== Math.round(W * d) || c.height !== Math.round(H * d)) { c.width = Math.round(W * d); c.height = Math.round(H * d); }
+  const g = c.getContext('2d'), M = BOARD_M, { m, pw, ph, pad, leftW } = L, cy = M + ph / 2;
+  g.setTransform(d, 0, 0, d, 0, 0); g.clearRect(0, 0, W, H);
+  board.renders++; board.ring = null;
+  const tx = (str, x, y, size, color = '#fff', align = 'center', weight = 800) => { g.font = font(size, weight); g.fillStyle = color; g.textAlign = align; g.textBaseline = 'middle'; g.fillText(str, x, y); };
+  // 패널: 그림자, 위가 조금 밝은 검은 판, 바깥 테두리와 안쪽 홈
+  g.save(); g.shadowColor = 'rgba(0,0,0,0.6)'; g.shadowBlur = 14; g.shadowOffsetY = 3;
+  ledPath(g, M, M, pw, ph, 10);
+  const bg = g.createLinearGradient(0, M, 0, M + ph); bg.addColorStop(0, '#161d2e'); bg.addColorStop(1, '#080b13');
+  g.fillStyle = bg; g.fill(); g.restore();
+  ledPath(g, M + 0.5, M + 0.5, pw - 1, ph - 1, 10); g.strokeStyle = 'rgba(255,255,255,0.14)'; g.lineWidth = 1; g.stroke();
+  ledPath(g, M + 3.5, M + 3.5, pw - 7, ph - 7, 7); g.strokeStyle = 'rgba(0,0,0,0.5)'; g.stroke();
+  // 왼쪽: 로고와 모드
+  const lx = M + pad;
+  tx('walkoff', lx, cy - (m ? 6 : 7), m ? 15 : 19, '#fff', 'left', 900);
+  tx(v.label, lx, cy + (m ? 11 : 13), m ? 9 : 11, LED_AMBER, 'left');
+  const rx = M + pw - pad;
+  if (v.mode === 'scenario') {   // 가운데 팀 점수와 9회말, 오른쪽 B·S·O와 누상
+    const cx = M + pw / 2, h = m ? 20 : 26;
+    seg7(g, String(v.sa), cx - (m ? 12 : 16), cy - 3, h, LED_AMBER, 'right');
+    seg7(g, String(v.sh), cx + (m ? 12 : 16), cy - 3, h, LED_AMBER, 'left');
+    tx(':', cx, cy - 3, m ? 16 : 20, 'rgba(255,255,255,0.5)');
+    tx(v.away, cx - (m ? 34 : 50), cy - 3, m ? 11 : 14, '#fff', 'right');
+    tx(v.home, cx + (m ? 34 : 50), cy - 3, m ? 11 : 14, '#fff', 'left');
+    tx('9회말', cx, cy + (m ? 17 : 21), m ? 9 : 10, LED_AMBER);
+    const dd = m ? 8 : 11, dx = rx - dd * 1.4;
+    const base = (x, y, on) => {
+      g.save(); g.translate(x, y); g.rotate(Math.PI / 4); g.fillStyle = on ? LED_AMBER : '#1b2232'; g.shadowColor = LED_AMBER; g.shadowBlur = on ? 8 : 0;
+      g.fillRect(-dd / 2, -dd / 2, dd, dd); g.shadowBlur = 0; g.strokeStyle = 'rgba(255,255,255,0.15)'; g.lineWidth = 1; g.strokeRect(-dd / 2, -dd / 2, dd, dd); g.restore();
+    };
+    base(dx + dd, cy + 1, v.bases[0]); base(dx, cy + 1 - dd, v.bases[1]); base(dx - dd, cy + 1, v.bases[2]);
+    const bx = dx - dd * 2 - (m ? 40 : 58), r = m ? 3.6 : 4.8, step = m ? 10 : 13, rs = m ? 13 : 15;
+    [['B', v.b, 3, LIGHT.hit, cy - rs], ['S', v.s, 2, LIGHT.ball, cy], ['O', v.o, 2, LIGHT.miss, cy + rs]].forEach(([lab, n, max, color, y]) => {
+      tx(lab, bx, y + 1, m ? 9 : 10, 'rgba(255,255,255,0.6)', 'left');
+      for (let i = 0; i < max; i++) ledLamp(g, bx + (m ? 12 : 15) + i * step, y, r, i < n ? color : null);
+    });
+    return;
   }
-  if (playing) text(`남은 기회 ${game.left}`, view.w / 2, y + (m ? 15 : 18), { size: m ? 10 : 11, weight: 600, color: 'rgba(255,255,255,0.6)' });
-  if (game.lastChance && playing) {
-    pill('9회말 2아웃 · 끝내기 찬스 · 점수 2배', view.w / 2, y + (m ? 36 : 44), { size: m ? 12 : 14, bg: 'rgba(200,40,40,0.85)' });
+  if (v.mode === 'practice') {   // 가운데 구종, 오른쪽 정타 수와 평균 오차
+    tx(v.type, M + pw / 2, cy, m ? 15 : 19, '#fff', 'center', 900);
+    tx(v.stat, rx, cy - (m ? 6 : 7), m ? 12 : 15, LED_AMBER, 'right');
+    tx(v.avg, rx, cy + (m ? 11 : 13), m ? 9 : 11, 'rgba(255,255,255,0.5)', 'right', 700);
+    return;
   }
+  // 10구 도전: 오른쪽 점수(7세그먼트), PC는 남은 기회도
+  seg7(g, v.score.toLocaleString(), rx, cy - (m ? 3 : 4), m ? 19 : 26, LED_AMBER);
+  tx('점수', rx, cy + (m ? 17 : 21), m ? 8 : 10, 'rgba(255,255,255,0.45)', 'right', 700);
+  const rightW = m ? 78 : 150;
+  if (!m) {
+    const bx = M + pw - rightW - 70;
+    seg7(g, String(v.left).padStart(2, '0'), bx + 48, cy - 4, 22, LED_GREEN);
+    tx('남은 기회', bx + 30, cy + 21, 10, 'rgba(255,255,255,0.45)', 'center', 700);
+  }
+  // 가운데: 지난 공·남은 기회 불과 번호. 마지막 칸(끝내기 찬스)은 노란 테두리와 '끝'
+  const c0 = M + leftW + (m ? 14 : 30), c1 = M + pw - rightW - (m ? 14 : 110), n = v.lamps.length, y = cy - (m ? 4 : 5);
+  const gap = n > 1 ? Math.min((c1 - c0) / (n - 1), (m ? 6 : 8) * 3.4) : 0, r = Math.min(m ? 6 : 8, gap * 0.36 || 8), x0 = (c0 + c1) / 2 - gap * (n - 1) / 2;
+  v.lamps.forEach((color, i) => {
+    const x = x0 + i * gap, last = i === n - 1;
+    ledLamp(g, x, y, r, color);
+    if (last && !color && i !== v.now) { g.strokeStyle = 'rgba(255,181,46,0.9)'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, r + 3, 0, Math.PI * 2); g.stroke(); }
+    tx(last && !color ? '끝' : String(i + 1), x, y + r + 10, 9, last && !color ? LED_AMBER : 'rgba(255,255,255,0.38)', 'center', 700);
+    if (i === v.now && !color) board.ring = { x: L.px - M + x, y: L.py - M + y, r };   // 화면 좌표(매 화면 깜빡이는 테두리)
+  });
+}
+function ledPath(g, x, y, w, h, r) {
+  g.beginPath(); g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+// 전구 불: 켜지면 가운데가 밝고 빛이 번진다. 꺼진 불도 유리알과 반사가 보인다
+function ledLamp(g, x, y, r, color) {
+  g.save();
+  const gr = g.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.1, x, y, r);
+  if (color) { g.shadowColor = color; g.shadowBlur = r * 2.2; gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.35, color); gr.addColorStop(1, color); }
+  else { gr.addColorStop(0, '#2a3346'); gr.addColorStop(1, '#121825'); }
+  g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  g.shadowBlur = 0; g.strokeStyle = color ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.1)'; g.lineWidth = 1; g.stroke();
+  g.fillStyle = 'rgba(255,255,255,0.45)'; g.beginPath(); g.ellipse(x - r * 0.32, y - r * 0.4, r * 0.28, r * 0.17, -0.5, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+// 7세그먼트 숫자(야구장 전광판처럼 살짝 기울임). 켜진 칸은 빛이 번지고 꺼진 칸은 옅게 보인다. 쉼표는 점에 꼬리를 달아 소수점으로 읽히지 않게. x·y는 기준점(글자 가운데 높이)
+function seg7(g, str, x, y, h, color, align = 'right') {
+  const w = h * 0.52, t = Math.max(1.6, h * 0.13), gap = h * 0.18, comma = h * 0.22, chars = String(str).split('');
+  const widths = chars.map((c) => (c === ',' ? comma : w + gap)), total = widths.reduce((a, b) => a + b, 0) - gap, skew = h * 0.08;
+  let cx = align === 'right' ? x - total : align === 'center' ? x - total / 2 : x;
+  const bar = (x0, y0, x1, y1, on) => {   // 끝이 뾰족한 막대 한 칸
+    const L = Math.hypot(x1 - x0, y1 - y0) || 1, ux = (x1 - x0) / L, uy = (y1 - y0) / L, nx = -uy * t / 2, ny = ux * t / 2, sh = t * 0.5;
+    g.beginPath(); g.moveTo(x0 + ux * 0.6, y0 + uy * 0.6);
+    g.lineTo(x0 + ux * sh + nx, y0 + uy * sh + ny); g.lineTo(x1 - ux * sh + nx, y1 - uy * sh + ny); g.lineTo(x1 - ux * 0.6, y1 - uy * 0.6);
+    g.lineTo(x1 - ux * sh - nx, y1 - uy * sh - ny); g.lineTo(x0 + ux * sh - nx, y0 + uy * sh - ny); g.closePath();
+    g.shadowBlur = on ? h * 0.35 : 0; g.fillStyle = on ? color : LED_OFF; g.fill();
+  };
+  g.save(); g.shadowColor = color;
+  chars.forEach((c, i) => {
+    if (c === ',') {
+      const px = cx + comma * 0.25, py = y + h / 2 - t * 0.2;
+      g.fillStyle = color; g.shadowBlur = h * 0.3;
+      g.beginPath(); g.arc(px, py, t * 0.55, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.moveTo(px + t * 0.5, py); g.lineTo(px - t * 0.5, py + t * 1.5); g.lineTo(px - t * 0.1, py + t * 0.2); g.closePath(); g.fill();
+    } else {
+      const on = SEG7[c] ?? '', Lx = cx, Rx = cx + w, T = y - h / 2, B = y + h / 2, k = (yy) => (y - yy) / h * skew;
+      for (const [sg, a, b] of [['a', [Lx, T], [Rx, T]], ['b', [Rx, T], [Rx, y]], ['c', [Rx, y], [Rx, B]], ['d', [Lx, B], [Rx, B]], ['e', [Lx, y], [Lx, B]], ['f', [Lx, T], [Lx, y]], ['g', [Lx, y], [Rx, y]]]) bar(a[0] + k(a[1]), a[1], b[0] + k(b[1]), b[1], on.includes(sg));
+    }
+    cx += widths[i];
+  });
+  g.restore();
+  return total;
+}
+// 끝내기 찬스·끝내기 상황 안내: 패널 아래 깜빡이는 LED 띠
+function ledNote(str, cy) {
+  const m = view.mobile, size = m ? 12 : 14;
+  ctx.font = font(size, 800);
+  const w = ctx.measureText(str).width + (m ? 34 : 46), h = m ? 24 : 28, blink = 0.7 + 0.3 * Math.sin(performance.now() / 260);
+  ctx.save();
+  roundRect(view.w / 2 - w / 2, cy - h / 2, w, h, 6); ctx.fillStyle = '#12060a'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,70,60,0.75)'; ctx.lineWidth = 1.5; ctx.stroke();
+  for (const e of [-1, 1]) { ctx.fillStyle = `rgba(255,70,60,${blink})`; ctx.beginPath(); ctx.arc(view.w / 2 + e * (w / 2 - 12), cy, 3, 0, Math.PI * 2); ctx.fill(); }
+  ctx.shadowColor = '#ff5a3c'; ctx.shadowBlur = 8;
+  text(str, view.w / 2, cy + 1, { size, weight: 800, color: `rgba(255,214,120,${0.85 + 0.15 * blink})` });
+  ctx.restore();
 }
 
 // 타이밍 막대: 가운데 금색이 정타, 초록이 앞으로 가는 타구, 회색이 파울
@@ -2966,7 +3104,7 @@ function drawResultCard() {
   // 투수 머리 위까지만 쓴다
   const m = view.mobile, k = easeOut((game.resultT - game.revealAt) / 0.25), cx = view.w / 2, hr = r.kind === 'hr';
   ctx.globalAlpha = k;
-  let y = (m ? 78 : 86) + (1 - k) * 10;
+  let y = (m ? 84 : 102) + (1 - k) * 10;   // 위 전광판 패널(폰 60px·PC 74px까지) 아래에서 시작한다
   const title = !hr ? r.name : r.streak >= 3 ? `${r.streak}연속 홈런!` : r.streak === 2 ? '백투백 홈런!' : '홈런!';
   text(title, cx, y, { size: (m ? 32 : 44) * (hr ? 1.3 : 1), weight: 900, color: KIND_COLOR[r.kind], shadow: true });
   y += hr ? (m ? 38 : 48) : (m ? 32 : 40);
@@ -3404,34 +3542,6 @@ function finishScenario() {
 }
 
 // 상단: 점수, 볼·스트라이크·아웃 불(실제 전광판처럼 초록·노랑·빨강), 주자 마름모
-function drawScenarioBoard(y, s = game.scn) {
-  const m = view.mobile, pad = m ? 14 : 22, cx = view.w / 2;
-  const [away, home] = sideNames();
-  text(`${away} ${s.away} : ${s.home} ${home}`, cx, y, { size: m ? 17 : 21, weight: 800 });
-  text('9회말', cx, y + (m ? 18 : 22), { size: m ? 11 : 12, weight: 600, color: 'rgba(255,255,255,0.6)' });
-  const d = m ? 9 : 13, dx = view.w - pad - d * 1.6, dy = y + 4;
-  const base = (x, yy, on) => {
-    ctx.save(); ctx.translate(x, yy); ctx.rotate(Math.PI / 4);
-    ctx.fillStyle = on ? '#f2c94c' : 'rgba(255,255,255,0.2)'; ctx.fillRect(-d / 2, -d / 2, d, d);
-    ctx.restore();
-  };
-  base(dx + d, dy, s.bases[0]); base(dx, dy - d, s.bases[1]); base(dx - d, dy, s.bases[2]);
-  const lx = dx - d * 2 - (m ? 44 : 66), r = m ? 3.5 : 5, step = m ? 11 : 15;
-  const row = (label, n, max, color, yy) => {
-    text(label, lx, yy, { size: m ? 10 : 11, weight: 800, color: 'rgba(255,255,255,0.7)', align: 'left' });
-    for (let i = 0; i < max; i++) {
-      const x = lx + (m ? 13 : 15) + i * step;
-      if (i < n) drawLight(x, yy, r, color);
-      else { ctx.beginPath(); ctx.arc(x, yy, r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fill(); }
-    }
-  };
-  const rs = m ? 11 : 13;
-  row('B', s.count.b, 3, LIGHT.hit, y - rs + 1); row('S', s.count.s, 2, LIGHT.ball, y + 1); row('O', s.outs, 2, LIGHT.miss, y + rs + 1);
-  if (game.i === 0 && (game.state === 'windup' || game.state === 'pitch')) {
-    pill(`${s.label}. 역전하면 끝내기!`, cx, y + (m ? 44 : 52), { size: m ? 12 : 14, bg: 'rgba(200,40,40,0.85)' });
-  }
-}
-
 function drawScenarioOver() {
   const m = view.mobile, cx = view.w / 2, s = game.summary;
   let y = view.h * 0.19;
@@ -3486,15 +3596,6 @@ function setPractice(patch) {
   Object.assign(game.practice, patch);
   game.throws = game.practice.throws;   // 다음 공부터 바뀐 손으로 던진다
   store.set('practice', { type: game.practice.type, slow: game.practice.slow, throws: game.practice.throws });
-}
-
-function drawPracticeHeader(y) {
-  const m = view.mobile, pr = game.practice, cx = view.w / 2;
-  text(`${typeName(pr.type)}${pr.slow ? ' · 느리게' : ''}`, cx, y, { size: m ? 17 : 21, weight: 800 });
-  // 통계는 점수 자리(오른쪽 위)에 둔다. 가운데 아래는 결과 글자가 올라온다
-  const avg = pr.swings ? `${Math.round(pr.sumAbs / pr.swings)}ms` : '-', right = view.w - (m ? 14 : 22);
-  text(`정타 ${pr.perfect} / 스윙 ${pr.swings}`, right, y, { size: m ? 13 : 16, weight: 800, align: 'right' });
-  text(`평균 오차 ${avg}`, right, y + (m ? 17 : 20), { size: m ? 10 : 12, weight: 600, color: 'rgba(255,255,255,0.6)', align: 'right' });
 }
 
 // 공과 공 사이에만 보인다. 공이 날아올 때 누르면 스윙이라서
@@ -4863,7 +4964,7 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board };
 </script>
 </body>
 </html>

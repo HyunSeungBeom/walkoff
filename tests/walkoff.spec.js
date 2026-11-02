@@ -1120,13 +1120,15 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
     await pressAt(page, 0);   // seed 42의 첫 공을 정확히 치면 홈런(1,100점)
     await page.waitForFunction(() => walkoff.game.state === 'result');
-    const before = await page.evaluate(() => ({ score: walkoff.game.score, revealAt: walkoff.game.revealAt, resultT: walkoff.game.resultT }));
+    const before = await page.evaluate(() => ({ score: walkoff.game.score, revealAt: walkoff.game.revealAt, resultT: walkoff.game.resultT, view: walkoff.boardView() }));
     expect(before.score).toBeGreaterThan(0);   // 점수는 맞는 순간 들어가 있지만
     expect(before.resultT).toBeLessThan(before.revealAt);
-    const early = await drawnTexts(page);
-    expect(early).not.toContain(before.score.toLocaleString());   // 화면에는 아직 이전 점수
+    expect(before.view.score).toBe(0);         // 전광판(7세그먼트 숫자)에는 아직 이전 점수
+    expect(before.view.lamps[0]).toBeNull();   // 이번 공 불도 아직 꺼져 있다
     await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.1);
-    expect(await drawnTexts(page)).toContain(before.score.toLocaleString());
+    const after = await page.evaluate(() => walkoff.boardView());
+    expect(after.score).toBe(before.score);
+    expect(after.lamps[0]).toBe('#3ddc6e');    // 홈런은 초록 불
     expect(errors).toEqual([]);
   });
 
