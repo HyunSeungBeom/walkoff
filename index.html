@@ -50,7 +50,7 @@ const REACH_M = 0.2;     // 존 밖으로 이만큼 넘게 빠지면 배트가 �
 const PITCHES = {
   fastball: { name: '직구',     kmh: [146, 153], brk: { x: 0.02, y: 0.06 },  late: 2.0, la: 4,   color: '#ffffff' },
   slider:   { name: '슬라이더', kmh: [134, 140], brk: { x: 0.32, y: -0.08 }, late: 2.6, la: -3,  color: '#7fd1ff' },
-  curve:    { name: '커브',     kmh: [116, 124], brk: { x: 0.16, y: -0.55 }, late: 2.0, la: -6,  color: '#c49bff' },
+  curve:    { name: '커브',     kmh: [116, 124], brk: { x: 0.16, y: -0.55 }, late: 2.0, la: -6, lift: 6, color: '#c49bff' },
   change:   { name: '체인지업', kmh: [125, 131], brk: { x: -0.14, y: -0.24 }, late: 2.2, la: -7, lift: 6, color: '#8ef0a8' },
   fork:     { name: '포크',     kmh: [132, 138], brk: { x: 0.0, y: -0.5 },   late: 3.0, la: -14, lift: 9, color: '#ffb86b' },
 };
@@ -58,7 +58,7 @@ const PITCHES = {
 // 실제 150km 직구는 0.4초 남짓이지만 게임에서는 0.75초쯤으로 늦춘다
 const flightTime = (kmh) => 112 / kmh;
 
-const POINTS = { hr: 1000, double: 500, single: 300, ball: 100 };
+const POINTS = { hr: 1000, triple: 800, double: 500, single: 300, ball: 100 };
 // 10구 모드는 기회 10번. 존 밖 공을 골라내면 그 공은 기회를 쓰지 않는다(기회 +1, 최대 +5)
 // 기회 10번. 볼(존 밖 공을 참음)은 기회를 쓰지 않는다(2026-10-29 사용자 결정으로 추가 기회 상한 5번을 없앰).
 // 투구 순서는 40개를 미리 만든다. 볼이 30개 넘게 나올 일은 사실상 없고, 다 쓰면 판을 끝낸다
@@ -299,8 +299,8 @@ function judgeSwing(p, dt, bats = 'R') {
   const reach = 1 - miss / REACH_M;
   const q = tq * (0.35 + 0.65 * reach);
   r.ev = Math.round(75 + 100 * Math.pow(q, 1.2) + (p.kmh - 135) * 0.25);
-  // 높은 공은 뜨고, 빠르면 덮어 친다. 체인지업·포크는 잘 맞힐수록(tq의 세제곱) lift만큼 덜 깔린다(2026-11-03 유저 목소리 '포크·체인지업은 홈런이 안 나온다'.
-  // 전에는 정타여도 포크 홈런 0%, 체인지업 4%였고 이제 11%·28%다. 세제곱이라 빗맞은 포크는 그대로 땅볼이 많다(45% → 38%))
+  // 높은 공은 뜨고, 빠르면 덮어 친다. 커브·체인지업·포크는 잘 맞힐수록(tq의 세제곱) lift만큼 덜 깔린다(2026-11-03 유저 목소리 '포크·체인지업은 홈런이 안 나온다', 커브는 사용자 결정.
+  // 전에는 정타여도 포크 홈런 0%, 체인지업 4%, 커브 3%였다. 세제곱이라 빗맞은 포크는 그대로 땅볼이 많다(45% → 38%))
   r.la = Math.round(24 + (p.ty - 0.8) * 40 + def.la + (def.lift ?? 0) * tq * tq * tq + dt * 0.2);
   // 빠르면 당겨치고 늦으면 밀어친다. 당기는 쪽이 우타는 3루 쪽(음수), 좌타는 1루 쪽(양수)
   const side = bats === 'L' ? -1 : 1;
@@ -347,6 +347,11 @@ function classify(r, p, miss) {
     r.kind = 'double'; r.hit = true;
     r.name = s < -35 ? '좌익선상 2루타' : s < -8 ? '좌중간 2루타' : s <= 8 ? '중월 2루타' : s <= 35 ? '우중간 2루타' : '우익선상 2루타';
   };
+  // 3루타(2026-11-03 사용자 결정): 담장을 맞은 2루타 가운데 가장 가까운 외야수에게서 12도 넘게 먼 공(좋은 타구의 3%쯤). 800점
+  const triple = () => {
+    r.kind = 'triple'; r.hit = true;
+    r.name = s < -35 ? '좌익선상 3루타' : s < -8 ? '좌중간 3루타' : s <= 8 ? '중월 3루타' : s <= 35 ? '우중간 3루타' : '우익선상 3루타';
+  };
   const homeRun = () => { r.kind = 'hr'; r.hit = true; r.name = `${area}월 홈런`; };
   const outBy = (f, what) => { r.kind = 'out'; r.name = `${f.pos} ${what}`; r.fielder = f; };
   const infield4 = INFIELDERS.slice(0, 4);
@@ -371,7 +376,7 @@ function classify(r, p, miss) {
     r.type = 'fly';
     const fence = fenceDist(s), fo = nearest(OUTFIELDERS, s);
     if (r.dist >= fence) homeRun();
-    else if (r.dist >= fence - 6) { double(); r.wall = true; }
+    else if (r.dist >= fence - 6) { if (Math.abs(fo.a - s) > 12) triple(); else double(); r.wall = true; }
     else if (r.dist < 38) outBy(nearest(infield4, s), '뜬공');
     else if (r.dist < 58) single();                                // 내야와 외야 사이에 떨어진다
     else if (Math.abs(fo.a - s) > 10 && r.dist >= 80) double();    // 외야수 사이를 가른다
@@ -385,11 +390,16 @@ function classify(r, p, miss) {
   r.reason = reasonFor(r, p, miss);
 }
 
+// 홈런은 정점을 지나 내려올 때 덜 떨어져 끝에서 쭉 뻗는다(2026-11-03 사용자 '홈런이 마지막에 쭉쭉 뻗어 가는 느낌'). 타구 속도 159 → 180km/h에 따라
+// k 0 → 1, 내려오는 시간은 1/√(1 − 0.4k)배(최대 1.29배)이고 그동안 4 + 16k m 더 가서 관중석 깊이 꽂힌다. 홈런이 되는지(dist ≥ 담장)와 점수는 그대로다
+const hrLiftK = (ev) => clamp((ev - 159) / 21, 0, 1);
+const hrExtra = (ev) => 4 + 16 * hrLiftK(ev);
 function reasonFor(r, p, miss) {
-  if (r.kind === 'hr') return r.perfect ? '완벽한 타이밍이에요' : `${Math.round(r.dist)}m 날아갔어요`;
+  if (r.kind === 'hr') return r.perfect ? '완벽한 타이밍이에요' : `${Math.round(r.dist + hrExtra(r.ev))}m 날아갔어요`;
   if (r.split) return '정타라 수비 사이로 빠졌어요';
   if (miss > 0) return `${offText(p)} 빠진 공이라 힘이 덜 실렸어요`;
   if (p.type === 'fork' && r.type === 'ground') return '포크는 끝에서 떨어져서 공 윗부분을 치기 쉬워요';
+  if (r.kind === 'triple') return '담장을 맞고 외야수 사이로 빠졌어요';
   if (r.wall) return '조금만 더 갔으면 홈런이었어요';
   if (p.ty > 1.0 && (r.type === 'fly' || r.type === 'pop')) return '높은 공은 뜨기 쉬워요';
   if (p.ty < 0.65 && r.type === 'ground') return '낮은 공은 땅볼이 되기 쉬워요';
@@ -1291,7 +1301,7 @@ function rollPath(r) {
   const dur = flightDuration(r), land = flightPos(r, dur), a = clamp(r.spray, -FAIR_SPRAY, FAIR_SPRAY) * DEG, dir = [Math.sin(a), Math.cos(a)];
   const room = Math.max(0, fenceDist(a / DEG) - 0.8 - land.s);
   let u0 = clamp(r.ev / 3.6 * Math.cos(r.la * DEG) * 0.35 * (1 - clamp(r.la, 0, 50) / 80), 3, 20);
-  if (r.kind === 'double') u0 = Math.max(u0, Math.sqrt(2 * GRASS_DECEL * room) + 3);   // 2루타는 외야수 사이를 빠져 담장까지 구른다(늦게 주워야 주자가 2루를 먼저 밟는다)
+  if (r.kind === 'double' || r.kind === 'triple') u0 = Math.max(u0, Math.sqrt(2 * GRASS_DECEL * room) + 3);   // 2루타는 외야수 사이를 빠져 담장까지 구른다(늦게 주워야 주자가 2루를 먼저 밟는다)
   const free = u0 * u0 / (2 * GRASS_DECEL), tw = free <= room ? Infinity : (u0 - Math.sqrt(u0 * u0 - 2 * GRASS_DECEL * room)) / GRASS_DECEL;
   const vw = Number.isFinite(tw) ? u0 - GRASS_DECEL * tw : 0, back = Math.min(3, vw * 0.3), tb = back > 0 ? Math.sqrt(2 * back / GRASS_DECEL) * 1.4 : 0;
   const rolled = (q) => {   // 떨어진 뒤 q초에 간 거리(담장을 맞고 나오면 줄어든다)
@@ -1332,7 +1342,7 @@ const MISS_WAIT = 0.6;
 function fieldPlay(r) {
   if (r.play) return r.play;
   let play = buildPlay(r);
-  if (r.kind === 'double' && play.ev.wait > MISS_WAIT) play = buildPlay(r, { miss: true });
+  if ((r.kind === 'double' || r.kind === 'triple') && play.ev.wait > MISS_WAIT) play = buildPlay(r, { miss: true });
   return (r.play = play);
 }
 function buildPlay(r, o = {}) {
@@ -1526,26 +1536,28 @@ function buildPlay(r, o = {}) {
   // 안 왔는데 공이 2루에 먼저 왔는데 2루타'. 전에는 주우면 바로 2루로 던져서 2루타의 72%에서 공이 먼저였다). 2루에서 40m 넘게 떨어져 주우면
   // 공 쪽 키스톤이 중계 자리(2루에서 공 쪽으로 거리의 0.45배, 18~35m)에서 받아 돌아 던지고, 일찍 받으면 주자를 보며 공을 들고 있다가 던진다.
   // 단타는 주자가 1루를 돌아 서므로 그대로 던진다
-  const toSecond = (picker, got) => {
-    const tRun = r.kind === 'double' ? runnerReach(r, BASE2) : null, recv = picker === cover2 ? near2 : cover2, speed = isOutfielder(picker) ? THROW_OUT : THROW_IN * 0.6;
-    const after = tRun == null ? null : tRun + 0.45;   // 2루타: 공은 주자가 2루를 밟고 0.45초 뒤부터 닿는다
-    const relayMan = picker !== near2 && picker !== cover2 && flatDist(got.at, BASE2) > 40 ? near2 : null;
+  // 3루타는 같은 방법으로 3루로 보낸다(3루수가 받고, 공 쪽 키스톤이 중계)
+  const toBag = (picker, got, base, recv, bagAt, tRun) => {
+    const speed = isOutfielder(picker) ? THROW_OUT : THROW_IN * 0.6, after = tRun == null ? null : tRun + 0.45;   // 공은 주자가 베이스를 밟고 0.45초 뒤부터 닿는다
+    const relayMan = picker !== near2 && picker !== recv && flatDist(got.at, base) > 40 ? near2 : null;
     let th;
     if (relayMan) {
-      const R = stepToward(BASE2, got.at, clamp(0.45 * flatDist(got.at, BASE2), 18, 35)), th1 = throwTo(picker, got.at, relayMan, R, FPOSE.cover, got.throwAt, speed);
+      const R = stepToward(base, got.at, clamp(0.45 * flatDist(got.at, base), 18, 35)), th1 = throwTo(picker, got.at, relayMan, R, FPOSE.cover, got.throwAt, speed);
       receive(relayMan, R, got.at, th1.tArr);
-      pose(relayMan, th1.tArr + 0.2, R, faceTo(R, BASE2), FPOSE.hold, { name: 'hold' });   // 받아서 2루 쪽으로 돈다(주자가 아직이면 들고 기다린다)
-      th = throwTo(relayMan, R, recv, bag2(R), FPOSE.cover, th1.tArr + 0.45, THROW_IN * 0.7, undefined, { after });
-      receive(recv, bag2(R), R, th.tArr);
+      pose(relayMan, th1.tArr + 0.2, R, faceTo(R, base), FPOSE.hold, { name: 'hold' });   // 받아서 베이스 쪽으로 돈다(주자가 아직이면 들고 기다린다)
+      th = throwTo(relayMan, R, recv, bagAt(R), FPOSE.cover, th1.tArr + 0.45, THROW_IN * 0.7, undefined, { after });
+      receive(recv, bagAt(R), R, th.tArr);
       Object.assign(play.ev, { relay: relayMan.pos, relayAt: th1.tArr });
       th = { ...th, tRel: th1.tRel };
     } else {
-      th = throwTo(picker, got.at, recv, bag2(got.at), FPOSE.cover, got.throwAt, speed, undefined, { after });
-      receive(recv, bag2(got.at), got.at, th.tArr);
+      th = throwTo(picker, got.at, recv, bagAt(got.at), FPOSE.cover, got.throwAt, speed, undefined, { after });
+      receive(recv, bagAt(got.at), got.at, th.tArr);
     }
     Object.assign(play.ev, { release: th.tRel, arrive: th.tArr, receiver: recv.pos, runner2: tRun, wait: th.waited });
     return { ...th, end: Math.max(th.tArr, tRun ?? 0) };
   };
+  const toSecond = (picker, got) => toBag(picker, got, BASE2, picker === cover2 ? near2 : cover2, bag2, r.kind === 'double' ? runnerReach(r, BASE2) : null);
+  const toThird = (picker, got) => toBag(picker, got, BASE3, B3, (from) => stepToward(BASE3, from, 0.4), runnerReach(r, BASE3));
   // 투수가 1루 커버 길(PCOVER)을 뛰어 tBag에 베이스를 밟고 3m쯤 지나쳐 선다. tCatch에 글러브를 뻗어 토스를 받는 자리(마당)를 돌려준다
   const coverRun = (tBag, tCatch) => {
     const P = PITCHER_F, n = PCOVER.length, bag = PCOVER[n - 1], past = [bag[0] + 1.41, bag[1] + 2.83], route = [...PCOVER, past], G = gaitOf(P);
@@ -1686,7 +1698,7 @@ function buildPlay(r, o = {}) {
       if (r.type === 'pop') pose(P, FIELD_REACT.p, homeOf(P), faceTo(homeOf(P), at), FPOSE.point, { name: 'point' });
       watchAll(0, [X]);
     }
-  } else if (r.kind === 'single' || r.kind === 'double') {   // 뜬 안타: 떨어져 튀고 구르는 공을 가장 먼저 닿는 사람이 주워 2루로 던진다
+  } else if (r.kind === 'single' || r.kind === 'double' || r.kind === 'triple') {   // 뜬 안타: 떨어져 튀고 구르는 공을 가장 먼저 닿는 사람이 주워 2루(3루타는 3루)로 던진다
     const roll = rollPath(r), dur = roll.dur, L = roll.land, O = nearestOutfielder(side);
     seg(0, (t) => (t < dur ? { ...flightPos(r, t), trail: true } : roll.at(t)));
     // 외야수는 한 번 튄 뒤에 잡는다(떨어지기 전에 닿으면 안타가 아니라 아웃으로 보인다)
@@ -1710,12 +1722,14 @@ function buildPlay(r, o = {}) {
     const got = pickUp(picker, roll.at, ic.t);
     seg(ic.t, held(picker), picker);
     Object.assign(play.ev, { land: dur, pickup: ic.t, fielder: picker.pos });
-    const th = toSecond(picker, got);
+    const th = r.kind === 'triple' ? toThird(picker, got) : toSecond(picker, got);
+    if (r.kind === 'triple') arriveBy(cover2, bag2(got.at), th.tArr, FPOSE.cover, { faceTo: got.at, name: 'cover' });   // 3루타도 2루는 비우지 않는다
     if (picker !== O) arriveBy(O, backupSpot(O, got.at, 8), ic.t, FPOSE.backup, { faceTo: got.at, name: 'backup' });
     else { const ob = otherOF(O); arriveBy(ob, backupSpot(ob, got.at, 10), ic.t, FPOSE.backup, { faceTo: got.at, name: 'backup' }); }
     if (picker !== B1 && !acts[B1.pos].length) arriveBy(B1, stepToward(BASE1, [0, 0], 1.5), th.tArr, FPOSE.readyIn, { faceTo: got.at });
     if (picker !== B3 && !acts[B3.pos].length) arriveBy(B3, bag3, th.tArr, FPOSE.readyIn, { faceTo: got.at });
-    arriveBy(P, stepToward(BASE2, got.at, -8), th.tArr, FPOSE.backup, { faceTo: BASE2, name: 'backup' });
+    const backBase = r.kind === 'triple' ? BASE3 : BASE2;   // 투수는 공이 가는 베이스 뒤를 받친다
+    arriveBy(P, stepToward(backBase, got.at, -8), th.tArr, FPOSE.backup, { faceTo: backBase, name: 'backup' });
     reveal = Math.min(dur, REVEAL_MAX); end = th.end;
   } else if (r.kind === 'hr') {   // 홈런: 가까운 외야수가 담장까지 쫓아가 6m 안으로 넘어가면 뛰어오른다. 나머지는 공을 바라본다
     // 공은 관중석에 떨어지면 감춘다. 관중석은 담장 2m 뒤 3m 높이에서 시작해 1m 뒤로 갈 때마다 0.49m씩 높아진다(buildCrowd).
@@ -2716,14 +2730,16 @@ const runStartOf = (bats) => RUN_START + RUN_TO_1B[bats] - RUN_FREE_1B[bats];
 // 베이스를 지난다(그래서 베이스 6~7m 앞부터 바깥으로 2m쯤 벌어진다). 전에는 베이스 앞뒤 2m에만 점을 둔 곡선(캣멀-롬)이라 베이스마다 S자로 출렁여
 // 몸이 좌우로 20도씩 번갈아 기울었다
 const TROT_R = 5;
-function trotRoute(S) {
-  const corners = [S], bases = [BASE1, BASE2, BASE3], next = [BASE2, BASE3, [0, 0.3]];
+const trotRoute = (S) => arcRoute(S, [BASE1, BASE2, BASE3], [0, 0.3], TROT_R);
+// S에서 bases를 차례로 원호(반지름 R)로 돌아 end까지 가는 길(3루타도 쓴다)
+function arcRoute(S, bases, end, R) {
+  const corners = [S], next = [...bases.slice(1), end], TROT_R = R;
   bases.forEach((b, i) => {   // 원호 가운데가 베이스에 오도록 꼭짓점을 바깥으로 옮긴다(90도로 꺾일 때 0.414R)
     const u = unitTo(i ? bases[i - 1] : [0, 0.3], b), v = unitTo(b, next[i]), w = unitTo([0, 0], [u[0] - v[0], u[1] - v[1]]);
     const half = Math.acos(clamp(-(u[0] * v[0] + u[1] * v[1]), -1, 1)) / 2;   // 꺾인 안쪽 각의 반
     corners.push([b[0] + w[0] * TROT_R * (1 / Math.sin(half) - 1), b[1] + w[1] * TROT_R * (1 / Math.sin(half) - 1)]);
   });
-  corners.push([0, 0.3]);
+  corners.push(end);
   const out = [S];
   for (let i = 1; i < corners.length - 1; i++) {   // 꼭짓점마다 두 직선에 닿는 원호(필렛)
     const P = corners[i], u = unitTo(corners[i - 1], P), v = unitTo(P, corners[i + 1]);
@@ -2732,7 +2748,7 @@ function trotRoute(S) {
     const a0 = Math.atan2(a[1] - c[1], a[0] - c[0]), n = Math.ceil(turn * TROT_R / 0.5);
     for (let k = 0; k <= n; k++) { const th = a0 + turn * k / n; out.push([c[0] + Math.cos(th) * TROT_R, c[1] + Math.sin(th) * TROT_R]); }
   }
-  out.push([0, 0.3]);
+  out.push(end);
   return out;
 }
 function runPlan(r) {
@@ -2747,6 +2763,7 @@ function runPlan(r) {
   else if (r.kind === 'out') plan = { pts: [S, on1(10, 0.5), on1(26.9, 0.45), on1(33.5, 0.5)], until: catchTime(r) };
   else if (r.kind === 'single') plan = { pts: [...banana, toward(BASE1, BASE2, 4.5)] };
   else if (r.kind === 'double') plan = { pts: [...banana, toward(BASE1, BASE2, 7), toward(BASE2, BASE1, 0.95)], brake: SLIDE_BRAKE, slide: true };
+  else if (r.kind === 'triple') plan = { route: arcRoute(S, [BASE1, BASE2], toward(BASE3, BASE2, 0.95), 4), brake: SLIDE_BRAKE, slide: true, slideBag: toward(BASE3, BASE2, 0.3) };   // 1·2루를 돌아 3루에 미끄러져 들어간다
   else if (r.kind === 'hr') plan = { route: trotRoute(S), gait: JOG, delay: 0.5, brake: 3 };   // 홈에서는 천천히 줄여 밟는다
   if (plan) {
     plan.gait ??= SPRINT; plan.until ??= Infinity; plan.delay ??= 0;
@@ -2853,7 +2870,7 @@ function runnerAt(r, t) {
   const drawShift = batSide() * batterShift() * clamp(1 - st.dist / 8, 0, 1);   // 폰은 타자를 화면 안으로 당겨 그려서, 주자도 처음 8m 동안 그만큼 옮겨 그린다
   const run = { ...st, goals: plan.goals, drawShift, lookFoul: ((r.kind === 'out' && r.type === 'ground') || r.infield) && st.dist > 27, top: plan.gait.top };
   if (plan.slide && tt >= plan.slideAt) {   // 2루타 슬라이딩: 눕는 정도(down)와 일어나는 정도(up), 멈춘 뒤 시간(rest)
-    const stop = plan.track.T[plan.track.T.length - 1], rest = Math.max(0, tt - stop), up = smooth((rest - SLIDE_DOWN) / SLIDE_UP), bag = stepToward(BASE2, BASE1, 0.3);
+    const stop = plan.track.T[plan.track.T.length - 1], rest = Math.max(0, tt - stop), up = smooth((rest - SLIDE_DOWN) / SLIDE_UP), bag = plan.slideBag ?? stepToward(BASE2, BASE1, 0.3);
     if (up >= 1) return { ...run, x: bag[0], z: bag[1], speed: 0, braking: false, bank: 0 };   // 일어나 베이스 위에 선다
     run.slide = { down: smooth((tt - plan.slideAt) / SLIDE_IN), up, rest, bag };
     run.braking = true;
@@ -2894,6 +2911,7 @@ function scenarioRuns(r) {
     if (r.kind === 'hr') { to = 3; how = 'jog'; }
     else if (r.kind === 'single' && !r.infield) { to = b === 0 ? 1 : 3; how = 'run'; }
     else if (r.kind === 'double') { to = b === 0 ? 2 : 3; how = 'run'; }
+    else if (r.kind === 'triple') { to = 3; how = 'run'; }
     else if (forced && bases.slice(0, b).every(Boolean)) { to = b + 1; how = walk ? 'jog' : 'run'; }   // 앞 베이스가 다 차 있어야 밀린다
     else if (sac && b === 2) { to = 3; how = 'tag'; }
     const legs = [];
@@ -3089,8 +3107,8 @@ function drawDroppedBat(t) {
 function flightDuration(r) {
   if (r.type === 'ground') return (r.gpath ??= groundPath(r)).tStop;
   if (r.type === 'foul') return 1.0;
-  const H = Math.max(1, carryOf(r) * Math.tan(Math.max(r.la, 8) * DEG) / 4 * 1.3);
-  return 2 * Math.sqrt(2 * H / 9.8);
+  const H = Math.max(1, (r.kind === 'hr' ? r.dist : carryOf(r)) * Math.tan(Math.max(r.la, 8) * DEG) / 4 * 1.3), T0 = 2 * Math.sqrt(2 * H / 9.8);
+  return r.kind === 'hr' ? T0 / 2 * (1 + 1 / Math.sqrt(1 - 0.4 * hrLiftK(r.ev))) : T0;   // 홈런은 내려오는 시간이 길다
 }
 // 잡히는 뜬공·직선타를 그리는 비거리(2026-11-02). 판정(classify)의 비거리 그대로 그리면 잡는 수비수가 사람 빠르기로 못 가는 공이 많아서
 // (직선타 아웃의 77%, 외야 뜬공 아웃의 18%는 다이빙해도 3m 넘게 모자랐다. 전에는 초속 11m로 뛰어 몸을 날렸다) 그런 공만 그 수비수가 달려가
@@ -3099,6 +3117,7 @@ function flightDuration(r) {
 const airReach = (y) => (y > 1.6 ? 0.36 : 0.62);
 function carryOf(r) {
   if (r.carry !== undefined) return r.carry;
+  if (r.kind === 'hr') return (r.carry = r.dist + hrExtra(r.ev));   // 끝에서 뻗는 만큼 더 간다(flightPos)
   r.carry = r.dist;
   if (r.kind !== 'out' || r.type === 'ground' || r.type === 'foul' || !r.fielder) return r.carry;
   const f = byPos(r.fielder.pos), h = homeOf(f), [top, tau] = speedOf(f), react = reactOf(f);
@@ -3119,8 +3138,18 @@ function flightPos(r, t) {
     const path = (r.gpath ??= groundPath(r)), s = path.dist(t), q = path.pos(t), fade = clamp(1 - s / 34, 0, 1);
     return { x: q[0], y: 0.04 + Math.abs(Math.sin(Math.PI * s / 8.5)) * 0.6 * fade * fade, z: q[1], tau: clamp(t / path.tStop, 0, 1), s };
   }
-  const tau = clamp(t / flightDuration(r), 0, 1), dist = carryOf(r);
   const a = (r.type === 'foul' ? r.spray : clamp(r.spray, -FAIR_SPRAY, FAIR_SPRAY)) * DEG;   // 페어 타구는 파울선 안쪽에 그린다
+  if (r.kind === 'hr') {   // 올라가는 길은 원래 비거리(r.dist)대로, 정점부터는 내려오는 시간을 늘리고 그동안 carryOf(r)까지 앞으로 뻗는다
+    const base = r.dist, H = base * Math.tan(Math.max(r.la, 8) * DEG) / 4 * 1.3, T0 = 2 * Math.sqrt(2 * Math.max(1, H) / 9.8), T1 = T0 / 2, T2 = T1 / Math.sqrt(1 - 0.4 * hrLiftK(r.ev));
+    let s, y;
+    if (t <= T1) { const u = t / T0; s = base * (1 - Math.pow(1 - u, 1.35)); y = 1 + 4 * H * u * (1 - u) - u; }
+    else {   // 정점의 가로 빠르기에서 이어지게(끝으로 갈수록 천천히) 앞으로 가고, 높이는 줄어든 중력으로 떨어진다
+      const u = clamp((t - T1) / T2, 0, 1), sA = base * (1 - Math.pow(0.5, 1.35)), D = carryOf(r), vA = base * 1.35 * Math.pow(0.5, 0.35) / T0, pw = Math.max(1, vA * T2 / (D - sA));
+      s = sA + (D - sA) * (1 - Math.pow(1 - u, pw)); y = (H + 0.5) * (1 - u * u);
+    }
+    return { x: s * Math.sin(a), y: Math.max(0.04, y), z: 0.3 + s * Math.cos(a), tau: clamp(t / (T1 + T2), 0, 1), s };
+  }
+  const tau = clamp(t / flightDuration(r), 0, 1), dist = carryOf(r);
   const H = dist * Math.tan(Math.max(r.la, 8) * DEG) / 4 * 1.3;
   const s = (r.type === 'pop' || r.type === 'foul') ? dist * tau : dist * (1 - Math.pow(1 - tau, 1.35));
   const y = 1 + 4 * H * tau * (1 - tau) - tau;
@@ -3195,7 +3224,7 @@ function followBall(pos, dt) {
 }
 
 // ===== 화면 위 정보 =====
-const KIND_COLOR = { hr: '#ff6b4a', double: '#4ade80', single: '#4ade80', ball: '#facc15', out: '#9aa3b2', whiff: '#9aa3b2', foul: '#9aa3b2', strike: '#9aa3b2' };
+const KIND_COLOR = { hr: '#ff6b4a', triple: '#4ade80', double: '#4ade80', single: '#4ade80', ball: '#facc15', out: '#9aa3b2', whiff: '#9aa3b2', foul: '#9aa3b2', strike: '#9aa3b2' };
 // 10구 전광판 불: 안타(2루타·홈런 포함)는 초록, 참아서 골라낸 볼은 노랑, 나머지는 빨강
 const LIGHT = { hit: '#3ddc6e', ball: '#facc15', miss: '#ff4d4d' };
 const lightColor = (r) => (r.hit ? LIGHT.hit : r.kind === 'ball' ? LIGHT.ball : LIGHT.miss);
@@ -3456,7 +3485,7 @@ function drawResultCard() {
   const title = !hr ? r.name : r.streak >= 3 ? `${r.streak}연속 홈런!` : r.streak === 2 ? '백투백 홈런!' : '홈런!';
   text(title, cx, y, { size: (m ? 32 : 44) * (hr ? 1.3 : 1), weight: 900, color: KIND_COLOR[r.kind], shadow: true });
   y += hr ? (m ? 38 : 48) : (m ? 32 : 40);
-  if (hr) { text(`${r.name} · ${Math.round(r.dist)}m`, cx, y, { size: m ? 15 : 18, shadow: true }); y += m ? 28 : 30; }
+  if (hr) { text(`${r.name} · ${Math.round(carryOf(r))}m`, cx, y, { size: m ? 15 : 18, shadow: true }); y += m ? 28 : 30; }
   const chips = [];
   if (!r.took) {
     // 정타가 아닌데 ±15ms 안이면 존 밖 공이다. 그냥 '타이밍 정확'이라 쓰면 정타로 읽혀서, 잡혔을 때 '정타인데 아웃'으로 들렸다
@@ -3712,7 +3741,7 @@ const rankOf = (score) => (score >= 4000 ? '끝내기 영웅' : score >= 2500 ? 
 function gameSummary() {
   const rs = game.results, c = (k) => rs.filter((r) => r.kind === k).length;
   const far = Math.max(0, ...rs.filter((r) => r.hit).map((r) => Math.round(r.dist || 0)));
-  return { score: game.score, hr: c('hr'), hits: c('single') + c('double'), balls: c('ball'), far, lights: rs.map(lightCode).join('') };
+  return { score: game.score, hr: c('hr'), hits: c('single') + c('double') + c('triple'), balls: c('ball'), far, lights: rs.map(lightCode).join('') };
 }
 
 const scenarioEndText = (end) => (end === 'win' ? '끝내기 승리!' : end === 'tie' ? '동점으로 끝' : '아쉬운 패배');
@@ -3869,6 +3898,8 @@ function applyScenario(s, r) {
     runs = (b3 ? 1 : 0) + (b2 ? 1 : 0); s.bases = [true, b1, false]; pa = 'G';
   } else if (r.kind === 'double') {
     runs = (b3 ? 1 : 0) + (b2 ? 1 : 0); s.bases = [false, true, b1]; pa = 'G';
+  } else if (r.kind === 'triple') {
+    runs = (b1 ? 1 : 0) + (b2 ? 1 : 0) + (b3 ? 1 : 0); s.bases = [false, false, true]; pa = 'G';
   } else if (r.kind === 'hr') {
     runs = 1 + (b1 ? 1 : 0) + (b2 ? 1 : 0) + (b3 ? 1 : 0); s.bases = [false, false, false]; pa = 'G';
   }

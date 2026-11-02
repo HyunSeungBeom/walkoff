@@ -209,7 +209,7 @@ async function playUntilOver(page, dt, max = 40) {
 }
 
 test.describe('판정 계산', () => {
-  test('체인지업·포크도 잘 맞히면 홈런이 나오고(전에는 정타여도 포크 0%·체인지업 4%), 빗맞은 포크는 여전히 땅볼이 많다', async ({ page }) => {
+  test('커브·체인지업·포크도 잘 맞히면 홈런이 나오고(전에는 정타여도 포크 0%·체인지업 4%·커브 3%), 빗맞은 포크는 여전히 땅볼이 많다', async ({ page }) => {
     const errors = await open(page);
     const t = await page.evaluate(() => {
       const t = {};
@@ -217,7 +217,7 @@ test.describe('판정 계산', () => {
         const seq = walkoff.makeSequence(sd, false);
         for (let i = 0; i < 16; i++) for (let dt = -60; dt <= 60; dt += 3) for (const bats of ['R', 'L']) {
           const p = seq[i];
-          if (p.type !== 'fork' && p.type !== 'change') continue;
+          if (p.type !== 'fork' && p.type !== 'change' && p.type !== 'curve') continue;
           const r = walkoff.judgeSwing(p, dt, bats), c = (t[p.type] ??= { perfect: 0, hr: 0, mis: 0, gb: 0 });
           if (r.kind === 'whiff' || r.kind === 'foul') continue;
           if (r.perfect) { c.perfect++; if (r.kind === 'hr') c.hr++; }
@@ -227,6 +227,7 @@ test.describe('판정 계산', () => {
       return t;
     });
     expect(t.change.hr / t.change.perfect).toBeGreaterThan(0.18);
+    expect(t.curve.hr / t.curve.perfect).toBeGreaterThan(0.15);
     expect(t.fork.hr / t.fork.perfect).toBeGreaterThan(0.06);
     expect(t.fork.gb / t.fork.mis).toBeGreaterThan(0.25);
     expect(errors).toEqual([]);
@@ -282,10 +283,10 @@ test.describe('판정 계산', () => {
     expect(r.otherOuts).toBeGreaterThan(1000);   // 정타가 아니면 지금처럼 잡힌다
   });
 
-  test('가운데 커브를 정타로 치면 예전의 중견수 직선타가 좌중간 2루타가 된다. 30ms 늦게 친 우중간 2루타는 그대로다', async ({ page }) => {
+  test('가운데 낮은 커브를 정타로 치면 중견수 직선타가 될 공이 좌중간 2루타가 된다. 30ms 늦게 친 우중간 2루타는 그대로다', async ({ page }) => {
     await open(page);
     const r = await page.evaluate(() => {
-      const curve = { type: 'curve', kmh: 120, tx: 0, ty: 0.8 };
+      const curve = { type: 'curve', kmh: 120, tx: 0, ty: 0.6 };   // 2026-11-03부터 커브도 잘 맞히면 떠서, 가운데 높이(0.8m)는 중견수 머리를 넘는다
       const pick = (x) => ({ kind: x.kind, name: x.name, spray: x.spray, reason: x.reason, split: !!x.split });
       return { perfect: pick(walkoff.judgeSwing(curve, 0, 'R')), late: pick(walkoff.judgeSwing(curve, 30, 'R')) };
     });
@@ -1629,8 +1630,9 @@ test.describe('수비', () => {
           // 2루타에서 공 앞 외야수가 떨어지는 공에 몸을 날렸다가 놓치는 것(ev.miss)은 따로 센다
           const missDive = (pos, e) => pos === pl.ev.miss && e.t0 < pl.ev.land + 0.3;
           if (Object.entries(pl.acts).some(([pos, l]) => l.some((e) => e.name === 'dive' && !missDive(pos, e)))) c.dive++;
-          if (r.kind === 'double') c.doubles++;
-          if (pl.ev.miss) { if (r.kind === 'double') c.miss++; else c.missElse++; }
+          const xbh = r.kind === 'double' || r.kind === 'triple';
+          if (xbh) c.doubles++;
+          if (pl.ev.miss) { if (xbh) c.miss++; else c.missElse++; }
           for (const l of Object.values(pl.acts)) for (const e of l) if (e.k === 'move') c.top = Math.max(c.top, e.gait.top);
         }
       }
@@ -1638,11 +1640,44 @@ test.describe('수비', () => {
     });
     expect(d['air/out'].dive / d['air/out'].n).toBeLessThan(0.12);       // 전에는 직선타 아웃의 89%가 다이빙
     expect(d['air/hit'].dive / d['air/hit'].n).toBeLessThan(0.03);       // 떨어진 안타 공을 몸을 날려 줍지 않는다(전에는 76%)
-    expect(d['air/hit'].missElse).toBe(0);                                 // 몸을 날렸다가 놓치는 것은 2루타에만
+    expect(d['air/hit'].missElse).toBe(0);                                 // 몸을 날렸다가 놓치는 것은 2루타·3루타에만
     expect(d['air/hit'].miss).toBeGreaterThan(0);
     expect(d['air/hit'].miss / d['air/hit'].doubles).toBeLessThan(0.3);   // 2루타의 21%쯤(공 앞의 외야수가 너무 일찍 주울 때만)
     expect(d['ground/hit'].dive / d['ground/hit'].n).toBeLessThan(0.2);  // 빠지는 땅볼은 거의 닿을 때 한 명만 몸을 날린다
     for (const c of Object.values(d)) expect(c.top).toBeLessThan(10);     // 초속 10m를 넘게 뛰지 않는다(전에는 11m까지 올려 몸을 날렸다)
+    expect(errors).toEqual([]);
+  });
+
+  test('3루타: 담장을 맞고 외야수 사이로 빠진 공만 800점, 주자는 1·2루를 돌아 3루에 미끄러져 서고 공은 그 뒤에 3루에 닿는다. 끝내기 상황은 주자가 모두 들어온다', async ({ page }) => {
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const B3 = walkoff.BASE3, t = { n: 0, triple: 0, notWall: 0, points: new Set(), worst: Infinity, standing: 0, slid: 0 };
+      for (let sd = 1; sd <= 30; sd++) {
+        const seq = walkoff.makeSequence(sd, false);
+        for (let i = 0; i < 16; i++) for (let dt = -60; dt <= 60; dt += 3) for (const bats of ['R', 'L']) {
+          const r = walkoff.judgeSwing(seq[i], dt, bats);
+          if (r.kind === 'whiff' || r.kind === 'foul') continue;
+          t.n++;
+          if (r.kind !== 'triple') continue;
+          t.triple++; if (!r.wall) t.notWall++; t.points.add(r.points);
+          const pl = walkoff.fieldPlay(r), reach = walkoff.runnerReach(r, B3);
+          t.worst = Math.min(t.worst, pl.ev.arrive - reach);
+          if (walkoff.runnerSkeleton(walkoff.runnerAt(r, reach)).pelvis[1] < 0.4) t.slid++;
+          const q = walkoff.runnerAt(r, reach + 1.6); if (Math.hypot(q.x - B3[0], q.z - B3[1]) < 0.5) t.standing++;
+        }
+      }
+      const scn = { outs: 1, bases: [true, true, true], away: 5, home: 3, count: { b: 0, s: 0 }, pa: [] };
+      const msg = walkoff.applyScenario(scn, { kind: 'triple', hit: true });
+      return { ...t, points: [...t.points], scn: { home: scn.home, bases: scn.bases, end: scn.end, msg } };
+    });
+    expect(d.triple).toBeGreaterThan(20);
+    expect(d.triple / d.n).toBeLessThan(0.03);       // 드물게(좋은 타구의 3%쯤)
+    expect(d.notWall).toBe(0);                        // 담장을 맞은 공만
+    expect(d.points).toEqual([800]);
+    expect(d.worst).toBeGreaterThan(0.44);            // 주자가 먼저 3루를 밟는다
+    expect(d.slid).toBe(d.triple);                    // 미끄러져 들어가
+    expect(d.standing).toBe(d.triple);                // 일어나 3루에 선다
+    expect(d.scn).toMatchObject({ home: 6, bases: [false, false, true], end: 'win' });   // 만루 3루타: 셋 다 들어와 역전
     expect(errors).toEqual([]);
   });
 
