@@ -1286,6 +1286,33 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('랭킹에서 사람을 누르면 그 사람이 입은 모습을 크게 보고(예전 기록은 기본 모습), 닫으면 목록과 내 모습으로 돌아온다', async ({ page }) => {
+    const look = { bat: 'bat-fire', helmet: 'helmet-tiger', glove: 'glove-white', shoe: 'shoe-duck', uniform: 'uniform-home', number: 'number-on', no: 7, trail: 'trail-heart', sound: 'sound-bomb' };
+    const rankings = { ...SAMPLE_RANKING, players: [{ ...SAMPLE_RANKING.players[0], look }, { ...SAMPLE_RANKING.players[1], look: null }] };
+    const errors = await open(page, '?seed=42', { api: { rankings } });
+    const mine = await page.evaluate(() => JSON.stringify(walkoff.currentLook()));
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '랭킹 줄 1'));
+    await tap(page, '랭킹 줄 1');
+    expect(await page.evaluate(() => walkoff.game.rankView && { nick: walkoff.game.rankView.nick, team: walkoff.game.rankView.team, bat: walkoff.game.rankView.look.bat, no: walkoff.game.rankView.look.no })).toEqual({ nick: '명은', team: 'lotte', bat: 'bat-fire', no: 7 });
+    await page.waitForTimeout(150);
+    const texts = await drawnTexts(page);
+    expect(texts).toContain('명은');
+    expect(texts.some((t) => t.includes('등번호 7'))).toBe(true);   // 입은 물건 이름
+    expect(await page.evaluate(() => JSON.stringify(walkoff.currentLook()))).toBe(mine);   // 그린 뒤에는 내 모습 그대로
+    await page.keyboard.press('Space');                             // 목록으로
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.rankView])).toEqual(['ranking', null]);
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '랭킹 줄 2'));
+    await tap(page, '랭킹 줄 2');                                   // 예전 기록(look 없음)은 기본 모습
+    expect(await page.evaluate(() => walkoff.game.rankView.look.bat)).toBe(await page.evaluate(() => walkoff.cleanLook(null).bat));
+    await page.waitForTimeout(150);
+    expect(await drawnTexts(page)).toContain('기본 모습');
+    await tap(page, '‹ 랭킹으로');
+    await page.keyboard.press('Space');                             // 목록에서 한 번 더 누르면 닫힌다
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+    expect(errors).toEqual([]);
+  });
+
   test('랭킹 화면: 순위, 빈 목록, 서버 오류', async ({ page }) => {
     const errors = await open(page, '?seed=42', { api: { rankings: SAMPLE_RANKING } });
     await page.evaluate(() => walkoff.openRanking('title'));
