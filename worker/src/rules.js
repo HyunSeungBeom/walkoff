@@ -97,8 +97,9 @@ function rankBy(list, key) {
 
 // 한 주의 기록으로 순위를 매긴다(2026-10-29 사용자 결정: 합계가 아니라 이번 주 최고 기록).
 // 사람 점수는 그 주 최고 기록이고 그 기록을 낸 날의 팀으로 간다. 팀 점수는 팀원 최고 기록의 합이다.
-// 이름은 가장 최근 기록을 따른다. 밖으로 내보내는 목록에는 사람 ID를 넣지 않는다
-export function aggregate(rows, playerId) {
+// 이름은 가장 최근 기록을 따른다. 밖으로 내보내는 목록에는 사람 ID를 넣지 않는다.
+// withIds면 목록과 같은 순서의 사람 ID(ids)를 따로 붙인다. 서버가 입은 물건을 찾을 때만 쓰고 응답에서는 뺀다
+export function aggregate(rows, playerId, { withIds = false } = {}) {
   const byPlayer = new Map(), byTeam = new Map();
   for (const r of rows) {
     const p = byPlayer.get(r.player_id) ?? { id: r.player_id, best: -1, days: 0, last: '' };
@@ -115,12 +116,14 @@ export function aggregate(rows, playerId) {
   }
   const teams = rankBy([...byTeam.values()], 'total');
   const mine = playerId ? players.find((p) => p.id === playerId) : null;
-  const myTeam = mine ? teams.find((t) => t.team === mine.team) : null;
-  return {
-    players: players.slice(0, 50).map((p) => ({ rank: p.rank, nick: p.nick, team: p.team, best: p.best, days: p.days, me: p.id === playerId })),
+  const myTeam = mine ? teams.find((t) => t.team === mine.team) : null, top = players.slice(0, 50);
+  const out = {
+    players: top.map((p) => ({ rank: p.rank, nick: p.nick, team: p.team, best: p.best, days: p.days, me: p.id === playerId })),
     teams,
     count: players.length,
     me: mine ? { rank: mine.rank, best: mine.best, days: mine.days, team: mine.team } : null,
     myTeam: myTeam ? { rank: myTeam.rank, total: myTeam.total, team: myTeam.team } : null,
   };
+  if (withIds) out.ids = top.map((p) => p.id);
+  return out;
 }

@@ -25,12 +25,22 @@ async function weekRows(db, week) {
 // 합계 방식이던 예전 게임(fa4649a까지)은 사람 점수를 total로 읽는다. 열어 둔 탭까지 다 바뀔 때까지 같은 값을 total로도 보낸다
 const withTotal = (p) => (p ? { ...p, total: p.best } : null);
 
-// 이번 주 순위와 지난주 1등(사람, 팀)
-async function rankings(db, week, playerId) {
+// 목록의 사람마다 입은 물건(2026-11-02 유저 피드백 '다른 사람이 무엇을 입었는지 보고 싶다'). 산 물건만 입은 것으로 본다(lookOf).
+// 계정이 없는 예전 기록은 null이라 게임이 기본 모습으로 그린다. player_id는 UNIQUE라 목록 수(최대 50)만큼만 읽는다
+async function looksOf(db, ids) {
+  if (!ids.length) return new Map();
+  const { results } = await db.prepare(`SELECT player_id, owned, equipped FROM accounts WHERE player_id IN (${ids.map(() => '?').join(', ')})`).bind(...ids).all();
+  return new Map(results.map((a) => [a.player_id, lookOf(a.equipped, ownedOf(a.owned))]));
+}
+
+// 이번 주 순위와 지난주 1등(사람, 팀). looks면 이번 주 목록에 입은 물건(look)을 붙인다(/rankings만. /scores는 내 순위만 쓴다)
+async function rankings(db, week, playerId, { looks = false } = {}) {
   const [rows, lastRows] = await Promise.all([weekRows(db, week), weekRows(db, addDays(week, -7))]);
-  const now = aggregate(rows, playerId), last = aggregate(lastRows, null);
+  const { ids, ...now } = aggregate(rows, playerId, { withIds: looks }), last = aggregate(lastRows, null);   // ids는 응답에 넣지 않는다
+  const lookById = looks ? await looksOf(db, ids) : null;
   return {
-    week, nextWeek: addDays(week, 7), ...now, players: now.players.map(withTotal), me: withTotal(now.me),
+    week, nextWeek: addDays(week, 7), ...now,
+    players: now.players.map((p, i) => (lookById ? { ...withTotal(p), look: lookById.get(ids[i]) ?? null } : withTotal(p))), me: withTotal(now.me),
     lastWeek: { player: withTotal(last.players[0]), team: last.teams[0] ?? null },
   };
 }
@@ -110,7 +120,7 @@ export default {
       if (url.pathname === '/rankings' && method === 'GET') {
         const asked = url.searchParams.get('week') ?? '';
         const week = /^\d{4}-\d{2}-\d{2}$/.test(asked) ? weekStart(asked) : weekStart(kstDay(now));
-        return json(await rankings(env.DB, week, url.searchParams.get('player')));
+        return json(await rankings(env.DB, week, url.searchParams.get('player'), { looks: true }));
       }
       if (url.pathname === '/auth/kakao/start' && method === 'GET') return await loginStart(url, env, now);
       if (url.pathname === '/auth/kakao/callback' && method === 'GET') return await loginCallback(url, env, now);

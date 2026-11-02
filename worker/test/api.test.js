@@ -2,7 +2,8 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { sign, verify, allowedReturn } from '../src/auth.js';
-import { kstDay, maxScoreFor } from '../src/rules.js';
+import { kstDay, weekStart, maxScoreFor } from '../src/rules.js';
+import { DEFAULTS } from '../src/shop.js';
 import { makeSequence, pitcherHand, zoneMiss } from '../src/pitches.js';
 import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
 import { memoryD1 } from './d1.js';
@@ -203,6 +204,28 @@ test('코인: 판마다 점수의 1/100, 20초 안에 또 보내면 주지 않�
   await wait20s();
   assert.deepEqual(await send({ score: 4000 }).then((r) => [r.earned, r.coins, r.accepted]), [40, 70, false]);   // 같은 4,000점이라 그날 기록은 그대로
   assert.equal((await me(token)).coins, 70);
+});
+
+test('랭킹: 목록의 사람마다 입은 물건(look)을 같이 보내고, 계정 ID는 보내지 않는다', async () => {
+  const a = (await login('c1', 'p-device-0001')).hash.login, b = (await login('c3', 'p-device-0002')).hash.login;
+  await call('POST', '/scores', { token: a, body: score(await seeded(a), { nick: '가람', score: 5000 }) });
+  await call('POST', '/scores', { token: b, body: score(await seeded(b), { nick: '나래', score: 4000 }) });
+  // 가람은 곰 헬멧·불꽃 배트·등번호 7을 사서 입었고, 사지 않은 금색 신발도 입은 것으로 적혀 있다(산 물건만 입은 것으로 본다)
+  await env.DB.prepare('UPDATE accounts SET owned = ?, equipped = ? WHERE player_id = ?')
+    .bind(JSON.stringify(['helmet-bear', 'bat-fire', 'number-on']), JSON.stringify({ helmet: 'helmet-bear', bat: 'bat-fire', number: 'number-on', no: 7, shoe: 'shoe-gold' }), 'p-device-0001').run();
+  const day = kstDay(Date.now());   // 로그인 없이 올리던 때의 예전 기록(계정이 없다)
+  await env.DB.prepare('INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)').bind('p-legacy-0001', day, weekStart(day), '다온', 'kt', 3000, 'G').run();
+  const text = await (await call('GET', '/rankings?player=p-device-0002')).text(), ranking = JSON.parse(text);
+  assert.deepEqual(ranking.players.map((p) => [p.nick, p.look]), [
+    ['가람', { ...DEFAULTS, helmet: 'helmet-bear', bat: 'bat-fire', number: 'number-on', no: 7 }],
+    ['나래', { ...DEFAULTS, number: 'number-none' }],
+    ['다온', null],
+  ]);
+  for (const id of ['p-device-0001', 'p-device-0002', 'p-legacy-0001']) assert.ok(!text.includes(id), `${id}가 응답에 있다`);
+  assert.equal(ranking.ids, undefined);
+  assert.deepEqual([ranking.me.rank, ranking.count], [2, 3]);   // 내 순위는 그대로
+  const sent = await (await call('POST', '/scores', { token: b, body: score(await seeded(b), { nick: '나래', score: 4500 }) })).json();
+  assert.deepEqual([sent.ok, sent.players, sent.me.best], [true, undefined, 4500]);   // 점수를 보낸 답에는 목록이 없다(내 순위만)
 });
 
 test('상점: 산 것만 입고, 코인이 모자라거나 이미 있으면 못 산다', async () => {
