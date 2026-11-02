@@ -1835,3 +1835,66 @@ test.describe('이용 통계', () => {
     expect(await page.evaluate(() => window.__beacons)).toEqual([]);
   });
 });
+
+test.describe('따라가는 카메라', () => {
+  const atHome = (page) => page.evaluate(() => ['x', 'y', 'z'].every((k) => Math.abs(walkoff.cam[k] - walkoff.CAM_HOME[k]) < 1e-9));
+
+  test('홈런은 카메라가 공 뒤로 날아갔다가(z 40m까지, 관중은 다시 굽지 않음) 공이 관중석에 들어가면 끊어서 타석 시점이고, 다시 보기도 타석 시점이다(seed 42 첫 두 공은 홈런)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    const builds = await page.evaluate(() => walkoff.crowd.builds);
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    expect(await page.evaluate(() => walkoff.game.outcome.kind)).toBe('hr');
+    await page.waitForFunction(() => walkoff.cam.z > walkoff.CAM_HOME.z + 5, null, { timeout: 10000 });   // 공 뒤로 날아간다
+    let maxZ = -Infinity;
+    for (let i = 0; i < 6; i++) { maxZ = Math.max(maxZ, await page.evaluate(() => walkoff.cam.z)); await page.waitForTimeout(120); }
+    expect(maxZ).toBeLessThanOrEqual(40.01);                                     // 관중석에 붙지 않게 z 40m까지
+    expect(await page.evaluate(() => walkoff.crowd.builds)).toBe(builds);        // 날아가는 동안 관중을 다시 굽지 않는다
+    await page.waitForFunction(() => walkoff.game.flightT > walkoff.chaseEnd(walkoff.game.outcome) + 0.05);
+    expect(await atHome(page)).toBe(true);                                        // 공이 관중석에 들어가면 돌아오는 장면 없이 끊는다
+    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.1);
+    await page.keyboard.press('Space');                                           // 다음 공
+    await expect.poll(() => atHome(page)).toBe(true);
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.cam.z > walkoff.CAM_HOME.z + 5, null, { timeout: 10000 });
+    await page.keyboard.press('KeyR');                                            // 다시 보기
+    await expect.poll(() => atHome(page)).toBe(true);
+    for (let i = 0; i < 5; i++) { await page.waitForTimeout(100); expect(await atHome(page)).toBe(true); }   // 다시 보기 동안은 따라가지 않는다
+    expect(errors).toEqual([]);
+  });
+
+  test('친 공도 돈다: 뜬공은 백스핀(보이는 면이 아래로), 땅볼은 앞회전(위로)', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const seq = walkoff.makeSequence(42, false), fly = walkoff.judgeSwing(seq[0], 0, 'R'), ground = walkoff.makeSequence(1, false)[2];
+      const g = walkoff.judgeSwing(ground, -80, 'R');
+      const dy = (r) => {   // 카메라 쪽(z > 0.5) 실밥 점들이 0.01초 동안 움직인 평균(위가 +)
+        const a = walkoff.seamPoints(walkoff.battedSpin(r, 1)), b = walkoff.seamPoints(walkoff.battedSpin(r, 1.01));
+        let sum = 0, n = 0; a.forEach((p, i) => { if (p[2] > 0.5) { sum += b[i][1] - p[1]; n++; } });
+        return sum / n;
+      };
+      return { kinds: [fly.kind, g.type], fly: dy(fly), ground: dy(g) };
+    });
+    expect(r.kinds).toEqual(['hr', 'ground']);
+    expect(r.fly).toBeLessThan(-0.05);     // 멀어지는 공의 뒷면이 아래로(윗면이 홈 쪽으로 도는 백스핀)
+    expect(r.ground).toBeGreaterThan(0.05);
+    expect(errors).toEqual([]);
+  });
+
+  test('땅볼은 카메라가 타석 시점 그대로다', async ({ page }) => {
+    const errors = await open(page);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await page.evaluate(() => {   // 땅볼 아웃 결과로 바꿔 놓고 게임이 그대로 흘러가게 둔다
+      const seq = walkoff.makeSequence(1, false), g = walkoff.game, r = walkoff.judgeSwing(seq[2], -80, 'R');
+      g.seq[g.i] = seq[2];
+      Object.assign(g, { state: 'result', outcome: r, swingAt: seq[2].T - 0.08, flightT: 0, resultT: 0, revealAt: walkoff.fieldPlay(r).revealReal, replay: null, replayed: false });
+    });
+    expect(await page.evaluate(() => walkoff.game.outcome.type)).toBe('ground');
+    for (let i = 0; i < 10; i++) { await page.waitForTimeout(150); expect(await atHome(page)).toBe(true); }
+    expect(errors).toEqual([]);
+  });
+});

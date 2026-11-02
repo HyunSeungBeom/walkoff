@@ -663,6 +663,10 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const view = { w: 0, h: 0, dpr: 1, f: 0, cx: 0, cy: 0, panX: 0, panY: 0, mobile: false, shake: 0 };
 const cam = { x: 0, y: 1.4, z: -3.2 };
+// 홈런·큰 뜬공 때 공 뒤로 날아가는 카메라(2026-11-02 사용자 결정, 시안은 인프라 세션 walkoff-chasecam-proto). 방향은 늘 가운데 담장 쪽(회전 없음)이고
+// 자리(cam)만 움직인다. project가 회전 없는 핀홀이라 3D로 그리는 것은 모두 따라온다. CAM_HOME은 타석 시점(처음 자리)
+const CAM_HOME = { ...cam };
+const camMoved = () => cam.z - CAM_HOME.z > 0.3 || Math.abs(cam.x - CAM_HOME.x) > 0.3 || Math.abs(cam.y - CAM_HOME.y) > 0.3;
 const FONT = "-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif";
 const font = (size, weight = 700) => `${weight} ${Math.round(size)}px ${FONT}`;
 function resize() {
@@ -682,14 +686,37 @@ function project(x, y, z) {
   return { x: view.cx + sceneShift() + view.panX + (x - cam.x) * s, y: view.cy + view.panY - (y - cam.y) * s, s };
 }
 
-// points: [x, z, y = 0] 목록. close면 닫힌 도형
+// points: [x, z, y = 0] 목록. close면 닫힌 도형. 투영하기 전에 카메라 앞 0.1m 면(project가 null을 내는 곳)에서 자른다
+// (닫힌 도형은 서덜랜드-호지먼, 선은 구간마다). 전에는 뒤로 넘어간 점을 건너뛰어, 따라가는 카메라가 지나친 땅 도형이 엉뚱한 모양이 됐다
 function path3d(points, close = true) {
   ctx.beginPath();
-  let first = true;
-  for (const [x, z, y = 0] of points) {
-    const p = project(x, y, z);
-    if (!p) continue;
-    if (first) { ctx.moveTo(p.x, p.y); first = false; } else ctx.lineTo(p.x, p.y);
+  const near = cam.z + 0.1, P = points.map(([x, z, y = 0]) => [x, y, z]), n = P.length, inside = (p) => p[2] >= near;
+  const cut = (a, b) => { const t = (near - a[2]) / (b[2] - a[2]); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, near + 1e-6]; };
+  const runs = [];
+  if (close) {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const a = P[i], b = P[(i + 1) % n];
+      if (inside(a)) { out.push(a); if (!inside(b)) out.push(cut(a, b)); } else if (inside(b)) out.push(cut(a, b));
+    }
+    runs.push(out);
+  } else {
+    let cur = [];
+    for (let i = 0; i < n; i++) {
+      const a = P[i], b = P[i + 1];
+      if (inside(a)) cur.push(a);
+      if (!b) break;
+      if (inside(a) && !inside(b)) { cur.push(cut(a, b)); runs.push(cur); cur = []; } else if (!inside(a) && inside(b)) cur.push(cut(a, b));
+    }
+    if (cur.length) runs.push(cur);
+  }
+  for (const run of runs) {
+    let first = true;
+    for (const [x, y, z] of run) {
+      const p = project(x, y, z);
+      if (!p) continue;
+      if (first) { ctx.moveTo(p.x, p.y); first = false; } else ctx.lineTo(p.x, p.y);
+    }
   }
   if (close) ctx.closePath();
 }
@@ -844,8 +871,9 @@ function cheerCrowd(power, dur, delay = 0) { Object.assign(crowd, { at: performa
 function drawCrowd() {
   if (!view.w) return;
   const key = [view.w, view.h, view.dpr, sceneShift(), settings.team, game.opponent].join('|');
-  if (crowd.key !== key) buildCrowd(key);
+  if (crowd.key !== key) { const at = { ...cam }; Object.assign(cam, CAM_HOME); buildCrowd(key); Object.assign(cam, at); }   // 굽기는 늘 타석 시점으로
   if (!crowd.sit) return;
+  if (camMoved()) { drawCrowdChase(); return; }
   const now = performance.now() / 1000, u = (now - crowd.at) / crowd.dur, res = crowd.res;
   const ox = crowd.x0 + view.panX, oy = crowd.y0 + view.panY, H = crowd.sit.height / res;
   if (!(u >= 0 && u < 1)) { ctx.drawImage(crowd.sit, ox, oy, crowd.sit.width / res, H); return; }
@@ -861,6 +889,45 @@ function drawCrowd() {
       const q = crowd.people[Math.floor(Math.random() * crowd.people.length)];
       ctx.globalAlpha = env * (0.4 + 0.6 * Math.random());
       ctx.fillRect(q.x + view.panX - 1, q.y - 0.8 * q.s + view.panY - 1, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// 따라가는 카메라의 관중: 타석 시점으로 구운 그림을 세로 40 × 가로 4칸으로 나눠, 칸마다 사람들의 깊이(구울 때 크기 s에서 거꾸로 구함)로
+// 타석 화면 → 지금 화면의 비(k)와 이동을 구해 붙인다. 회전이 없어서 한 깊이 안에서는 정확하다. 날아가는 동안 다시 굽지 않는다(폰이 버벅인다).
+// 뒷줄(위 칸)부터 그리고, 칸마다 깊이가 달라 생기는 틈은 칸을 조금씩 겹쳐 덮는다
+const CROWD_TN = 40, CROWD_TM = 4;
+function drawCrowdChase() {
+  const W = crowd.sit.width, H = crowd.sit.height, res = crowd.res, sw = W / CROWD_TN, sh = H / CROWD_TM;
+  if (crowd.tileKey !== crowd.key) {
+    const sums = [];
+    for (const q of crowd.people) {
+      const i = Math.floor((q.x - crowd.x0) * res / sw), j = Math.floor((q.y - 0.8 * q.s - crowd.y0) * res / sh);
+      if (i >= 0 && i < CROWD_TN && j >= 0 && j < CROWD_TM) (sums[i * CROWD_TM + j] ??= []).push(view.f / q.s);   // 타석 시점에서 이 사람까지 깊이
+    }
+    crowd.tiles = sums.map((a) => (a ? a.sort((x, y) => x - y)[Math.floor(a.length / 2)] : 0));
+    crowd.tileKey = crowd.key;
+  }
+  const now = performance.now() / 1000, u = (now - crowd.at) / crowd.dur, cheering = u >= 0 && u < 1, env = cheering ? Math.min(1, u * 6, (1 - u) * 3) : 0;
+  const cx0 = view.cx + sceneShift(), dz = cam.z - CAM_HOME.z, shift = (dc) => [view.panX - (cam.x - CAM_HOME.x) * view.f / dc, view.panY + (cam.y - CAM_HOME.y) * view.f / dc];
+  const lifts = Array.from({ length: CROWD_TN }, (_, i) => env * (0.5 + 0.5 * Math.sin(now * (7 + crowd.power) + i * 1.7 + (i % 3))));
+  for (let j = 0; j < CROWD_TM; j++) {
+    for (let i = 0; i < CROWD_TN; i++) {
+      const dh = crowd.tiles[i * CROWD_TM + j], dc = dh - dz;
+      if (!dh || dc < 3) continue;
+      const lift = lifts[i], img = lift > 0.2 ? crowd.stand : crowd.sit, k = dh / dc, [tx, ty] = shift(dc);
+      const x = crowd.x0 + i * sw / res, y = crowd.y0 + j * sh / res - lift * (1 + crowd.power) * 1.6, w = k * sw / res, h = k * sh / res, ox = 0.5 + 0.03 * w, oy = 0.5 + 0.12 * h;
+      ctx.drawImage(img, i * sw, j * sh, sw, sh, cx0 + k * (x - cx0) + tx - ox, view.cy + k * (y - view.cy) + ty - oy, w + 2 * ox, h + 2 * oy);
+    }
+  }
+  if (cheering && crowd.power >= 2) {   // 카메라 플래시: 사람마다 자기 깊이로 옮긴다
+    ctx.fillStyle = '#fffbe6';
+    for (let n = 0; n < 6 * crowd.power; n++) {
+      const q = crowd.people[Math.floor(Math.random() * crowd.people.length)], dh = view.f / q.s, dc = dh - dz;
+      if (dc < 3) continue;
+      const k = dh / dc, [tx, ty] = shift(dc);
+      ctx.globalAlpha = env * (0.4 + 0.6 * Math.random()); ctx.fillRect(cx0 + k * (q.x - cx0) + tx - 1, view.cy + k * (q.y - 0.8 * q.s - view.cy) + ty - 1, 2, 2);
     }
     ctx.globalAlpha = 1;
   }
@@ -1786,6 +1853,7 @@ function drawDefense(time, runners, idlePitcher) {
 // 마지막 한 장면(약 0.02초)에 4~5cm씩 떨어져서 바로 앞 장면에서는 존 안에 보이다가 빠진다(존 밖 포크의 78%, 커브·체인지업의 65%쯤이
 // 판정 직전 두 장면에서 존과 겹쳐 보였다). 공이 그 면을 지난 뒤로 그 자리에 공 크기 동그라미를 남기고, 존 밖이면 노랗게 칠하고 몇 cm 빠졌는지 적는다
 function drawPitchMark(p) {
+  if (camMoved()) return;   // 홈플레이트 위라 따라가는 카메라 뒤로 넘어간다
   const c = project(p.tx, p.ty, 0);
   if (!c) return;
   const r = BALL_R * c.s, out = zoneMiss(p) > 0;
@@ -1799,6 +1867,7 @@ function drawPitchMark(p) {
 }
 
 function drawZone(alpha) {
+  if (camMoved()) return;
   const tl = project(ZONE.left, ZONE.top, 0), br = project(ZONE.right, ZONE.bottom, 0);
   if (!tl || !br) return;
   const w = br.x - tl.x, h = br.y - tl.y;
@@ -1837,8 +1906,14 @@ function rotateAbout(v, k, th) {
 }
 // 회전 상태 spin = { type, n, t, lefty }의 실밥 점들(화면 기준 단위 구). 공마다 처음 방향을 공 번호로 다르게 두고,
 // 좌완은 거울로 뒤집는다(축의 x 성분과 회전 방향이 반대라 커브는 좌완도 앞회전이다). spin이 없으면(맞은 공·송구) 고정 방향
+// 친 공의 회전(2026-11-02 사용자 '따라가는 공이 너무 정지해 있다'). 전에는 맞은 공을 실밥 고정으로 그렸다. 뜬공·홈런·직선타는 백스핀(윗면이 홈 쪽으로),
+// 땅볼은 앞회전이고, 축은 날아가는 방향에 수평으로 직각이다(화면 기준 축, 투구처럼 60fps에서 읽히게 줄인 빠르기)
+function battedSpin(r, t) {
+  const a = clamp(r.spray ?? 0, -FAIR_SPRAY, FAIR_SPRAY) * DEG;
+  return { axis: [Math.cos(a), 0, Math.sin(a)], w: r.type === 'ground' ? -18 : r.type === 'line' ? 16 : 22, t, n: game.i };
+}
 function seamPoints(spin, ahead = 0) {
-  const def = spin ? SPIN[spin.type] ?? SPIN.fastball : null;
+  const def = spin ? (spin.axis ? spin : SPIN[spin.type] ?? SPIN.fastball) : null;
   const phase = spin ? ((spin.n ?? 0) * 2.399) % (Math.PI * 2) : 0.6;
   const pre = SEAM.map((v) => rotateAbout(v, [0.6, 0.8, 0], phase));   // 처음 방향
   if (!def) return pre;
@@ -1860,7 +1935,10 @@ function drawSeam(c, r, pts, lw, alpha) {
 function drawBall(pos, { alpha = 1, spin = null, scale = 1.5, shadow = true, glow = false } = {}) {
   const p = project(pos.x, pos.y, pos.z);
   if (!p) return;
-  const r = Math.max(glow ? 2.5 : 1.6, BALL_R * scale * p.s);
+  const chase = glow && camMoved();
+  // 따라가는 카메라: 친 공을 실제 크기의 1.2배로, 멀어도 화면 높이의 0.6%보다는 크게 그리고 빛번짐도 줄인다(타석 시점처럼 2배로 그리면 공 뒤 8m에서
+  // 지름이 20px을 넘어 너무 컸고, 실제 크기면 20m만 떨어져도 점이라 멀어 보였다)
+  const r = chase ? Math.max(BALL_R * 1.2 * p.s, view.h * CHASE.ballMin) : Math.max(glow ? 2.5 : 1.6, BALL_R * scale * p.s), halo = chase ? 2.5 : 4;
   if (shadow && pos.y > 0.05) {
     const sp = project(pos.x, 0, pos.z);
     if (sp) {
@@ -1871,9 +1949,9 @@ function drawBall(pos, { alpha = 1, spin = null, scale = 1.5, shadow = true, glo
   ctx.save();
   ctx.globalAlpha = alpha;
   if (glow) {
-    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 4);
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * halo);
     g.addColorStop(0, 'rgba(255,255,255,0.6)'); g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r * 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r * halo, 0, Math.PI * 2); ctx.fill();
   }
   ctx.fillStyle = '#fbfaf5';
   ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
@@ -1886,7 +1964,7 @@ function drawBall(pos, { alpha = 1, spin = null, scale = 1.5, shadow = true, glo
     ctx.clip();
     const lw = Math.max(1, r * 0.13);
     if (spin) {   // 바로 앞 두 장면의 실밥을 옅게 겹쳐 빠르게 도는 느낌을 준다
-      const step = (SPIN[spin.type]?.w ?? 0) / 60;
+      const step = (spin.w ?? SPIN[spin.type]?.w ?? 0) / 60;
       drawSeam(p, r, seamPoints(spin, -2 * step), lw, 0.18);
       drawSeam(p, r, seamPoints(spin, -step), lw, 0.32);
     }
@@ -2239,6 +2317,7 @@ const unit3 = (v) => V.mul(v, 1 / (V.len(v) || 1));
 const n2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
 const dot2 = (a, b) => a.x * b.x + a.y * b.y;
 function drawBatterFigure(k, col, dy = 0) {
+  if (camMoved() && k.world && k.chest[2] - cam.z < 1.5) return;   // 따라가는 카메라 곁을 지나는 사람은 그리지 않는다(뒤로 넘어간 점이 버려져 모양이 깨진다)
   const P = (p) => { const q = k.world ? project(p[0], p[1], p[2]) : batterPoint(p); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
   const c0 = P(k.chest), p0 = P(k.pelvis);
   if (!c0 || !p0) return;
@@ -3015,6 +3094,48 @@ function cameraFocus(r, t) {
   const goal = (run.goals.find((q) => q.at > run.dist + 0.3) ?? run.goals[run.goals.length - 1]).p, dx = goal[0] - run.x, dz = goal[1] - run.z, d = Math.hypot(dx, dz);
   const lead = d < 0.01 ? 0 : Math.min(0.5 * d, 0.22 * view.w * Math.max(1, run.z - cam.z) / view.f) / d;
   return { x: run.x + dx * lead, y: 1.2, z: run.z + dz * lead };
+}
+// 따라갈 타구: 홈런, 또는 페어 지역의 뜬공·직선타 중 비거리 70m 이상. 땅볼·파울·1루 승부·다시 보기는 타석 시점 그대로
+const CHASE = { start: 0.25, backStart: 18, minBack: 8, lift: 0.8, k: 3.5, maxZ: 40, hrStop: 28, flyStop: 14, hold: 0.35, minDist: 70, ballMin: 0.006 };
+const chaseable = (r) => !!r && !r.took && r.kind !== 'whiff' && r.kind !== 'foul' && Math.abs(r.spray ?? 99) <= 45
+  && (r.kind === 'hr' || ((r.type === 'fly' || r.type === 'line') && r.dist >= CHASE.minDist));
+// 카메라가 갈 자리. 맞은 뒤 0.25초는 타석 시점(스윙·맞는 순간)이고, 그 뒤 타석 카메라에서 공이 떨어질 곳으로 가는 수평 직선 위를 나아간다
+// (떨어질 곳은 타석에서 볼 때와 같은 쪽 화면에 남고, 좌우 나머지는 화면 밀기가 맞춘다). 공 뒤 거리는 처음 40m에서 떨어질 곳에 가까워질수록 16m까지
+// 줄이고(높이 뜬 공에 너무 붙으면 방향이 고정이라 공이 위 시야 밖으로 나간다), 높이는 공 높이의 0.8배만큼 올린다. 홈런은 담장 28m 앞,
+// 뜬공은 떨어질 곳 14m 앞에서 멈추고 z 40m를 넘지 않는다(60m에서는 흐린 관중이 화면을 채웠다). 공이 떨어지면(잡히면, 홈런은 관중석에 들어가면)
+// 0.35초 뒤 돌아오는 장면 없이 끊는다(2026-11-02 사용자 '공 떨어지는 것까지만, 돌아오는 것은 안 보여 줘도'). null이면 바로 타석 시점
+function chaseEnd(r) {
+  if (r.chaseEnd !== undefined) return r.chaseEnd;
+  const T = flightDuration(r), play = fieldPlay(r);
+  let land = r.kind === 'out' ? catchTime(r) : T;
+  if (r.kind === 'hr') for (let t = 0; t < T; t += 1 / 60) if (play.ball(t).hidden) { land = t; break; }
+  return (r.chaseEnd = land + CHASE.hold);
+}
+function chaseTarget() {
+  const g = game, r = g.outcome;
+  if (g.state !== 'result' || g.replayed || g.replay != null || !chaseable(r) || g.flightT > chaseEnd(r)) return null;
+  if (g.flightT < CHASE.start) return CAM_HOME;
+  const T = flightDuration(r);
+  const b = flightPos(r, Math.min(g.flightT, T)), land = flightPos(r, T);
+  const lx = land.x - CAM_HOME.x, lz = land.z - CAM_HOME.z, L = Math.hypot(lx, lz) || 1, dx = lx / L, dz = lz / L;
+  const along = (p) => (p[0] - CAM_HOME.x) * dx + (p[1] - CAM_HOME.z) * dz;
+  const stop = r.kind === 'hr' ? along(polar(r.spray, fenceDist(r.spray) - CHASE.hrStop)) : L - CHASE.flyStop;
+  const y = CAM_HOME.y + CHASE.lift * Math.max(0, b.y - CAM_HOME.y), ab = along([b.x, b.z]), back = lerp(CHASE.backStart, CHASE.minBack, smooth(ab / L));
+  const s = Math.max(0, Math.min(ab - back, stop, dz > 0.05 ? (CHASE.maxZ - CAM_HOME.z) / dz : 0));
+  return { x: CAM_HOME.x + dx * s, y, z: CAM_HOME.z + dz * s };
+}
+// 카메라를 한 장면만큼 옮긴다(목표로 지수 감쇠). 끊을 때는 화면 밀기도 한 번에 타석 시점 값으로 맞춘다. 홈런 흔들림은 카메라가 움직이기 시작하면 멈춘다
+function chaseStep(dt) {
+  const t = chaseTarget();
+  if (!t) {
+    const cut = camMoved() && game.state === 'result' && hasBattedBall() && !game.replayed;
+    Object.assign(cam, CAM_HOME);
+    if (cut) followBall(cameraFocus(game.outcome, game.flightT), 1);
+    return;
+  }
+  const k = Math.min(1, dt * CHASE.k);
+  cam.x += (t.x - cam.x) * k; cam.y += (t.y - cam.y) * k; cam.z += (t.z - cam.z) * k;
+  if (camMoved()) view.shake = 0;
 }
 function followBall(pos, dt) {
   const p = project(pos.x, pos.y, pos.z);
@@ -4451,6 +4572,10 @@ function drawBackNumber(k, P, col, jersey) {
 // 공 꼬리: 날아가는 공의 지난 0.26초 자리를 점으로 잇는다. flightPos는 시간만으로 자리를 정해서 따로 기록할 필요가 없다.
 // 하트·별은 하나 건너 하나씩 그려야 모양이 겹치지 않고, 번개는 그 자리들을 지그재그로 잇는다
 function drawTrailDots(pts, kind, radiusOf) {
+  if (camMoved()) {   // 따라가는 카메라: 카메라 2m 안의 점은 빼고 크기에 상한을 둔다(바로 뒤에서 보면 100px 넘는 덩어리가 됐다)
+    const cap = Math.max(6, view.h * 0.012), minS = view.f / 2, r0 = radiusOf;
+    pts = pts.filter((q) => !(q.s >= minS)); radiusOf = (q) => Math.min(cap, r0(q));
+  }
   if (kind === 'trail-lightning') { drawBoltTrail(pts, radiusOf); return; }
   const t = fxTime();
   pts.forEach((q, i) => {
@@ -4995,6 +5120,7 @@ function update(dt) {
 
   if (game.state === 'result' && hasBattedBall() && !game.replayed) followBall(cameraFocus(game.outcome, game.flightT), dt);   // 송구 때는 받는 사람 쪽으로 먼저 간다
   else { const k = Math.min(1, dt * 4); view.panX -= view.panX * k; view.panY -= view.panY * k; }
+  chaseStep(dt);   // 홈런·큰 뜬공은 카메라가 공 뒤로 날아간다
 }
 
 // ===== 입력: 스페이스바, 클릭, 탭 =====
@@ -5064,7 +5190,7 @@ function render(time) {
 
   if (hasBattedBall() && game.replay == null) {   // 다시 보기 동안 날아간 타구는 감춘다
     const fp = fieldPlay(r).ball(game.flightT);   // 친 공 → 글러브에 든 공 → 던진 공. 꼬리는 친 공에만
-    if (fp.z > MOUND && !fp.hidden) { if (fp.trail) drawBallTrail(r, game.flightT); drawBall(fp, { glow: fp.trail, scale: 2 }); }
+    if (fp.z > MOUND && !fp.hidden) { if (fp.trail) drawBallTrail(r, game.flightT); drawBall(fp, { glow: fp.trail, scale: 2, spin: fp.trail ? battedSpin(r, game.flightT) : null }); }
   }
   drawZone(game.state === 'result' ? 0.6 : 0.9);
   if (game.state === 'result' && game.resultT > game.revealAt) drawTrail(p, game.replay != null ? game.replay / p.T : 1.0);
@@ -5077,7 +5203,7 @@ function render(time) {
   }
   if (hasBattedBall() && game.replay == null) {
     const fp = fieldPlay(r).ball(game.flightT);
-    if (fp.z <= MOUND && !fp.hidden) { if (fp.trail) drawBallTrail(r, game.flightT); drawBall(fp, { glow: fp.trail, scale: 2 }); }
+    if (fp.z <= MOUND && !fp.hidden) { if (fp.trail) drawBallTrail(r, game.flightT); drawBall(fp, { glow: fp.trail, scale: 2, spin: fp.trail ? battedSpin(r, game.flightT) : null }); }
   }
   // 다시 보기 동안에는 타자도 공에 맞춰 다시 휘두른다(휘두르기 전에는 준비 자세)
   const tb = game.replay ?? bt;
@@ -5151,7 +5277,7 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime };
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin };
 </script>
 </body>
 </html>
