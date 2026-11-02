@@ -1563,6 +1563,7 @@ function buildPlay(r, o = {}) {
     if (r.kind === 'out' || r.infield) {   // 1루 경주(r.race)대로: 잡는 때·공을 빼 던지는 때·송구가 1루에 닿는 때가 판정과 같다
       const race = r.race ?? computeRace(r, r.bats ?? 'R'), safe = !!r.infield;   // 판정 없이 만든 시험용 결과는 그 자리에서 잰다
       const X = byPos(race.pos), to = race.arrive?.to, T = race.field.t, C = flightPos(r, T);
+      let touch = race.arrive?.t;   // 아웃이 되는 때(송구가 1루에 닿거나 1루수가 베이스를 밟는 때)
       const bare = race.how === 'run' && race.charge && path.speed(T) < 2.5;   // 거의 멈춘 공은 달려 나와 맨손으로 줍는다
       // 잡기: 서서(set), 달려가며(run·plant, 1루수는 잡고 멈춘다), 몸을 날려(dive)
       const got = race.how === 'set' ? fieldSet(X, C, T)
@@ -1575,11 +1576,18 @@ function buildPlay(r, o = {}) {
       if (!race.arrive) {   // 던질 틈이 없다: 공을 쥐고 1루 쪽을 본다
         pose(X, Math.max(freeAt(X), ready), at, faceTo(at, BASE1), FPOSE.hold, { name: 'hold' });
         if (X !== B1) arriveBy(B1, bag1(at), race.runner, FPOSE.cover, { faceTo: at, name: 'cover' });
-      } else if (to === 'self') {   // 1루수가 잡아 직접 베이스를 달려 밟고 2.5m 지나며 선다
-        const from = where(X), bag = stepToward(BASE1, from, 0.3), past = stepToward(bag, from, -2.5), route = [from, bag, past], G = gaitOf(X);
-        const track = runTrack({ gait: G, route, total: flatDist(from, bag) + 2.5, until: Infinity, delay: 0, brake: FIELD_BRAKE }), t0 = Math.max(freeAt(X) - 0.15, race.release.t);
+      } else if (to === 'self') {   // 1루수가 잡아 직접 베이스를 밟는다
+        // 주자보다 0.9초 넘게 먼저면 천천히 뛰어 가서 주자보다 0.6초쯤 먼저 밟고 선다(2026-11-02 사용자 '1루수 땅볼이 뚝딱거린다, 갑자기 막 달린다'.
+        // 전에는 늘 전력으로 출발해 주자보다 1초 넘게 먼저 닿는 공도 몸을 숙이고 내달렸다). 빠듯하면 전력으로 밟고 2.5m 지나간다
+        const from = where(X), bag = stepToward(BASE1, from, 0.3), d = flatDist(from, bag), t0 = Math.max(freeAt(X) - 0.15, race.release.t), easy = !safe && race.runner - race.arrive.t > 0.9;
+        // 걸음새는 필요한 빠르기에 맞춰 조깅과 전력 사이로 섞고, 빠르기는 천천히(시간 상수 0.7초) 올린다
+        const need = clamp(d / Math.max(0.3, race.runner - 0.6 - t0 - 0.7), FIELD_JOG.top, FIELD_RUN_IN.top), k = (need - FIELD_JOG.top) / (FIELD_RUN_IN.top - FIELD_JOG.top);
+        const G = easy ? { ...Object.fromEntries(Object.keys(FIELD_JOG).map((key) => [key, Array.isArray(FIELD_JOG[key]) ? FIELD_JOG[key].map((v, i) => lerp(v, FIELD_RUN_IN[key][i], k)) : lerp(FIELD_JOG[key], FIELD_RUN_IN[key], k)])), top: need, tau: 0.7, start: FIELD_JOG.start, drive: FIELD_JOG.drive } : gaitOf(X);
+        const over = easy ? 0.6 : 2.5, past = stepToward(bag, from, -over), route = [from, bag, past];
+        const track = runTrack({ gait: G, route, total: d + over, until: Infinity, delay: 0, brake: FIELD_BRAKE });
         acts[X.pos].push({ k: 'move', t0, t1: t0 + track.T[track.T.length - 1], from, to: past, route, track, gait: G });
         pose(X, t0 + track.T[track.T.length - 1], past, faceTo(past, [0, 0.3]), FPOSE.hold, { name: 'hold' });
+        if (easy) touch = t0 + track.T[Math.max(0, track.S.findIndex((x) => x >= d))];   // 베이스를 밟는 때(아웃이 되는 때)
       } else if (to === 'tag') {   // 주자 길목에서 잡아 오는 주자를 태그한다
         const tagAt = atTime(race.arrive.t - 0.15);
         pose(X, race.arrive.t - 0.15, tagAt, faceTo(tagAt, [0, 0.3]), FPOSE.fieldLow, { name: 'tag' });
@@ -1602,8 +1610,9 @@ function buildPlay(r, o = {}) {
         throwTo(X, at, B1, rvAt, FPOSE.stretch, t0, 0, race.arrive.t);
         receive(B1, rvAt, at, race.arrive.t, FPOSE.stretch, 'stretch');
       }
-      const decide = race.arrive ? Math.max(race.arrive.t, safe ? race.runner : 0) : race.runner;
-      reveal = safe ? Math.max(race.runner, race.arrive?.t ?? race.runner) + (race.arrive ? 0.05 : 0.1) : race.arrive.t;
+      if (touch !== race.arrive?.t) play.ev.arrive = touch;
+      const decide = race.arrive ? Math.max(touch, safe ? race.runner : 0) : race.runner;
+      reveal = safe ? Math.max(race.runner, race.arrive?.t ?? race.runner) + (race.arrive ? 0.05 : 0.1) : touch;
       end = Math.max(decide, reveal);
       if (race.arrive && Math.abs(race.margin) < 0.15) {   // 간발: 판정 앞뒤를 0.4배로 느리게, 1루 위에 세이프/아웃
         const d = Math.max(race.runner, race.arrive.t);
