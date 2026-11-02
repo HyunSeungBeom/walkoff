@@ -1039,7 +1039,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('친 타자는 결과대로 뛴다: 땅볼 아웃은 송구가 먼저 닿고, 뜬공은 잡히면 멈추고, 2루타는 2루에 서고, 홈런은 홈까지 돈다', async ({ page }) => {
+  test('친 타자는 결과대로 뛴다: 땅볼 아웃은 송구가 먼저 닿고, 뜬공은 잡히면 멈추고, 단타는 1루를 돌았다 돌아오고, 2루타는 미끄러져 2루에 서고, 홈런은 홈까지 돈다', async ({ page }) => {
     const errors = await open(page);
     const r = await page.evaluate(() => {
       const seq = walkoff.makeSequence(1, false), out = (n, dt) => walkoff.judgeSwing(seq[n - 1], dt, 'R');
@@ -1051,7 +1051,20 @@ test.describe('화면', () => {
         notYet: walkoff.runnerAt(hr, 0.2), foul: walkoff.runnerAt(foul, 2),
         groundAtThrow: near(g1, walkoff.BASE1), groundEnd: { speed: g8.speed, past: near(g8, walkoff.BASE1) },
         flyStopped: walkoff.runnerAt(fly, walkoff.fieldPlay(fly).end + 2).speed,
-        single: near(walkoff.runnerAt(single, 8), walkoff.BASE1), double: near(walkoff.runnerAt(double, 10), walkoff.BASE2),
+        single: (() => {   // 1루를 지나 2루 쪽으로 간 거리(가장 멀 때)와 돌아온 뒤
+          const B1 = walkoff.BASE1, B2 = walkoff.BASE2, u = [B2[0] - B1[0], B2[1] - B1[1]], n = Math.hypot(u[0], u[1]);
+          let past = 0; for (let t = 4; t < 14; t += 0.05) { const q = walkoff.runnerAt(single, t); past = Math.max(past, ((q.x - B1[0]) * u[0] + (q.z - B1[1]) * u[1]) / n); }
+          return { past, back: near(walkoff.runnerAt(single, 14), B1) };
+        })(),
+        double: near(walkoff.runnerAt(double, 11), walkoff.BASE2),
+        slide: (() => {   // 2루를 밟는 때: 엉덩이를 낮춰 미끄러지며 왼발로 베이스를 짚는다
+          const t = walkoff.runnerReach(double, walkoff.BASE2), k = walkoff.runnerSkeleton(walkoff.runnerAt(double, t)), B2 = walkoff.BASE2;
+          return { pelvisY: k.pelvis[1], footToBag: Math.hypot(k.feet.l[0] - B2[0], k.feet.l[2] - B2[1]), upLater: walkoff.runnerSkeleton(walkoff.runnerAt(double, t + 1.5)).pelvis[1] };
+        })(),
+        infield: (() => {   // 내야 안타는 1루를 지나쳐 멈췄다가 돌아온다
+          let r = null; for (let sd = 1; sd < 30 && !r; sd++) { const q = walkoff.makeSequence(sd, false); for (let n = 0; n < 16 && !r; n++) for (let dt = -90; dt <= 90; dt += 3) { const x = walkoff.judgeSwing(q[n], dt, 'R'); if (x.infield) { r = x; break; } } }
+          return { past: near(walkoff.runnerAt(r, 6), walkoff.BASE1), back: near(walkoff.runnerAt(r, 12), walkoff.BASE1) };
+        })(),
         hr10: walkoff.runnerAt(hr, 10).dist, hrHome: near(walkoff.runnerAt(hr, 40), [0, 0]),
         camera: (() => {   // 화면은 주자 몸이 아니라 주자가 가는 베이스 쪽을 앞서 잡는다
           const q = walkoff.runnerAt(hr, 8), c = walkoff.cameraFocus(hr, 8), g = q.goals.find((x) => x.at > q.dist + 0.3).p, far = (a) => Math.hypot(a[0] - g[0], a[1] - g[1]);
@@ -1066,8 +1079,14 @@ test.describe('화면', () => {
     expect(r.groundEnd.speed).toBe(0);
     expect(r.groundEnd.past).toBeLessThan(7);     // 1루를 지나쳐 달려 나가 짧은 걸음으로 멈춘다
     expect(r.flyStopped).toBe(0);
-    expect(r.single).toBeLessThan(3.5);      // 1루를 돌아 2루 쪽으로 3m
+    expect(r.single.past).toBeGreaterThan(3.5);   // 1루를 돌아 2루 쪽으로 4.5m 나갔다가
+    expect(r.single.back).toBeLessThan(0.6);      // 외야수가 공을 던지면 1루로 돌아와 선다
     expect(r.double).toBeLessThan(0.5);      // 2루에 선다
+    expect(r.slide.pelvisY).toBeLessThan(0.4);    // 미끄러져 들어가
+    expect(r.slide.footToBag).toBeLessThan(0.35); // 왼발로 베이스를 짚고
+    expect(r.slide.upLater).toBeGreaterThan(0.8); // 일어선다
+    expect(r.infield.past).toBeGreaterThan(3);    // 내야 안타는 1루를 지나쳐 달렸다가
+    expect(r.infield.back).toBeLessThan(0.6);     // 돌아온다
     expect(r.hr10).toBeGreaterThan(27.43);   // 1루를 지났다
     expect(r.hrHome).toBeLessThan(0.5);      // 홈까지 돈다
     expect(r.camera.lead).toBeGreaterThan(1);   // 공이 넘어간 뒤 화면은 주자보다 앞(가는 베이스 쪽)을 잡아서, 주자가 화면 안을 달려 나간다
@@ -1082,6 +1101,11 @@ test.describe('화면', () => {
       let reach = 0;
       for (let t = 0.55; t < 4; t += 0.02) {   // 우타는 0.52초에 뛰기 시작한다
         const k = walkoff.runnerSkeleton(walkoff.runnerAt(ground, t));
+        for (const s of ['l', 'r']) reach = Math.max(reach, Math.hypot(k.feet[s][0] - k.hips[s][0], k.feet[s][1] - k.hips[s][1], k.feet[s][2] - k.hips[s][2]));
+      }
+      const double = walkoff.judgeSwing(seq[0], -35, 'R'), t2 = walkoff.runnerReach(double, walkoff.BASE2);
+      for (let t = t2 - 1; t < t2 + 1.5; t += 0.02) {   // 2루타 슬라이딩과 일어서기
+        const k = walkoff.runnerSkeleton(walkoff.runnerAt(double, t));
         for (const s of ['l', 'r']) reach = Math.max(reach, Math.hypot(k.feet[s][0] - k.hips[s][0], k.feet[s][1] - k.hips[s][1], k.feet[s][2] - k.hips[s][2]));
       }
       const play = walkoff.fieldPlay(hr);
