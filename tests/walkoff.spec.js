@@ -598,6 +598,35 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('?api=는 이 컴퓨터 주소만 받는다. 다른 주소를 주면 무시해서 로그인 표가 랭킹 서버 말고는 가지 않는다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '주소 검사는 화면 크기와 상관없어서 PC에서만 본다');
+    const elsewhere = [], local = [];   // 다른 주소, 이 컴퓨터의 wrangler dev(8787)로 간 요청. 둘 다 가로채서 밖으로 나가지 않는다
+    await page.route((url) => url.hostname.endsWith('other.example'), (route) => { elsewhere.push(route.request().url()); return route.abort(); });
+    await page.route((url) => url.port === '8787' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost'), (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      local.push({ url: req.url(), auth: req.headers().authorization ?? null });
+      return route.abort();
+    });
+    const errors = await open(page, `?api=${encodeURIComponent('https://other.example')}`, { login: true });
+    const sent = (p) => errors.calls.some((c) => c.path === p && c.auth === `Bearer ${SESSION}`);
+    await expect.poll(() => sent('/me') && sent('/seeds')).toBe(true);   // 열자마자 보내는 계정 확인과 다음 판 시드는 랭킹 서버로 간다
+    expect(await page.evaluate(() => walkoff.RANKING_API)).toBe(API);
+    for (const raw of ['http://127.0.0.1.other.example:8787', 'https://other.example/?to=http://127.0.0.1:8787', 'not a url']) {
+      await page.goto(`${PAGE}?api=${encodeURIComponent(raw)}`);
+      await page.waitForFunction(() => !!window.walkoff);
+      expect(await page.evaluate(() => walkoff.RANKING_API), raw).toBe(API);
+    }
+    expect(elsewhere).toEqual([]);
+    for (const [raw, used] of [['http://127.0.0.1:8787', 'http://127.0.0.1:8787'], ['http://localhost:8787/', 'http://localhost:8787']]) {   // worker 폴더의 wrangler dev
+      await page.goto(`${PAGE}?api=${encodeURIComponent(raw)}`);
+      await page.waitForFunction(() => !!window.walkoff);
+      expect(await page.evaluate(() => walkoff.RANKING_API), raw).toBe(used);
+      await expect.poll(() => local.some((r) => r.url === `${used}/me` && r.auth === `Bearer ${SESSION}`)).toBe(true);
+    }
+    expect(errors).toEqual([]);
+  });
+
   test('로그인하지 않고 친 판은 랭킹에 보내지 않고, 끝 화면에서 로그인해도 그 판은 올리지 않는다(다음 판부터)', async ({ page }) => {
     const errors = await open(page);   // ?seed=42: 첫 공이 스트라이크라 공 하나로 끝난다
     const legacy = { nick: '테스트', team: 'lg', day: await page.evaluate(() => walkoff.today()), score: 9000, lights: 'G', mode: 'challenge', seed: 42 };
