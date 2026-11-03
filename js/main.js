@@ -1,19 +1,25 @@
-// walkoff 게임: 화면, 소리, 수비·주루 그림, 진행, 입력, 랭킹·상점. 판정 규칙은 js/rules.js에서 가져온다(2026-11-03 코드 나누기 1단계)
+// walkoff 게임: 화면, 소리, 수비·주루 그림, 진행, 입력, 랭킹·상점. 판정 규칙은 js/core/, 화면 글은 js/view/text.js, 판 상태는 js/game/state.js에서
+// 가져온다(2026-11-03 코드 나누기 2단계. 나머지도 차례로 나눈다)
+import { clamp, DEG, easeOut, lerp, mulberry32, pickWeighted, polar } from './core/math.js';
+import { BALL_R, BASE1, BASE2, BASE3, FAIR_SPRAY, fenceDist, INFIELDERS, MOUND, OUTFIELDERS, RELEASE, ZONE } from './core/field.js';
+import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, zoneMiss } from './core/pitches.js';
+import { CHANCES, hitStreakBefore as hitStreakIn, hitStreakBonus, hrStreakBefore as hrStreakIn, hrStreakBonus, PERFECT_BONUS } from './core/score.js';
 import {
-  BALL_R, BASE1, BASE2, BASE3, CARRY_BY_LA, CHANCES, DEG, DIVE_GLOVE, DIVE_LEAD, DIVE_PUSH, EXCHANGE, FAIR_MS, FAIR_SPRAY, FIELD_REACT, FIELD_SPEED,
-  FOUL_MS, GAPS, GRASS_AT, GRASS_DECEL, GROUND_DECEL, INFIELDERS, MOUND, OUTFIELDERS, PCOVER, PCOVER_LEN, PERFECT_BONUS, PERFECT_MS, PITCHES, PITCH_MIX,
-  PLAY_EX, PLAY_SPEED, POINTS, REACH_M, RELEASE, RUN_REACH, RUN_TO_1B, SEQ_LEN, SET_REACH, SET_SLACK, THROW_SPEED, TOSS_STEP, ZONE, ballPos, between,
-  carry, clamp, classify, computeRace, diveShort, easeOut, eun, fenceDist, fieldArea, fieldHome, flightTime, groundPath, hardMatchup as hardMatchupIn,
-  hasBatchim, hitStreakBefore as hitStreakIn, hitStreakBonus, hrExtra, hrLiftK, hrStreakBefore as hrStreakIn, hrStreakBonus, interceptGround, judgeSwing,
-  judgeTake as judgeTakeIn, lerp, makePitch, makeSequence, mulberry32, nearest, offText, pickWeighted, pitcherHand, polar, reachDive, reachGround,
-  reasonFor, runnerTimeAt, settleAtFirst, sprintDist, sprintTime, throughGap, zoneMiss, zoneOff as zoneOffIn,
-} from './rules.js';
-// 규칙은 게임 상태를 모르니 여기서 이어 준다
-const judgeTake = (p, bats = settings.bats) => judgeTakeIn(p, bats);
+  computeRace, DIVE_GLOVE, diveShort, FIELD_REACT, FIELD_SPEED, GRASS_DECEL, groundPath, interceptGround, PCOVER, PCOVER_LEN, PLAY_EX, reachGround,
+  RUN_REACH, RUN_TO_1B, SET_REACH, sprintDist, sprintTime, TOSS_STEP,
+} from './core/race.js';
+import { FAIR_MS, FOUL_MS, hrExtra, hrLiftK, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
+import { applyScenario as applyScenarioIn, makeScenario as makeScenarioIn } from './core/scenario.js';
+import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
+import { labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, zoneOffText } from './view/text.js';
+import { game, settings } from './game/state.js';
+// 규칙은 게임 상태를 모르니 여기서 이어 준다. 판정 결과의 이름·이유 글은 view/text.js가 붙인다
+const judgeSwing = (p, dt, bats) => labelSwing(judgeSwingIn(p, dt, bats), p);
+const judgeTake = (p, bats = settings.bats) => labelTake(judgeTakeIn(p), p, bats);
 const hrStreakBefore = (i) => hrStreakIn(game.results, i);
 const hitStreakBefore = (i) => hitStreakIn(game.results, i);
 const hardMatchup = (p) => hardMatchupIn(p, settings.bats);
-const zoneOff = (p, bats = settings.bats) => zoneOffIn(p, bats);
+const zoneOff = (p, bats = settings.bats) => zoneOffText(p, bats);
 
 // ===== 소리: 파일 없이 Web Audio로 합성 =====
 const Sound = (() => {
@@ -1607,7 +1613,7 @@ function drawTrail(p, uEnd) {
     ctx.save(); ctx.setLineDash([6, 6]); ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
   }
-  ctx.fillStyle = def.color;
+  ctx.fillStyle = PITCH_COLORS[p.type];
   for (let u = 0.03; u <= uEnd + 1e-6; u += 0.035) {
     const q = ballPos(p, u), s = project(q.x, q.y, q.z);
     if (!s) continue;
@@ -1659,19 +1665,20 @@ const BATTER_COLOR = {
 // ===== 팀 =====
 // KBO 10개 구단(2026-10-28 사용자 결정). 구단 이름은 상표라서 로고·엠블럼은 쓰지 않고, 팀 고르기·랭킹 화면에
 // "KBO·각 구단과 관계없는 비공식 팬 게임"이라고 적는다. 색은 공식 색상 코드가 아니라 대표 색에 가깝게 고른 값이다.
-// id는 랭킹 서버(worker/src/rules.js)의 TEAM_IDS와 순서까지 같아야 한다. main은 상의·헬멧(소매는 main을 어둡게), accent는 양말 색이다
-const TEAMS = [
-  { id: 'kia', name: 'KIA 타이거즈', short: 'KIA', main: '#ea0029', accent: '#0b1c2c' },
-  { id: 'kt', name: 'KT 위즈', short: 'KT', main: '#1b1b1b', accent: '#eb1c24' },
-  { id: 'lg', name: 'LG 트윈스', short: 'LG', main: '#a50034', accent: '#1b1b1b' },
-  { id: 'nc', name: 'NC 다이노스', short: 'NC', main: '#315288', accent: '#c7a079' },
-  { id: 'ssg', name: 'SSG 랜더스', short: 'SSG', main: '#ce0e2d', accent: '#ffb81c' },
-  { id: 'doosan', name: '두산 베어스', short: '두산', main: '#131230', accent: '#f4f5f9' },
-  { id: 'lotte', name: '롯데 자이언츠', short: '롯데', main: '#041e42', accent: '#d00f31' },
-  { id: 'samsung', name: '삼성 라이온즈', short: '삼성', main: '#074ca1', accent: '#f4f5f9' },
-  { id: 'kiwoom', name: '키움 히어로즈', short: '키움', main: '#820024', accent: '#f4f5f9' },
-  { id: 'hanwha', name: '한화 이글스', short: '한화', main: '#ff6600', accent: '#1b1b1b' },
-];
+// id와 순서는 core/catalog.js의 TEAM_IDS(랭킹 서버와 같이 쓴다). main은 상의·헬멧(소매는 main을 어둡게), accent는 양말 색이다
+const TEAM_LOOKS = {
+  kia: { name: 'KIA 타이거즈', short: 'KIA', main: '#ea0029', accent: '#0b1c2c' },
+  kt: { name: 'KT 위즈', short: 'KT', main: '#1b1b1b', accent: '#eb1c24' },
+  lg: { name: 'LG 트윈스', short: 'LG', main: '#a50034', accent: '#1b1b1b' },
+  nc: { name: 'NC 다이노스', short: 'NC', main: '#315288', accent: '#c7a079' },
+  ssg: { name: 'SSG 랜더스', short: 'SSG', main: '#ce0e2d', accent: '#ffb81c' },
+  doosan: { name: '두산 베어스', short: '두산', main: '#131230', accent: '#f4f5f9' },
+  lotte: { name: '롯데 자이언츠', short: '롯데', main: '#041e42', accent: '#d00f31' },
+  samsung: { name: '삼성 라이온즈', short: '삼성', main: '#074ca1', accent: '#f4f5f9' },
+  kiwoom: { name: '키움 히어로즈', short: '키움', main: '#820024', accent: '#f4f5f9' },
+  hanwha: { name: '한화 이글스', short: '한화', main: '#ff6600', accent: '#1b1b1b' },
+};
+const TEAMS = TEAM_IDS.map((id) => ({ id, ...TEAM_LOOKS[id] }));
 const teamById = (id) => TEAMS.find((t) => t.id === id) ?? null;
 
 // 상대 팀은 내 팀이 아닌 팀 가운데서 판마다 고른다. 공 순서와 다른 난수를 써서 순서는 그대로 둔다
@@ -3106,7 +3113,7 @@ function drawPitchInfo(rect) {
   const p = game.seq[game.i], def = PITCHES[p.type];
   panel(rect);
   const m = view.mobile, pad = 12;
-  text(`${p.n}구 · ${def.name}`, rect.x + pad, rect.y + 20, { size: m ? 14 : 16, align: 'left', color: def.color });
+  text(`${p.n}구 · ${PITCH_NAMES[p.type]}`, rect.x + pad, rect.y + 20, { size: m ? 14 : 16, align: 'left', color: PITCH_COLORS[p.type] });
   text(`${p.kmh}km/h`, rect.x + rect.w - pad, rect.y + 20, { size: m ? 13 : 15, align: 'right' });
   // 작은 존: 가로 -0.6~0.6m, 세로 0~1.5m
   const box = { x: rect.x + pad, y: rect.y + 38, w: m ? 64 : 76, h: rect.h - 50 };
@@ -3114,7 +3121,7 @@ function drawPitchInfo(rect) {
   ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(box.x, box.y, box.w, box.h);
   ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5;
   ctx.strokeRect(sx(ZONE.left), sy(ZONE.top), sx(ZONE.right) - sx(ZONE.left), sy(ZONE.bottom) - sy(ZONE.top));
-  ctx.fillStyle = def.color; ctx.beginPath(); ctx.arc(sx(clamp(p.tx, -0.58, 0.58)), sy(clamp(p.ty, 0.03, 1.47)), 5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = PITCH_COLORS[p.type]; ctx.beginPath(); ctx.arc(sx(clamp(p.tx, -0.58, 0.58)), sy(clamp(p.ty, 0.03, 1.47)), 5, 0, Math.PI * 2); ctx.fill();
   const tx = box.x + box.w + 12, inZone = zoneMiss(p) === 0;
   const off = inZone ? null : zoneOff(p);
   text(inZone ? '스트라이크 존' : `존 밖 · ${off.dir} ${off.cm}cm`, tx, box.y + 10, { size: 13, align: 'left', color: inZone ? '#fff' : '#facc15' });
@@ -3217,14 +3224,15 @@ function ensurePlayerId() {
 const defaultNick = () => `타자${Math.floor(1000 + Math.random() * 9000)}`;
 
 // ===== 설정: 좌타/우타 =====
-const settings = {
+// 이 브라우저에 남긴 설정을 넣는다(객체와 기본값은 game/state.js)
+Object.assign(settings, {
   bats: store.get('bats', 'R') === 'L' ? 'L' : 'R',
   offset: clamp(Number(store.get('offset', 0)) || 0, -150, 250),   // 타이밍 보정(ms). 판정할 때 이만큼 뺀다
   team: teamById(String(store.get('team', ''))) ? String(store.get('team', '')) : null,   // 처음 시작할 때 고른다
   nick: String(store.get('nick', '')).trim().slice(0, 10),
   playerId: ensurePlayerId(),
   vibrate: store.get('vibrate', true) !== false,   // 진동(안드로이드만). 메뉴에서 끈다
-};
+});
 function setBats(b) { settings.bats = b; store.set('bats', b); }
 function saveTeamAndNick(team, nick) {
   Object.assign(settings, { team, nick });
@@ -3437,25 +3445,9 @@ function drawToast() {
 }
 
 // ===== 끝내기 상황 =====
-// 9회말 지고 있을 때 타석에 선다. 볼넷·삼진·주자 진루를 세고, 역전하는 순간 끝내기 승리다
-const SCENARIOS = [
-  { outs: 2, bases: [true, true, false], away: 3, home: 2 },
-  { outs: 1, bases: [false, true, false], away: 4, home: 3 },
-  { outs: 2, bases: [true, true, true], away: 5, home: 3 },
-  { outs: 0, bases: [true, false, false], away: 2, home: 0 },
-  { outs: 2, bases: [false, false, false], away: 1, home: 0 },
-  { outs: 1, bases: [false, false, true], away: 6, home: 5 },
-];
-
-function basesLabel(bases) {
-  const on = [1, 2, 3].filter((n) => bases[n - 1]);
-  return on.length === 3 ? '만루' : on.length ? `${on.join('·')}루` : '주자 없음';
-}
-const scenarioLabel = (s) => `9회말 ${s.outs ? `${s.outs}아웃` : '무사'} ${basesLabel(s.bases)} · ${s.away - s.home}점 차`;
-
+// 규칙(상황 목록, 볼카운트·진루·득점·끝)은 core/scenario.js, 화면 글은 view/text.js
 function makeScenario(rnd) {
-  const s = SCENARIOS[Math.floor(rnd() * SCENARIOS.length)];
-  const scn = { ...s, bases: [...s.bases], count: { b: 0, s: 0 }, pa: [], end: null };
+  const scn = makeScenarioIn(rnd);
   scn.label = scenarioLabel(scn);
   return scn;
 }
@@ -3468,44 +3460,7 @@ function nextScenarioPitch() {
 }
 
 // 공 하나의 결과를 상황에 반영하고 화면에 띄울 한 줄을 돌려준다. 볼·스트라이크만 늘면 빈 줄이다
-// 주자: 안타면 2·3루 주자가 들어오고 1루 주자는 2루로, 2루타면 1루 주자가 3루로 간다
-function applyScenario(s, r) {
-  const c = s.count, [b1, b2, b3] = s.bases;
-  let runs = 0, pa = null, msg = '';
-  if (r.kind === 'ball') {
-    if (++c.b === 4) {
-      if (b1 && b2 && b3) runs = 1;
-      s.bases = [true, b1 || b2, (b1 && b2) || b3];
-      pa = 'Y'; msg = runs ? '밀어내기 볼넷' : '볼넷';
-    }
-  } else if (r.kind === 'strike' || r.kind === 'whiff') {
-    if (++c.s === 3) { s.outs++; pa = 'R'; msg = r.kind === 'strike' ? '루킹 삼진' : '헛스윙 삼진'; }
-  } else if (r.kind === 'foul') {
-    if (c.s < 2) c.s++;   // 2스트라이크 뒤 파울은 세지 않는다
-  } else if (r.kind === 'out') {
-    s.outs++; pa = 'R';
-    if (r.type === 'fly' && b3 && s.outs < 3) { s.bases = [b1, b2, false]; runs = 1; msg = '희생플라이'; }   // 3루 주자가 태그업해서 들어온다
-    else msg = `${s.outs}아웃`;
-  } else if (r.kind === 'single' && r.infield) {   // 내야 안타: 밀려서 한 베이스씩만 간다(만루면 3루 주자만 들어온다)
-    if (b1 && b2 && b3) runs = 1;
-    s.bases = [true, b1 || b2, (b1 && b2) || b3]; pa = 'G';
-  } else if (r.kind === 'single') {
-    runs = (b3 ? 1 : 0) + (b2 ? 1 : 0); s.bases = [true, b1, false]; pa = 'G';
-  } else if (r.kind === 'double') {
-    runs = (b3 ? 1 : 0) + (b2 ? 1 : 0); s.bases = [false, true, b1]; pa = 'G';
-  } else if (r.kind === 'triple') {
-    runs = (b1 ? 1 : 0) + (b2 ? 1 : 0) + (b3 ? 1 : 0); s.bases = [false, false, true]; pa = 'G';
-  } else if (r.kind === 'hr') {
-    runs = 1 + (b1 ? 1 : 0) + (b2 ? 1 : 0) + (b3 ? 1 : 0); s.bases = [false, false, false]; pa = 'G';
-  }
-  s.home += runs;
-  if (pa) { s.pa.push(pa); s.count = { b: 0, s: 0 }; }
-  if (s.home > s.away) { s.end = 'win'; return `끝내기! ${s.home}-${s.away} 승리`; }
-  if (s.outs >= 3) { s.end = s.home === s.away ? 'tie' : 'lose'; return s.end === 'tie' ? '3아웃 · 동점으로 끝' : '3아웃 · 경기 끝'; }
-  if (runs) return `${msg ? `${msg} · ` : ''}${runs}점! ${s.home === s.away ? '동점' : `${s.away - s.home}점 차`}`;
-  if (pa === 'G') return `출루 · ${basesLabel(s.bases)}`;
-  return msg;
-}
+function applyScenario(s, r) { return scenarioMessage(s, applyScenarioIn(s, r)); }
 
 function finishScenario() {
   const s = game.scn;
@@ -3559,7 +3514,7 @@ function drawSiteMark() {
 // ===== 연습 =====
 // 구종과 빠르기를 골라 끝없이 친다. 점수와 기록은 남기지 않는다
 const PRACTICE_TYPES = ['fastball', 'slider', 'curve', 'change', 'fork', 'mix'];
-const typeName = (t) => (t === 'mix' ? '섞어서' : PITCHES[t].name);
+const typeName = (t) => (t === 'mix' ? '섞어서' : PITCH_NAMES[t]);
 
 function nextPracticePitch() {
   const pr = game.practice, rnd = game.rnd;
@@ -3625,7 +3580,7 @@ function drawRecords() {
   for (const t of Object.keys(PITCHES)) {
     y += m ? 28 : 32;
     const s = st[t];
-    row([PITCHES[t].name, ...(s ? [s.seen, s.swings, s.hits, s.perfect, s.swings ? `${Math.round(s.sumAbs / s.swings)}ms` : '-'] : ['-', '-', '-', '-', '-']).map(String)], '#fff');
+    row([PITCH_NAMES[t], ...(s ? [s.seen, s.swings, s.hits, s.perfect, s.swings ? `${Math.round(s.sumAbs / s.swings)}ms` : '-'] : ['-', '-', '-', '-', '-']).map(String)], '#fff');
   }
   y += m ? 48 : 56;
   addButton({ x: cx - 90, y, w: 180, h: 48 }, '처음으로', 'primary', goTitle);
@@ -4153,68 +4108,70 @@ function drawAccount() {
 // ===== 상점과 내 물건 =====
 // 판마다 점수의 1/100을 코인으로 받아 배트·헬멧·장갑·신발·유니폼·등번호·공 꼬리·타격음을 꾸민다(오늘의 10구 첫 판 2배는 오늘의 10구와 함께 없앴다)
 // (2026-10-29 사용자 결정). 코인과 물건은 로그인한 사람만 서버에 남고, 가격은 서버(worker/src/shop.js)가 정한다.
-// 이 목록의 id·종류·가격은 서버 목록과 같아야 하고 테스트가 맞춰 본다. 가격 0은 처음부터 가진 기본 물건이다
-const SHOP_SLOTS = [['bat', '배트'], ['helmet', '헬멧'], ['glove', '장갑'], ['shoe', '신발'], ['uniform', '유니폼'], ['number', '등번호'], ['trail', '공 꼬리'], ['sound', '타격음']];
-const SHOP_ITEMS = [
-  { id: 'bat-wood', slot: 'bat', price: 0, name: '원목', colors: { bat: '#c8955a', batEnd: '#8a5e32' } },
-  { id: 'bat-maple', slot: 'bat', price: 120, name: '메이플', colors: { bat: '#e6c590', batEnd: '#b38952' } },
-  { id: 'bat-black', slot: 'bat', price: 150, name: '검정', colors: { bat: '#2a2c33', batEnd: '#121317' } },
-  { id: 'bat-red', slot: 'bat', price: 150, name: '빨강', colors: { bat: '#c8202c', batEnd: '#7d0f17' } },
-  { id: 'bat-blue', slot: 'bat', price: 150, name: '파랑', colors: { bat: '#2457c5', batEnd: '#142f6e' } },
-  { id: 'bat-silver', slot: 'bat', price: 400, name: '알루미늄', colors: { bat: '#cfd4dc', batEnd: '#8d939d' } },
-  { id: 'bat-gold', slot: 'bat', price: 1000, name: '금색', colors: { bat: '#eebf2c', batEnd: '#a67c0d' } },
+// 물건 id·종류·가격은 core/catalog.js(랭킹 서버와 같이 쓴다)에 있고, 여기는 이름과 색·모양이다. 가격 0은 처음부터 가진 기본 물건이다
+const SLOT_NAMES = { bat: '배트', helmet: '헬멧', glove: '장갑', shoe: '신발', uniform: '유니폼', number: '등번호', trail: '공 꼬리', sound: '타격음' };
+const SHOP_SLOTS = SLOTS.map((slot) => [slot, SLOT_NAMES[slot]]);
+const ITEM_LOOKS = {
+  'bat-wood': { name: '원목', colors: { bat: '#c8955a', batEnd: '#8a5e32' } },
+  'bat-maple': { name: '메이플', colors: { bat: '#e6c590', batEnd: '#b38952' } },
+  'bat-black': { name: '검정', colors: { bat: '#2a2c33', batEnd: '#121317' } },
+  'bat-red': { name: '빨강', colors: { bat: '#c8202c', batEnd: '#7d0f17' } },
+  'bat-blue': { name: '파랑', colors: { bat: '#2457c5', batEnd: '#142f6e' } },
+  'bat-silver': { name: '알루미늄', colors: { bat: '#cfd4dc', batEnd: '#8d939d' } },
+  'bat-gold': { name: '금색', colors: { bat: '#eebf2c', batEnd: '#a67c0d' } },
   // 2026-10-30 사용자 요청으로 더한 물건. fx는 색만 바꾸는 물건과 달리 따로 그리는 모양·효과(drawBat·drawHelmet·drawShoe)
-  { id: 'bat-fire', slot: 'bat', price: 1200, name: '불꽃', colors: { bat: '#3a1a10', batEnd: '#b8401a' }, fx: 'fire' },
-  { id: 'bat-lightning', slot: 'bat', price: 1200, name: '번개', colors: { bat: '#262a66', batEnd: '#4b56c9' }, fx: 'lightning' },
-  { id: 'bat-ice', slot: 'bat', price: 1000, name: '얼음', colors: { bat: '#e4f6fc', batEnd: '#86cde9' }, fx: 'ice' },
-  { id: 'bat-hammer', slot: 'bat', price: 800, name: '뿅망치', colors: { bat: '#f2c94c', batEnd: '#e0393e' }, fx: 'hammer' },
-  { id: 'bat-leek', slot: 'bat', price: 500, name: '대파', colors: { bat: '#f1efdc', batEnd: '#3f9b3a' }, fx: 'leek' },
-  { id: 'helmet-team', slot: 'helmet', price: 0, name: '팀 색' },
-  { id: 'helmet-black', slot: 'helmet', price: 150, name: '검정 무광', colors: { helmet: '#202227' } },
-  { id: 'helmet-white', slot: 'helmet', price: 150, name: '흰색', colors: { helmet: '#eceef2' } },
-  { id: 'helmet-chrome', slot: 'helmet', price: 600, name: '크롬 은색', colors: { helmet: '#bfc7d3' } },
-  { id: 'helmet-gold', slot: 'helmet', price: 1000, name: '금색', colors: { helmet: '#e3b322' } },
-  { id: 'helmet-turtle', slot: 'helmet', price: 500, name: '거북이', colors: { helmet: '#3f8a4a' }, fx: 'turtle' },
-  { id: 'helmet-rabbit', slot: 'helmet', price: 500, name: '토끼', colors: { helmet: '#f3f0f2' }, fx: 'rabbit' },
-  { id: 'helmet-bear', slot: 'helmet', price: 500, name: '곰', colors: { helmet: '#7a4e2d' }, fx: 'bear' },
-  { id: 'helmet-tiger', slot: 'helmet', price: 700, name: '호랑이', colors: { helmet: '#e8892b' }, fx: 'tiger' },
-  { id: 'helmet-lion', slot: 'helmet', price: 700, name: '사자', colors: { helmet: '#e2b04c' }, fx: 'lion' },
-  { id: 'helmet-dino', slot: 'helmet', price: 700, name: '공룡', colors: { helmet: '#5fae4e' }, fx: 'dino' },
-  { id: 'glove-white', slot: 'glove', price: 0, name: '흰색', colors: { glove: '#e9e9ec' } },
-  { id: 'glove-black', slot: 'glove', price: 100, name: '검정', colors: { glove: '#25272d' } },
-  { id: 'glove-red', slot: 'glove', price: 100, name: '빨강', colors: { glove: '#d3232f' } },
-  { id: 'glove-blue', slot: 'glove', price: 100, name: '파랑', colors: { glove: '#2a5bd0' } },
-  { id: 'glove-neon', slot: 'glove', price: 150, name: '형광 노랑', colors: { glove: '#d8f53a' } },
-  { id: 'shoe-black', slot: 'shoe', price: 0, name: '검정', colors: { shoe: '#121418' } },
-  { id: 'shoe-white', slot: 'shoe', price: 100, name: '흰색', colors: { shoe: '#eef0f3' } },
-  { id: 'shoe-red', slot: 'shoe', price: 120, name: '빨강', colors: { shoe: '#c81e2b' } },
-  { id: 'shoe-neon', slot: 'shoe', price: 150, name: '형광 초록', colors: { shoe: '#3be86c' } },
-  { id: 'shoe-gold', slot: 'shoe', price: 800, name: '금색', colors: { shoe: '#e3b322' } },
-  { id: 'shoe-bear', slot: 'shoe', price: 400, name: '곰 발', colors: { shoe: '#7a4e2d' }, fx: 'bear' },
-  { id: 'shoe-tiger', slot: 'shoe', price: 400, name: '호랑이 발', colors: { shoe: '#e8892b' }, fx: 'tiger' },
-  { id: 'shoe-rabbit', slot: 'shoe', price: 400, name: '토끼 슬리퍼', colors: { shoe: '#f3f0f2' }, fx: 'rabbit' },
-  { id: 'shoe-dino', slot: 'shoe', price: 400, name: '공룡 발', colors: { shoe: '#5fae4e' }, fx: 'dino' },
-  { id: 'shoe-duck', slot: 'shoe', price: 300, name: '오리발', colors: { shoe: '#f39a1e' }, fx: 'duck' },
-  { id: 'uniform-team', slot: 'uniform', price: 0, name: '팀 색' },   // 유니폼 스타일을 바꿔도 소매·스타킹은 팀 색(팀 대항 랭킹이라)
-  { id: 'uniform-home', slot: 'uniform', price: 300, name: '홈(흰색)', colors: { jersey: '#eceef2', shade: '#c4c9d3', pants: '#eceef2', pantsShade: '#c4c9d3' } },
-  { id: 'uniform-away', slot: 'uniform', price: 300, name: '원정(회색)', colors: { jersey: '#9097a4', shade: '#717885', pants: '#9aa1ad', pantsShade: '#7b828e' } },
-  { id: 'uniform-alt', slot: 'uniform', price: 500, name: '얼터(검정)', colors: { jersey: '#1d2026', shade: '#121418', pants: '#dcdfe5', pantsShade: '#b4b9c2' } },
-  { id: 'number-none', slot: 'number', price: 0, name: '없음' },
-  { id: 'number-on', slot: 'number', price: 300, name: '등번호 달기' },
-  { id: 'trail-none', slot: 'trail', price: 0, name: '없음' },
-  { id: 'trail-fire', slot: 'trail', price: 600, name: '불꽃' },
-  { id: 'trail-rainbow', slot: 'trail', price: 800, name: '무지개' },
-  { id: 'trail-lightning', slot: 'trail', price: 800, name: '번개' },
-  { id: 'trail-heart', slot: 'trail', price: 600, name: '하트' },
-  { id: 'trail-star', slot: 'trail', price: 600, name: '별' },
-  { id: 'sound-wood', slot: 'sound', price: 0, name: "나무 '딱'" },
-  { id: 'sound-metal', slot: 'sound', price: 400, name: "알루미늄 '깡'" },
-  { id: 'sound-toy', slot: 'sound', price: 300, name: "장난감 '뿅'" },
-  { id: 'sound-bomb', slot: 'sound', price: 700, name: "폭탄 '쾅'" },
-  { id: 'sound-laser', slot: 'sound', price: 500, name: "레이저 '퓽'" },
-  { id: 'sound-bell', slot: 'sound', price: 400, name: "종 '댕'" },
-  { id: 'sound-drum', slot: 'sound', price: 300, name: "북 '둥'" },
-];
+  'bat-fire': { name: '불꽃', colors: { bat: '#3a1a10', batEnd: '#b8401a' }, fx: 'fire' },
+  'bat-lightning': { name: '번개', colors: { bat: '#262a66', batEnd: '#4b56c9' }, fx: 'lightning' },
+  'bat-ice': { name: '얼음', colors: { bat: '#e4f6fc', batEnd: '#86cde9' }, fx: 'ice' },
+  'bat-hammer': { name: '뿅망치', colors: { bat: '#f2c94c', batEnd: '#e0393e' }, fx: 'hammer' },
+  'bat-leek': { name: '대파', colors: { bat: '#f1efdc', batEnd: '#3f9b3a' }, fx: 'leek' },
+  'helmet-team': { name: '팀 색' },
+  'helmet-black': { name: '검정 무광', colors: { helmet: '#202227' } },
+  'helmet-white': { name: '흰색', colors: { helmet: '#eceef2' } },
+  'helmet-chrome': { name: '크롬 은색', colors: { helmet: '#bfc7d3' } },
+  'helmet-gold': { name: '금색', colors: { helmet: '#e3b322' } },
+  'helmet-turtle': { name: '거북이', colors: { helmet: '#3f8a4a' }, fx: 'turtle' },
+  'helmet-rabbit': { name: '토끼', colors: { helmet: '#f3f0f2' }, fx: 'rabbit' },
+  'helmet-bear': { name: '곰', colors: { helmet: '#7a4e2d' }, fx: 'bear' },
+  'helmet-tiger': { name: '호랑이', colors: { helmet: '#e8892b' }, fx: 'tiger' },
+  'helmet-lion': { name: '사자', colors: { helmet: '#e2b04c' }, fx: 'lion' },
+  'helmet-dino': { name: '공룡', colors: { helmet: '#5fae4e' }, fx: 'dino' },
+  'glove-white': { name: '흰색', colors: { glove: '#e9e9ec' } },
+  'glove-black': { name: '검정', colors: { glove: '#25272d' } },
+  'glove-red': { name: '빨강', colors: { glove: '#d3232f' } },
+  'glove-blue': { name: '파랑', colors: { glove: '#2a5bd0' } },
+  'glove-neon': { name: '형광 노랑', colors: { glove: '#d8f53a' } },
+  'shoe-black': { name: '검정', colors: { shoe: '#121418' } },
+  'shoe-white': { name: '흰색', colors: { shoe: '#eef0f3' } },
+  'shoe-red': { name: '빨강', colors: { shoe: '#c81e2b' } },
+  'shoe-neon': { name: '형광 초록', colors: { shoe: '#3be86c' } },
+  'shoe-gold': { name: '금색', colors: { shoe: '#e3b322' } },
+  'shoe-bear': { name: '곰 발', colors: { shoe: '#7a4e2d' }, fx: 'bear' },
+  'shoe-tiger': { name: '호랑이 발', colors: { shoe: '#e8892b' }, fx: 'tiger' },
+  'shoe-rabbit': { name: '토끼 슬리퍼', colors: { shoe: '#f3f0f2' }, fx: 'rabbit' },
+  'shoe-dino': { name: '공룡 발', colors: { shoe: '#5fae4e' }, fx: 'dino' },
+  'shoe-duck': { name: '오리발', colors: { shoe: '#f39a1e' }, fx: 'duck' },
+  'uniform-team': { name: '팀 색' },   // 유니폼 스타일을 바꿔도 소매·스타킹은 팀 색(팀 대항 랭킹이라)
+  'uniform-home': { name: '홈(흰색)', colors: { jersey: '#eceef2', shade: '#c4c9d3', pants: '#eceef2', pantsShade: '#c4c9d3' } },
+  'uniform-away': { name: '원정(회색)', colors: { jersey: '#9097a4', shade: '#717885', pants: '#9aa1ad', pantsShade: '#7b828e' } },
+  'uniform-alt': { name: '얼터(검정)', colors: { jersey: '#1d2026', shade: '#121418', pants: '#dcdfe5', pantsShade: '#b4b9c2' } },
+  'number-none': { name: '없음' },
+  'number-on': { name: '등번호 달기' },
+  'trail-none': { name: '없음' },
+  'trail-fire': { name: '불꽃' },
+  'trail-rainbow': { name: '무지개' },
+  'trail-lightning': { name: '번개' },
+  'trail-heart': { name: '하트' },
+  'trail-star': { name: '별' },
+  'sound-wood': { name: "나무 '딱'" },
+  'sound-metal': { name: "알루미늄 '깡'" },
+  'sound-toy': { name: "장난감 '뿅'" },
+  'sound-bomb': { name: "폭탄 '쾅'" },
+  'sound-laser': { name: "레이저 '퓽'" },
+  'sound-bell': { name: "종 '댕'" },
+  'sound-drum': { name: "북 '둥'" },
+};
+const SHOP_ITEMS = ITEMS.map((it) => ({ ...it, ...ITEM_LOOKS[it.id] }));
 const shopItem = (id) => SHOP_ITEMS.find((i) => i.id === id) ?? null;
 const DEFAULT_LOOK = Object.fromEntries(SHOP_SLOTS.map(([slot]) => [slot, SHOP_ITEMS.find((i) => i.slot === slot && i.price === 0).id]));
 
@@ -4642,19 +4599,7 @@ function drawGameOver() {
 }
 
 // ===== 게임 진행 =====
-// title → windup(투수 와인드업) → pitch(공이 날아옴) → result → 다음 공 … → over
-const game = {
-  state: 'title', mode: 'challenge', throws: 'R', seq: [], i: 0, score: 0, results: [], seed: 0, summary: null,
-  t: 0,              // 와인드업 시작부터 흐른 시간(초). 맞는 순간 멈춤 동안은 흐르지 않는다
-  clockAt: 0,        // t를 마지막으로 올린 시각(performance.now 기준)
-  swingAt: null,     // 공을 놓은 뒤 몇 초에 휘둘렀는지
-  outcome: null, gained: 0, resultT: 0, revealAt: 0, flightT: 0,
-  hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null, replayed: false,
-  toast: null, newBest: false, best: 0,
-  left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
-  opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
-  ticket: null, fixedSeed: false, waitingSeed: false, recorded: false,   // 이번 판에 쓴 서버 시드, 주소의 ?seed=로 친 판인지, 서버 시드를 기다리는 중인지, 이번 판을 기록했는지
-};
+// 판 상태(game)는 game/state.js. title → windup(투수 와인드업) → pitch(공이 날아옴) → result → 다음 공 … → over
 
 // 주소 끝 ?seed=숫자. 같은 공 순서를 다시 칠 때 쓴다(랭킹에는 안 올라간다)
 function urlSeed() {
@@ -5007,4 +4952,4 @@ prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment,
-  update, render, swing, followBall, CHASE, paused: false };
+  update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };

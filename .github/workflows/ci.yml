@@ -24,6 +24,10 @@ jobs:
       - run: npm ci
       - name: 랭킹 서버 규칙 테스트
         run: node --test 'worker/test/*.test.js'
+      - name: 층 검사와 판정 규칙 테스트(js/core)
+        run: |
+          node scripts/layers.js
+          node --test 'tests/core/*.test.mjs'
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
       - name: 실패하면 테스트 보고서 올리기
@@ -56,7 +60,7 @@ jobs:
           sed -i "s|\"js/|\"js-${GITHUB_SHA::7}/|g" _site/index.html   # script와 modulepreload 모두
           grep -q "<div id=\"build\">${GITHUB_SHA::7}</div>" _site/index.html
           grep -q "src=\"js-${GITHUB_SHA::7}/main.js\"" _site/index.html
-          test -f "_site/js-${GITHUB_SHA::7}/rules.js"
+          for f in $(grep -o 'modulepreload" href="[^"]*"' _site/index.html | cut -d'"' -f3); do test -f "_site/$f"; done   # 미리 받는 모듈이 모두 올라갔다
           node scripts/keep-prev.js https://hyunseungbeom.github.io/walkoff/ _site   # 지금 배포된 판의 모듈 폴더도 남긴다(10분 캐시된 옛 index.html이 찾는다)
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

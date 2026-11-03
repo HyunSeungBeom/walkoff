@@ -30,9 +30,19 @@
     pointer-events: none; user-select: none; -webkit-user-select: none;
   }
 </style>
-<!-- 게임 모듈을 처음부터 한꺼번에 받는다(main.js를 받은 뒤에야 rules.js를 찾으면 느린 망에서 1초쯤 늦게 떴다) -->
+<!-- 게임 모듈을 처음부터 한꺼번에 받는다(main.js를 받은 뒤에야 다음 파일을 찾으면 느린 망에서 한 단계마다 1초쯤 늦게 떴다).
+     모듈 파일을 더하면 여기도 더한다(tests/meta.spec.js가 main.js에서 import를 따라가며 본다) -->
 <link rel="modulepreload" href="js/main.js">
-<link rel="modulepreload" href="js/rules.js">
+<link rel="modulepreload" href="js/core/math.js">
+<link rel="modulepreload" href="js/core/field.js">
+<link rel="modulepreload" href="js/core/pitches.js">
+<link rel="modulepreload" href="js/core/score.js">
+<link rel="modulepreload" href="js/core/race.js">
+<link rel="modulepreload" href="js/core/judge.js">
+<link rel="modulepreload" href="js/core/scenario.js">
+<link rel="modulepreload" href="js/core/catalog.js">
+<link rel="modulepreload" href="js/view/text.js">
+<link rel="modulepreload" href="js/game/state.js">
 </head>
 <body>
 <canvas id="game"></canvas>

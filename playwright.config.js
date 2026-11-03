@@ -8,6 +8,7 @@ const { defineConfig, devices } = require('@playwright/test');
 const PORT = Number(process.env.WALKOFF_PORT) || 4173;
 module.exports = defineConfig({
   testDir: './tests',
+  testMatch: '**/*.spec.js',   // tests/core/*.test.mjs는 node --test로 돈다
   workers: 2,
   timeout: 120_000,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',

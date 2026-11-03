@@ -49,9 +49,21 @@ test.describe('배포 파일', () => {
     expect(html).toContain('<script type="module" src="js/main.js"></script>');
     expect(ci).toContain('cp -r js "_site/js-${GITHUB_SHA::7}"');
     expect(ci).toContain('sed -i "s|\\"js/|\\"js-${GITHUB_SHA::7}/|g" _site/index.html');
-    for (const m of main.matchAll(/^import .* from '\.\/([^']+)';$/gm)) expect(html, `${m[1]}을 미리 받는다`).toContain(`<link rel="modulepreload" href="js/${m[1]}">`);   // 느린 망에서 늦게 뜨지 않게
     expect(ci).toContain('node scripts/keep-prev.js https://hyunseungbeom.github.io/walkoff/ _site');   // 앞 판 모듈 폴더도 남긴다(배포 직후 10분 동안 옛 index.html을 받은 사람)
-    for (const m of main.matchAll(/^import .* from '\.\/([^']+)';$/gm)) expect(fs.existsSync(path.join(ROOT, 'js', m[1])), m[1]).toBe(true);   // main.js가 가져오는 파일이 js/에 있다
+    expect(ci).toContain('test -f "_site/$f"');   // index.html이 미리 받는 모듈이 모두 올라갔는지 배포 단계가 본다
+    // main.js에서 import를 따라가며: 가져오는 파일이 js/에 있고, index.html이 모두 미리 받는다(main.js를 받은 뒤에야 찾으면 느린 망에서 한 단계마다 늦게 뜬다)
+    const mods = [], queue = ['main.js'];
+    while (queue.length) {
+      const f = /** @type {string} */ (queue.shift());
+      if (mods.includes(f)) continue;
+      mods.push(f);
+      expect(fs.existsSync(path.join(ROOT, 'js', f)), f).toBe(true);
+      const src = f === 'main.js' ? main : fs.readFileSync(path.join(ROOT, 'js', f), 'utf8');
+      for (const m of src.matchAll(/^(?:import|export)\b[^;]*?\bfrom '(\.{1,2}\/[^']+)';/gm)) queue.push(path.posix.normalize(path.posix.join(path.posix.dirname(f), m[1])));
+    }
+    expect(mods.length).toBeGreaterThan(5);
+    for (const f of mods) expect(html, `${f}을 미리 받는다`).toContain(`<link rel="modulepreload" href="js/${f}">`);
+    expect(html.match(/rel="modulepreload"/g)?.length, '안 쓰는 파일은 미리 받지 않는다').toBe(mods.length);
   });
 });
 

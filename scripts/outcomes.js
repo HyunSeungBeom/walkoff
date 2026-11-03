@@ -1,15 +1,16 @@
 // @ts-check
-// 판정 결과 비율을 잰다. 화면 없이 판정 규칙(js/rules.js)만 가져와 돌린다.
-// 판정 숫자를 바꾸기 전·후를 견줄 때 쓴다: git show HEAD:js/rules.js > /tmp/rules-head.mjs && node scripts/outcomes.js /tmp/rules-head.mjs  와  node scripts/outcomes.js
+// 판정 결과 비율을 잰다. 화면 없이 판정 규칙(js/core/)만 가져와 돌린다.
+// 판정 숫자를 바꾸기 전·후를 견줄 때 쓴다: mkdir -p /tmp/head && git archive HEAD js | tar -x -C /tmp/head && node scripts/outcomes.js /tmp/head/js  와  node scripts/outcomes.js
 // 격자: 시드 1~300 × 앞 16구 × 스윙 시각 -90~+90ms(3ms 간격) × 우타·좌타. 상대 투수 손은 시드로 정한다(pitcherHand). --json이면 숫자만 낸다
 const path = require('path');
 const { pathToFileURL } = require('url');
 
 const arg = process.argv.slice(2).find((a) => !a.startsWith('--'));
-const file = arg ? path.resolve(arg) : path.join(__dirname, '..', 'js', 'rules.js');
+const dir = arg ? path.resolve(arg) : path.join(__dirname, '..', 'js');   // 게임 모듈 폴더(js)
 
 (async () => {
-const { judgeSwing, makeSequence, pitcherHand, PERFECT_BONUS } = await import(pathToFileURL(file).href);
+const load = (f) => import(pathToFileURL(path.join(dir, 'core', f)).href);
+const [{ judgeSwing }, { makeSequence, pitcherHand }, { PERFECT_BONUS }] = await Promise.all([load('judge.js'), load('pitches.js'), load('score.js')]);
 const t = { swings: 0, inPlay: 0, kinds: {}, points: 0, bonus: 0, ground: { all: 0, out: 0, ifh: 0, through: 0, line: 0 }, ifhBy: {}, bats: { R: { ground: 0, ifh: 0 }, L: { ground: 0, ifh: 0 } }, close: 0, margins: [], how: {}, raced: 0 };
 for (let seed = 1; seed <= 300; seed++) {
   const seq = makeSequence(seed, pitcherHand(seed) === 'L');
