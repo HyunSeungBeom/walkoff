@@ -159,6 +159,21 @@ const drawnTexts = (page) => page.evaluate(() => new Promise((resolve) => {
   requestAnimationFrame(next);
 }));
 
+// 가운데 전광판(투수판)은 바뀔 때만 작은 그림(scoreboardCache)에 다시 그려서, 한 번 다시 그리게 하고 그 그림에 쓴 글자와 크기(px)·좌우 끝을 모은다
+const boardGlyphs = (page) => page.evaluate(() => new Promise((resolve) => {
+  const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, out = [];
+  proto.fillText = function (s, x, ...rest) {
+    if (this.canvas === walkoff.scoreboardCache.canvas) {
+      const w = this.measureText(s).width, left = this.textAlign === 'center' ? x - w / 2 : this.textAlign === 'right' ? x - w : x;
+      out.push({ s: String(s), size: Number(/(\d+)px/.exec(this.font)[1]), left, right: left + w });
+    }
+    return fill.call(this, s, x, ...rest);
+  };
+  walkoff.scoreboardCache.key = '';
+  requestAnimationFrame(() => requestAnimationFrame(() => { proto.fillText = fill; resolve(out); }));
+}));
+const boardWords = async (page) => (await boardGlyphs(page)).map((g) => g.s);
+
 // 10구 도전을 끝까지 친 날을 이 브라우저 기록(played.날짜)으로 둔다. ago는 며칠 전에 쳤는지(0은 오늘).
 // legacy는 그 날들을 없앤 오늘의 10구 기록(daily.날짜)으로 둔다(예전 기록도 연속 기록에 들어간다)
 const setPlayedDays = (page, ago, legacy = []) => page.evaluate(({ ago, legacy }) => {
@@ -2041,6 +2056,94 @@ test.describe('가운데 큰 전광판', () => {
     expect(['H', 'O', 'M', 'E', 'R', 'U', 'N'].every((ch) => texts.includes(ch))).toBe(true);
     expect(texts).not.toContain('홈런!');
     await expect.poll(async () => (await drawnTexts(page)).includes('홈런!'), { timeout: 8_000 }).toBe(true);   // 그 뒤 결과 카드
+    expect(errors).toEqual([]);
+  });
+
+  test('투구 중에는 상대 투수를 보여 준다: 첫 공은 팀·선발·등번호·좌완/우완과 이번 판의 직구 최고 구속·주무기, 그 뒤는 큰 등번호·주무기·직전 공', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    expect(await boardWords(page)).toEqual(['WALK', 'OFF']);   // 시작 화면은 그대로(og.png)
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    const c = await page.evaluate(() => walkoff.pitcherCard());
+    // seed 42(내 팀 LG): 한화 우완, 앞 16구의 직구 최고 151km/h, 변화구는 슬라이더 3·포크 3·커브 1이라 먼저 나온 슬라이더
+    expect(c).toMatchObject({ team: { short: '한화' }, hand: '우완', thrown: 0, last: null, profile: { top: 151, main: '슬라이더' } });
+    expect(await boardWords(page)).toEqual([`한화 선발 ${c.no} · 우완`, '직구 최고 151', '주무기 슬라이더']);
+    await playPitch(page, null);   // 첫 공을 보내면 다음 공부터 직전 공이 나온다
+    await page.waitForFunction(() => walkoff.game.state === 'windup' && walkoff.game.i === 1);
+    const first = await page.evaluate(() => walkoff.game.seq[0]);
+    expect(await boardWords(page)).toEqual(['한화 선발 · 우완', 'No.', String(c.no), '주무기 슬라이더', `직전 직구 ${first.kmh}`]);
+    expect(await page.evaluate(() => walkoff.pitcherCard().no)).toBe(c.no);   // 등번호는 판 내내 같다
+    expect(errors).toEqual([]);
+  });
+
+  test('폰 360폭에서도 투수판 글자는 10px 이상이고 판 밖으로 넘치지 않는다', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 780 });
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    for (const i of [0, 1]) {
+      await page.waitForFunction((i) => walkoff.game.state === 'windup' && walkoff.game.i === i, i);
+      const R = await page.evaluate(() => walkoff.scoreboardRect()), glyphs = await boardGlyphs(page);
+      expect(glyphs.length).toBeGreaterThan(2);
+      for (const g of glyphs) {
+        expect(g.size, g.s).toBeGreaterThanOrEqual(10);
+        expect(g.left, g.s).toBeGreaterThanOrEqual(0);
+        expect(g.right, g.s).toBeLessThanOrEqual(R.w);
+      }
+      if (i === 0) await playPitch(page, null);
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('끝내기 상황은 마무리 투수(첫 공은 9회말 등판), 연습은 직전 공 구속만 보여 준다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('scenario'));
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    const no = await page.evaluate(() => walkoff.pitcherCard().no);
+    expect(await boardWords(page)).toEqual([`한화 마무리 ${no} · 우완`, '9회말 등판']);
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.startGame('practice'); });
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect(await boardWords(page)).toEqual(['연습 · 우완', '구속이 여기 떠요']);
+    await playPitch(page, null);
+    await page.waitForFunction(() => walkoff.game.state === 'windup' && walkoff.game.i === 1);
+    expect(await boardWords(page)).toEqual(['연습 · 우완', 'km/h', '직전 직구']);
+    expect(errors).toEqual([]);
+  });
+
+  test('HIT·HOMERUN이 뜨는 동안은 폰에서도 전광판이 화면 안에 있고(카메라가 공 뒤로 날아갔으면 돌아온 뒤에 뜬다), 끝나면 화면이 주자를 따라간다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const [hr, dbl, single] = await page.evaluate(() => {
+      const w = walkoff, g = w.game;
+      w.paused = true;   // 장면을 1/60초씩 직접 넘긴다(느린 기계에서도 같은 결과)
+      const play = (p, dt) => {
+        w.startGame('challenge'); g.seq[0] = p;
+        for (let k = 0; k < 3000 && g.state !== 'result'; k++) {
+          if (g.state === 'pitch' && g.swingAt == null && w.ballTime() + 1 / 60 >= p.T + dt / 1000) w.swing(g.clockAt + Math.max(0, p.T + dt / 1000 - w.ballTime()) * 1000);
+          g.clockAt += 1000 / 60; w.update(1 / 60);
+        }
+        let min = 1, home = null, pan = null;
+        for (let k = 0; k < 900; k++) {
+          w.update(1 / 60);
+          const bm = w.boardMoment();
+          if (!bm) continue;
+          if (g.resultT >= bm.t0 && g.resultT < bm.t1) {
+            const R = w.scoreboardRect();
+            min = Math.min(min, Math.max(0, Math.min(w.view.w, R.x + R.w) - Math.max(0, R.x)) / R.w);
+            home ??= ['x', 'y', 'z'].every((a) => w.cam[a] === w.CAM_HOME[a]);
+            pan = w.view.panX;
+          }
+          if (g.resultT >= bm.t1 + 1) return { name: g.outcome.name, min, home, late: bm.t0 - g.revealAt, follow: Math.abs(w.view.panX - pan) };
+        }
+        return null;
+      };
+      const seq = w.makeSequence(42, w.pitcherHand(42) === 'L');
+      // 홈런, 큰 뜬공 2루타(카메라가 공 뒤로 날아간다), 폰에서 가장 많이 밀리는 좌익수 쪽 안타(seed 332 셋째 공을 40ms 빨리)
+      return [play(seq[0], 0), play(seq[0], 25), play(w.makeSequence(332, false)[2], -40)];
+    });
+    expect([hr.name, dbl.name, single.name]).toEqual(['중월 홈런', '우중간 2루타', '좌전 안타']);
+    for (const r of [hr, dbl, single]) expect(r.min, r.name).toBeGreaterThan(0.9);   // 붙잡기 전에는 폰에서 홈런 끝에 0%, 이 2루타는 29%
+    expect([hr.home, dbl.home]).toEqual([true, true]);   // 따라가는 카메라가 타석 시점으로 돌아온 뒤에 글자가 뜬다
+    expect(dbl.late).toBeGreaterThan(0.3);
+    expect(hr.follow).toBeGreaterThan(20);   // 글자가 끝나면 화면이 다시 주자를 따라간다
     expect(errors).toEqual([]);
   });
 });

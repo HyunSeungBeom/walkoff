@@ -480,9 +480,11 @@ function drawCrowdChase() {
 // ===== 가운데 큰 전광판(2026-11-03 사용자 '투수 뒤 검은 공간을 전광판으로') =====
 // 투수 뒤 배터스 아이(관중을 비운 어두운 곳)를 전광판으로 쓴다. 담장 18m 뒤에 선 폭 19m·높이 7~22m 화면이라 배터스 아이 안에 들어가고,
 // 그 아래 띠(공을 놓는 자리 뒤)는 공이 보이게 어둡게 남긴다(공은 놓은 뒤 화면 아래로만 가서 전광판을 지나지 않는다).
-// 투구 중에는 움직이지 않고 '상대 / VS / 우리 팀'(팀 색 칸에 흰 글자, 끝내기 상황은 VS 자리에 점수, 팀을 안 골랐거나 연습이면 WALKOFF).
+// 투구 중에는 움직이지 않는 투수판이다(2026-11-03 사용자 '실제 전광판의 요약본, 투수가 어떤 투수인지'. 전에는 '상대 / VS / 우리 팀'이라 위쪽 점수판과 겹쳤다).
+// 상대 팀 색 머리줄에 팀·선발(끝내기 상황은 마무리)·좌완/우완, 첫 공은 등번호와 이번 판의 직구 최고 구속·주무기, 그 뒤는 큰 등번호·주무기·직전 공.
+// 연습은 직전 공 구속만, 시작 화면·타이밍 보정은 WALKOFF. 이미 던진 공으로만 정해서 바뀌는 때는 다음 공의 와인드업이 시작될 때뿐이다.
 // 안타·홈런이 나오면 우리 팀 색 바탕에 HIT·HOMERUN이 한 글자씩 튀어나오고(boardMoment), 그동안 결과 카드는 숨겼다가 끝나면 나온다
-// (결과 카드가 같은 자리에 겹친다). 홈런은 따라가는 카메라가 타석 시점으로 돌아온 뒤에. 그 밖의 결과 화면에서는 꺼 둔다
+// (결과 카드가 같은 자리에 겹친다). 홈런·큰 뜬공 안타는 따라가는 카메라가 타석 시점으로 돌아온 뒤에. 그 밖의 결과 화면에서는 꺼 둔다
 const SCOREBOARD = { w: 19, y0: 7, y1: 22, back: 18, moment: 1.2, hrMoment: 1.6 }, scoreboardCache = { key: '', canvas: null };
 function scoreboardRect() {
   const z = fenceDist(0) + SCOREBOARD.back, a = project(-SCOREBOARD.w / 2, SCOREBOARD.y1, z), b = project(SCOREBOARD.w / 2, SCOREBOARD.y0, z);
@@ -492,11 +494,83 @@ function scoreboardRect() {
 function boardMoment() {
   const r = game.outcome;
   if (game.state !== 'result' || !r?.hit || game.replay != null) return null;
-  const t0 = r.kind === 'hr' && chaseable(r) && !game.replayed ? Math.max(game.revealAt, chaseEnd(r)) : game.revealAt;   // 홈런은 타석 시점으로 돌아온 뒤
+  // 카메라가 공 뒤로 날아가 있으면 타석 시점으로 돌아온 뒤에 띄운다. 전에는 홈런만 그랬고, 큰 뜬공 2루타는 카메라가 40m 앞에 있는 동안
+  // HIT을 띄워 폰에서 전광판이 30%쯤만 보였다(2026-11-03 사용자 '전광판을 화면에 붙잡기')
+  const t0 = chaseable(r) && !game.replayed ? Math.max(game.revealAt, chaseEnd(r)) : game.revealAt;
   return { word: r.kind === 'hr' ? 'HOMERUN' : 'HIT', t0, t1: t0 + (r.kind === 'hr' ? SCOREBOARD.hrMoment : SCOREBOARD.moment) };
 }
 // 결과 카드를 그려도 되는지(전광판이 HIT·HOMERUN을 띄우는 동안과 그 전에는 숨긴다)
 const cardDetails = () => { const bm = boardMoment(); return !bm || game.resultT >= bm.t1; };
+// 투수판에 쓰는 값. 등번호는 시드로 정하고 공 순서·투수 손·상대 팀과 다른 난수를 쓴다(pitcherHand·pickOpponent와 같은 방식). 선수 이름은 쓰지 않는다
+const pitcherNo = (seed) => 1 + Math.floor(mulberry32((seed ^ 0x2c1b3c6d) >>> 0)() * 99);
+// 그 판 공 순서 앞 16구(10구 도전의 평균 공 수)에서 직구 최고 구속과 가장 많이 나오는 변화구(같으면 먼저 나온 것). 10구 도전은 시작할 때
+// 공 40개를 다 만들어 두므로 지어낸 말이 아니라 이번 판에 실제로 맞는 말이다. 끝내기 상황·연습은 공을 그때그때 만들어서 없다
+const PROFILE_PITCHES = 16;
+function pitcherProfile(seq) {
+  const head = seq.slice(0, PROFILE_PITCHES), fast = head.filter((p) => p.type === 'fastball'), count = {};
+  for (const p of head) if (p.type !== 'fastball') count[p.type] = (count[p.type] ?? 0) + 1;
+  let main = null;
+  for (const p of head) if (p.type !== 'fastball' && (main == null || count[p.type] > count[main])) main = p.type;
+  return { top: fast.length ? Math.max(...fast.map((p) => p.kmh)) : null, main: main && PITCH_NAMES[main] };
+}
+// 투수판에 보이는 값. 투구수는 이미 던진 공 수(와인드업 중인 공은 빼고, 끝 화면은 마지막 공까지)다.
+// 팀을 안 고른 사람도 투수는 상대 팀 옷을 입어서(pitcherColors) 상대 팀 이름을 그대로 쓴다
+function pitcherCard() {
+  const thrown = game.state === 'over' ? game.i + 1 : game.i, last = thrown > 0 ? game.seq[thrown - 1] : null, t = teamById(game.opponent);
+  return {
+    mode: game.mode, hand: (game.seq[game.i]?.lefty ?? game.throws === 'L') ? '좌완' : '우완', no: pitcherNo(game.seed), thrown,
+    team: t && { short: t.short, main: t.main, accent: t.accent },
+    last: last && { name: PITCH_NAMES[last.type], kmh: last.kmh },
+    profile: game.mode === 'challenge' ? pitcherProfile(game.seq) : null,
+  };
+}
+const pitcherRole = (c) => `${c.team ? c.team.short : '상대'} ${c.mode === 'scenario' ? '마무리' : '선발'}`;
+// 전광판 그림(g)에 글자를 쓴다. 폭(maxW)을 넘으면 글자를 줄인다
+function boardText(g, str, x, y, maxW, size, color = '#fff', weight = 800, align = 'center') {
+  g.font = font(size, weight);
+  const fit = Math.min(1, maxW / g.measureText(str).width);
+  g.font = font(size * fit, weight); g.fillStyle = color; g.textAlign = align; g.textBaseline = 'middle'; g.fillText(str, x, y);
+}
+// 머리줄: 상대 팀 색 띠와 아래 보조색 줄(상대 팀이 없거나 연습이면 남색). 높이를 돌려준다
+function boardHeader(g, W, H, c, str) {
+  const hh = H * 0.24, t = c.mode !== 'practice' && c.team;
+  g.fillStyle = t ? t.main : '#24314a'; g.fillRect(0, 0, W, hh);
+  g.fillStyle = t ? t.accent : '#f2c94c'; g.fillRect(0, hh * 0.86, W, hh * 0.14);
+  boardText(g, str, W / 2, hh * 0.45, W * 0.9, hh * 0.56, '#fff', 900);
+  return hh;
+}
+// 투수판(폭 W·높이 H의 전광판 그림 g). 폰(390폭)에서 판은 111×88px라 줄은 3~4개, 글자는 10px 이상이다
+function drawPitcherBoard(g, W, H, c) {
+  if (c.mode === 'practice') { drawPracticeBoard(g, W, H, c); return; }
+  if (c.thrown === 0) {   // 첫 공: 어떤 투수인지. 폰은 첫 공에 마운드 위 '우완 투수' 알림(drawPitcherTag)이 판 아래 4분의 1을 가려서 위쪽에 담는다
+    boardHeader(g, W, H, c, `${pitcherRole(c)} ${c.no} · ${c.hand}`);
+    const size = Math.max(10, H * 0.15);
+    if (c.profile) {
+      boardText(g, `직구 최고 ${c.profile.top}`, W / 2, H * 0.41, W * 0.92, size, LED_AMBER);
+      boardText(g, `주무기 ${c.profile.main}`, W / 2, H * 0.6, W * 0.92, size, LED_AMBER);
+    } else boardText(g, '9회말 등판', W / 2, H * 0.5, W * 0.92, size * 1.1, LED_AMBER);
+    return;
+  }
+  // 그 뒤: 큰 등번호(앞에 작은 No.), 주무기(끝내기 상황은 투구수), 직전 공
+  const hh = boardHeader(g, W, H, c, `${pitcherRole(c)} · ${c.hand}`), line = Math.max(10, H * 0.135);
+  const big = H * 0.28, ny = hh + (H * 0.58 - hh) / 2 + H * 0.03, ps = Math.max(10, big * 0.38), no = String(c.no);
+  g.font = font(big, 900); const nw = g.measureText(no).width;
+  g.font = font(ps, 800); const pw = g.measureText('No.').width, x0 = W / 2 - (nw + pw + 3) / 2;
+  boardText(g, 'No.', x0, ny + big * 0.12, pw + 1, ps, 'rgba(255,255,255,0.6)', 800, 'left');
+  g.save(); g.shadowColor = 'rgba(255,255,255,0.5)'; g.shadowBlur = big * 0.25; boardText(g, no, x0 + pw + 3, ny, W, big, '#fff', 900, 'left'); g.restore();
+  if (c.profile) boardText(g, `주무기 ${c.profile.main}`, W / 2, H * 0.7, W * 0.94, line, LED_AMBER);
+  else boardText(g, `투구수 ${c.thrown}`, W / 2, H * 0.7, W * 0.94, line);
+  boardText(g, `직전 ${c.last.name} ${c.last.kmh}`, W / 2, H * 0.86, W * 0.94, line);
+}
+// 연습: 직전 공 구속(7세그먼트)과 구종
+function drawPracticeBoard(g, W, H, c) {
+  const hh = boardHeader(g, W, H, c, `연습 · ${c.hand}`), line = Math.max(10, H * 0.135);
+  if (!c.last) { boardText(g, '구속이 여기 떠요', W / 2, H * 0.48, W * 0.9, line, 'rgba(255,255,255,0.75)'); return; }
+  const y = hh + (H * 0.76 - hh) / 2;
+  seg7(g, String(c.last.kmh), W * 0.7, y, H * 0.32, LED_AMBER, 'right');
+  boardText(g, 'km/h', W * 0.73, y + H * 0.07, W * 0.26, Math.max(10, line * 0.8), 'rgba(255,255,255,0.6)', 700, 'left');
+  boardText(g, `직전 ${c.last.name}`, W / 2, H * 0.87, W * 0.9, line);
+}
 function drawScoreboard() {
   const R = scoreboardRect();
   if (!R || R.w < 20) return;
@@ -504,7 +578,7 @@ function drawScoreboard() {
   ctx.fillStyle = '#05070d'; ctx.fillRect(R.x - pad, R.y - pad, R.w + pad * 2, R.h + pad * 2);   // 틀
   ctx.fillStyle = '#0a101c'; ctx.fillRect(R.x, R.y, R.w, R.h);                                    // 화면
   ctx.strokeStyle = 'rgba(242,201,76,0.4)'; ctx.lineWidth = Math.max(1, pad * 0.4); ctx.strokeRect(R.x - pad * 0.5, R.y - pad * 0.5, R.w + pad, R.h + pad);
-  const us = teamById(settings.team), them = teamById(game.opponent), bm = boardMoment();
+  const us = teamById(settings.team), bm = boardMoment();
   const playing = ['windup', 'pitch'].includes(game.state), idle = playing || game.state === 'title' || game.state === 'over' || game.state === 'calib';
   if (bm && game.resultT >= bm.t0 && game.resultT < bm.t1) {   // HIT·HOMERUN: 우리 팀 색 바탕에 한 글자씩
     const u = game.resultT - bm.t0, main = us?.main ?? '#c2410c', alt = us?.accent && us.accent !== '#ffffff' ? us.accent : '#f2c94c', hr = bm.word === 'HOMERUN';
@@ -524,9 +598,9 @@ function drawScoreboard() {
       });
     });
     ctx.restore();
-  } else if (idle) {   // 상대 / VS / 우리 팀(움직이지 않는다). 바뀔 때만 작은 캔버스에 그려 두고 붙인다(빛 번짐 그림자가 무거워서)
-    const scn = game.mode === 'scenario' && game.scn && playing ? game.scn : null, brand = !us || !them || game.mode === 'practice' || game.state === 'title';
-    const mid = scn ? `${scn.away} : ${scn.home}` : 'VS', key = [Math.round(R.w), Math.round(R.h), brand ? 'brand' : `${them.id}|${us.id}|${mid}`].join('|');
+  } else if (idle) {   // 투수판(투구 중에는 움직이지 않는다). 바뀔 때만 작은 캔버스에 그려 두고 붙인다(빛 번짐 그림자가 무거워서)
+    const brand = game.state === 'title' || game.state === 'calib' || !game.seq.length, card = brand ? null : pitcherCard();
+    const key = [Math.round(R.w), Math.round(R.h), brand ? 'brand' : JSON.stringify(card)].join('|');
     if (scoreboardCache.key !== key) {
       const c = scoreboardCache.canvas ??= document.createElement('canvas'), dpr = Math.min(view.dpr || 1, 2), g = c.getContext('2d');
       c.width = Math.ceil(R.w * dpr); c.height = Math.ceil(R.h * dpr);
@@ -535,15 +609,7 @@ function drawScoreboard() {
         const size = Math.min(R.h * 0.22, R.w / 5.2);
         g.font = font(size, 900); g.shadowColor = '#f2c94c'; g.shadowBlur = size * 0.5; g.fillStyle = '#f2c94c';
         g.fillText('WALK', R.w / 2, R.h * 0.36); g.fillText('OFF', R.w / 2, R.h * 0.64);
-      } else {
-        const ch = R.h * 0.3, cw = R.w * 0.86, x0 = (R.w - cw) / 2, size = Math.min(ch * 0.62, cw / 3.2);
-        const cell = (t, y) => {   // 팀 색 칸에 흰 글자(두산·키움처럼 어두운 팀 색도 읽히게), 아래에 보조색 줄
-          g.shadowBlur = 0; g.fillStyle = t.main; g.fillRect(x0, y, cw, ch); g.fillStyle = t.accent; g.fillRect(x0, y + ch * 0.88, cw, ch * 0.12);
-          g.font = font(size, 900); g.shadowColor = 'rgba(255,255,255,0.45)'; g.shadowBlur = size * 0.3; g.fillStyle = '#ffffff'; g.fillText(t.short, R.w / 2, y + ch * 0.47);
-        };
-        cell(them, R.h * 0.06); cell(us, R.h * 0.64);
-        g.shadowBlur = 0; g.fillStyle = scn ? '#f2c94c' : 'rgba(255,255,255,0.8)'; g.font = font(size * (scn ? 0.9 : 0.7), 800); g.fillText(mid, R.w / 2, R.h * 0.5);
-      }
+      } else drawPitcherBoard(g, R.w, R.h, card);
       scoreboardCache.key = key;
     }
     ctx.drawImage(scoreboardCache.canvas, R.x, R.y, R.w, R.h);
@@ -2808,6 +2874,17 @@ function chaseStep(dt) {
   cam.x += (t.x - cam.x) * k; cam.y += (t.y - cam.y) * k; cam.z += (t.z - cam.z) * k;
   if (camMoved()) view.shake = 0;
 }
+// 가운데 전광판이 HIT·HOMERUN을 띄우는 동안(그 0.6초 전부터)은 화면 밀기를 전광판이 화면 안에 남는 범위로 붙잡고, 주자는 그 뒤에 따라간다
+// (2026-11-03 사용자 '전광판을 화면에 붙잡기'). 폰은 시야가 좁아 공·주자를 따라 화면이 밀리면 전광판이 밖으로 나가, 홈런 글자가 뜨는 동안
+// 평균 절반만 보이고 끝에는 0%였다. 0.6초 전부터 돌아오면 폰 390폭의 안타 2,775개 모두 글자가 뜨는 동안 94% 넘게 보인다(0.4초는 좌익수 쪽
+// 안타에서 75%까지 잘렸다). 따라가는 카메라가 공 뒤로 날아가 있는 동안은 붙잡지 않는다. 돌려주는 값은 panX의 [최소, 최대]
+const BOARD_HOLD = { lead: 0.6, margin: 4 };
+function boardHold() {
+  const bm = boardMoment(), R = bm && !camMoved() && game.resultT >= bm.t0 - BOARD_HOLD.lead && game.resultT < bm.t1 ? scoreboardRect() : null;
+  if (!R) return null;
+  const x0 = R.x - view.panX, lo = BOARD_HOLD.margin - x0, hi = view.w - BOARD_HOLD.margin - (x0 + R.w);   // x0: 화면을 안 밀었을 때 전광판 왼쪽
+  return lo <= hi ? [lo, hi] : [(lo + hi) / 2, (lo + hi) / 2];
+}
 function followBall(pos, dt) {
   const p = project(pos.x, pos.y, pos.z);
   let tx = 0, ty = 0;
@@ -2817,6 +2894,8 @@ function followBall(pos, dt) {
     if (bx < mx) tx = mx - bx; else if (bx > view.w - mx) tx = view.w - mx - bx;
     if (by < my) ty = my - by;
   }
+  const hold = boardHold();
+  if (hold) tx = clamp(tx, hold[0], hold[1]);
   const k = Math.min(1, dt * 5);
   view.panX += (tx - view.panX) * k;
   view.panY += (ty - view.panY) * k;
@@ -3077,7 +3156,7 @@ function pillRow(items, y, size) {
 function drawResultCard() {
   const r = game.outcome;
   if (!r || game.resultT < game.revealAt) return;
-  // 결과 카드는 가운데 큰 전광판과 같은 자리라, 안타·홈런은 전광판이 HIT·HOMERUN을 띄운 뒤에 나온다(홈런은 따라가는 카메라가 돌아온 뒤 전광판부터)
+  // 결과 카드는 가운데 큰 전광판과 같은 자리라, 안타·홈런은 전광판이 HIT·HOMERUN을 띄운 뒤에 나온다(홈런·큰 뜬공 안타는 따라가는 카메라가 돌아온 뒤 전광판부터)
   if (!cardDetails()) return;
   const bm = boardMoment(), shownAt = bm ? bm.t1 : game.revealAt;
   // 투수 머리 위까지만 쓴다
@@ -4951,5 +5030,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };
