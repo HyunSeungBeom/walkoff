@@ -35,8 +35,8 @@ test.describe('배포 파일', () => {
   test.skip(({ isMobile }) => isMobile, '파일은 화면 크기와 상관없어서 PC에서만 본다');
 
   test('게임이 받아 쓰는 파일(미리보기 그림, 관중 함성 녹음)을 배포 단계가 함께 올린다', () => {
-    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-    const crowd = html.match(/CROWD_URL = '([^']+)'/)?.[1] ?? '';
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8'), main = fs.readFileSync(path.join(ROOT, 'js', 'main.js'), 'utf8');
+    const crowd = main.match(/CROWD_URL = '([^']+)'/)?.[1] ?? '';
     expect(crowd).toBe('crowd.mp3');
     const copied = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8').match(/cp (.+) _site\//)?.[1].split(/\s+/);
     for (const f of ['index.html', 'og.png', crowd]) {
@@ -44,6 +44,14 @@ test.describe('배포 파일', () => {
       expect(fs.existsSync(path.join(ROOT, f)), f).toBe(true);
     }
     expect(fs.statSync(path.join(ROOT, crowd)).size).toBeLessThan(150_000);   // 폰에서 처음 소리를 켤 때 받는다
+    // 게임 모듈(js/)은 커밋 번호 폴더로 올리고 index.html이 그 폴더의 main.js를 읽게 바꾼다(빠지면 배포된 게임이 안 뜬다)
+    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    expect(html).toContain('<script type="module" src="js/main.js"></script>');
+    expect(ci).toContain('cp -r js "_site/js-${GITHUB_SHA::7}"');
+    expect(ci).toContain('sed -i "s|\\"js/|\\"js-${GITHUB_SHA::7}/|g" _site/index.html');
+    for (const m of main.matchAll(/^import .* from '\.\/([^']+)';$/gm)) expect(html, `${m[1]}을 미리 받는다`).toContain(`<link rel="modulepreload" href="js/${m[1]}">`);   // 느린 망에서 늦게 뜨지 않게
+    expect(ci).toContain('node scripts/keep-prev.js https://hyunseungbeom.github.io/walkoff/ _site');   // 앞 판 모듈 폴더도 남긴다(배포 직후 10분 동안 옛 index.html을 받은 사람)
+    for (const m of main.matchAll(/^import .* from '\.\/([^']+)';$/gm)) expect(fs.existsSync(path.join(ROOT, 'js', m[1])), m[1]).toBe(true);   // main.js가 가져오는 파일이 js/에 있다
   });
 });
 

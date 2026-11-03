@@ -1,25 +1,19 @@
 // @ts-check
-// 판정 결과 비율을 잰다. 화면 없이 index.html의 판정 코드(// ===== 기본 값 부터 // ===== 소리 앞까지)만 vm으로 돌린다.
-// 판정 숫자를 바꾸기 전·후를 견줄 때 쓴다: git show HEAD:index.html | node scripts/outcomes.js -  와  node scripts/outcomes.js
+// 판정 결과 비율을 잰다. 화면 없이 판정 규칙(js/rules.js)만 가져와 돌린다.
+// 판정 숫자를 바꾸기 전·후를 견줄 때 쓴다: git show HEAD:js/rules.js > /tmp/rules-head.mjs && node scripts/outcomes.js /tmp/rules-head.mjs  와  node scripts/outcomes.js
 // 격자: 시드 1~300 × 앞 16구 × 스윙 시각 -90~+90ms(3ms 간격) × 우타·좌타. 상대 투수 손은 시드로 정한다(pitcherHand). --json이면 숫자만 낸다
-const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
+const { pathToFileURL } = require('url');
 
 const arg = process.argv.slice(2).find((a) => !a.startsWith('--'));
-const src = arg === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(arg || path.join(__dirname, '..', 'index.html'), 'utf8');
-const start = src.indexOf('// ===== 기본 값'), end = src.indexOf('// ===== 소리');
-if (start < 0 || end < 0) throw new Error('판정 코드를 찾지 못했어요(// ===== 기본 값 ~ // ===== 소리)');
-const ctx = { settings: { bats: 'R' }, game: { results: [] }, api: null };
-vm.createContext(ctx);
-vm.runInContext(`${src.slice(start, end)}\n;api = { judgeSwing, makeSequence, pitcherHand, PERFECT_BONUS };`, ctx);
-const { judgeSwing, makeSequence, pitcherHand, PERFECT_BONUS } = ctx.api;
+const file = arg ? path.resolve(arg) : path.join(__dirname, '..', 'js', 'rules.js');
 
+(async () => {
+const { judgeSwing, makeSequence, pitcherHand, PERFECT_BONUS } = await import(pathToFileURL(file).href);
 const t = { swings: 0, inPlay: 0, kinds: {}, points: 0, bonus: 0, ground: { all: 0, out: 0, ifh: 0, through: 0, line: 0 }, ifhBy: {}, bats: { R: { ground: 0, ifh: 0 }, L: { ground: 0, ifh: 0 } }, close: 0, margins: [], how: {}, raced: 0 };
 for (let seed = 1; seed <= 300; seed++) {
   const seq = makeSequence(seed, pitcherHand(seed) === 'L');
   for (let i = 0; i < 16; i++) for (let dt = -90; dt <= 90; dt += 3) for (const bats of ['R', 'L']) {
-    ctx.settings.bats = bats;
     const r = judgeSwing(seq[i], dt, bats);
     t.swings++;
     if (r.kind === 'whiff' || r.kind === 'foul') continue;   // 앞으로 간 타구만 센다
@@ -62,3 +56,4 @@ if (t.ground.ifh) {
 }
 if (t.raced) console.log(`잡는 방법(내야 땅볼 중): ${Object.entries(out.fieldingHow).map(([k, v]) => `${k} ${v}%`).join(' · ')}`);
 if (t.margins.length) console.log(`1루 접전(0.15초 안): 땅볼의 ${out.closeShareOfGround}% · 차이 p10/p50/p90 ${out.margin.p10}/${out.margin.p50}/${out.margin.p90}초`);
+})().catch((e) => { console.error(e); process.exit(1); });
