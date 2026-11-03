@@ -2033,6 +2033,89 @@ test.describe('따라가는 카메라', () => {
   });
 });
 
+test.describe('고가 공 꼬리·타격음', () => {
+  test('혜성·용 꼬리는 홈런을 뒤에서 따라가는 화면에서도 공 뒤로 길게 남는다(지난 0.26초 점 꼬리는 공 둘레 몇 px에 몰렸다)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);   // seed 42 첫 공은 홈런
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.flightT > 1.2 && walkoff.cam.z > walkoff.CAM_HOME.z + 5, null, { timeout: 10_000 });
+    // 멈춘 장면 하나를 꼬리마다 다시 그려(시계·난수도 멈춤) 꼬리 없이 그린 것과 달라진 픽셀 가운데 공에서 가장 먼 거리(화면 높이 비율)
+    const reach = await page.evaluate(() => {
+      walkoff.paused = true;
+      const now = performance.now(), { now: realNow } = performance, realRandom = Math.random;
+      performance.now = () => now; Math.random = () => 0.5;
+      const g = walkoff.game, c = document.querySelector('canvas'), x2d = c.getContext('2d'), d = c.width / walkoff.view.w;
+      const fp = walkoff.fieldPlay(g.outcome).ball(g.flightT), b = walkoff.project(fp.x, fp.y, fp.z);
+      const shot = (trail) => { walkoff.wallet.look.trail = trail; walkoff.render(now / 1000); return x2d.getImageData(0, 0, c.width, c.height).data; };
+      const base = shot('trail-none'), out = {};
+      for (const trail of ['trail-comet', 'trail-dragon']) {
+        const img = shot(trail);
+        let far = 0;
+        for (let i = 0; i < img.length; i += 12) {
+          if (Math.abs(img[i] - base[i]) + Math.abs(img[i + 1] - base[i + 1]) + Math.abs(img[i + 2] - base[i + 2]) < 40) continue;
+          const p = i / 4; far = Math.max(far, Math.hypot((p % c.width) / d - b.x, Math.floor(p / c.width) / d - b.y));
+        }
+        out[trail] = far / walkoff.view.h;
+      }
+      performance.now = realNow; Math.random = realRandom; walkoff.paused = false;
+      return out;
+    });
+    expect(reach['trail-comet']).toBeGreaterThan(0.12);
+    expect(reach['trail-dragon']).toBeGreaterThan(0.12);
+    await page.waitForFunction(() => walkoff.game.flightT > walkoff.chaseEnd(walkoff.game.outcome) + 0.05);   // 끝까지 오류 없이
+    await page.evaluate(() => walkoff.openShop('shop'));   // 상점 미리 보기(공이 꼬리를 달고 날아간다)도
+    await tap(page, '공 꼬리');
+    for (const name of ['혜성', '용']) { await tap(page, name); await page.waitForTimeout(700); }
+    expect(errors).toEqual([]);
+  });
+
+  test('천둥·8비트 타격음은 폭탄보다 크지 않고, 천둥은 1초 넘게 우르릉 이어지며 8비트는 짧게 끝난다', async ({ page }) => {
+    await page.addInitScript(() => {   // 게임 소리를 그대로 미리 녹음한다(2.4초)
+      window.AudioContext = function () { window.__ac = new OfflineAudioContext(1, 44100 * 2.4, 44100); return window.__ac; };
+    });
+    const errors = await open(page);
+    const record = async (style) => {   // 50ms 창 크기(RMS)의 최댓값과, 최댓값의 3% 넘게 들리는 마지막 시각
+      await page.reload();
+      await page.waitForFunction(() => !!window.walkoff);
+      return page.evaluate(async (style) => {
+        walkoff.Sound.init(); walkoff.Sound.crack(0.8, style);
+        const d = (await window.__ac.startRendering()).getChannelData(0), win = 2205;
+        const rms = (i) => { let s = 0; for (let k = i; k < i + win; k++) s += d[k] * d[k]; return Math.sqrt(s / win); };
+        let max = 0, last = 0;
+        for (let i = 0; i + win <= d.length; i += 441) max = Math.max(max, rms(i));
+        for (let i = 0; i + win <= d.length; i += 441) if (rms(i) > max * 0.03) last = (i + win) / 44100;
+        return { max, last };
+      }, style);
+    };
+    const bomb = await record('sound-bomb'), thunder = await record('sound-thunder'), chip = await record('sound-8bit');
+    expect(thunder.max).toBeLessThanOrEqual(bomb.max);
+    expect(chip.max).toBeLessThanOrEqual(bomb.max);
+    expect(Math.min(thunder.max, chip.max)).toBeGreaterThan(0.03);   // 들리기는 한다
+    expect(thunder.last).toBeGreaterThan(1.0);   // 콰광 뒤 우르릉
+    expect(chip.last).toBeLessThan(0.4);         // 띠링
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('맞는 순간 효과', () => {
+  test('효과 배트로 맞히면(파울 포함) 맞은 자리에서 효과가 터지고, 효과 없는 배트와 헛스윙은 없다(2026-11-03 사용자 전달 요청 "불 방망이면 불, 얼음 방망이면 얼음")', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const hit = async (bat, dt) => {
+      await page.evaluate((bat) => { walkoff.setWallet({ look: { ...walkoff.wallet.look, bat } }); walkoff.goTitle(); walkoff.startGame('challenge'); }, bat);
+      await page.waitForFunction(() => walkoff.game.state === 'pitch');
+      await pressAt(page, dt);
+      await page.waitForFunction(() => walkoff.game.state === 'result');
+      return page.evaluate(() => ({ kind: walkoff.game.outcome.kind, burst: walkoff.game.burst?.fx ?? null }));
+    };
+    expect(await hit('bat-fire', 0)).toEqual({ kind: 'hr', burst: 'fire' });     // seed 42 첫 공은 제때 치면 홈런
+    expect(await hit('bat-ice', 115)).toEqual({ kind: 'foul', burst: 'ice' });   // 파울도 맞힌 공이라 터진다
+    expect(await hit('bat-wood', 0)).toEqual({ kind: 'hr', burst: null });       // 효과 없는 배트
+    expect(await hit('bat-beam', -200)).toEqual({ kind: 'whiff', burst: null }); // 헛스윙
+    expect(errors).toEqual([]);
+  });
+});
+
 test.describe('가운데 큰 전광판', () => {
   test('투구 중에는 움직이지 않고(공이 올 때 깜빡이면 타이밍을 방해한다) 위쪽 점수 패널 아래에 있고, 홈런 결과가 뜨면 HOMERUN이 나온다(seed 42 첫 공은 홈런)', async ({ page }) => {
     const errors = await open(page, '?seed=42');

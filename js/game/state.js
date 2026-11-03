@@ -8,7 +8,7 @@ export const game = {
   clockAt: 0,        // t를 마지막으로 올린 시각(performance.now 기준)
   swingAt: null,     // 공을 놓은 뒤 몇 초에 휘둘렀는지
   outcome: null, gained: 0, resultT: 0, revealAt: 0, flightT: 0,
-  hitstop: 0, flash: 0, contactPos: null, mittDone: false, replay: null, replayed: false,
+  hitstop: 0, flash: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false,   // burst: 효과 배트로 맞힌 효과 { fx, t(지난 초), seed }
   toast: null, newBest: false, best: 0,
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
   opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
