@@ -1110,12 +1110,16 @@ test.describe('화면', () => {
       const seq = walkoff.makeSequence(1, false), out = (n, dt) => walkoff.judgeSwing(seq[n - 1], dt, 'R');
       const near = (q, b) => Math.hypot(q.x - b[0], q.z - b[1]);
       const ground = out(3, -80), fly = out(1, -65), single = out(1, -80), double = out(3, -20), hr = out(1, -25), foul = out(1, -120);
-      const g1 = walkoff.runnerAt(ground, walkoff.fieldPlay(ground).end), g8 = walkoff.runnerAt(ground, 8);
+      // 처음 멈추는 때(아웃은 멈췄다가 더그아웃으로 걸어간다. 2026-11-03부터)
+      const stopAt = (x, from) => { for (let t = from; t < from + 6; t += 1 / 60) if (walkoff.runnerAt(x, t)?.speed === 0) return t; return null; };
+      const g1 = walkoff.runnerAt(ground, walkoff.fieldPlay(ground).end), g8 = walkoff.runnerAt(ground, stopAt(ground, walkoff.fieldPlay(ground).end));
+      let hrHome = Infinity;
+      for (let t = 15; t < 40; t += 1 / 30) { const q = walkoff.runnerAt(hr, t); hrHome = Math.min(hrHome, Math.hypot(q.x, q.z)); }
       return {
         kinds: [ground.kind + ':' + ground.type, fly.kind, single.kind, double.kind, hr.kind, foul.kind],
         notYet: walkoff.runnerAt(hr, 0.2), foul: walkoff.runnerAt(foul, 2),
         groundAtThrow: near(g1, walkoff.BASE1), groundEnd: { speed: g8.speed, past: near(g8, walkoff.BASE1) },
-        flyStopped: walkoff.runnerAt(fly, walkoff.fieldPlay(fly).end + 2).speed,
+        flyStopped: stopAt(fly, walkoff.fieldPlay(fly).end) - walkoff.fieldPlay(fly).end,
         single: (() => {   // 1루를 지나 2루 쪽으로 간 거리(가장 멀 때)와 돌아온 뒤
           const B1 = walkoff.BASE1, B2 = walkoff.BASE2, u = [B2[0] - B1[0], B2[1] - B1[1]], n = Math.hypot(u[0], u[1]);
           let past = 0; for (let t = 4; t < 14; t += 0.05) { const q = walkoff.runnerAt(single, t); past = Math.max(past, ((q.x - B1[0]) * u[0] + (q.z - B1[1]) * u[1]) / n); }
@@ -1130,7 +1134,7 @@ test.describe('화면', () => {
           let r = null; for (let sd = 1; sd < 30 && !r; sd++) { const q = walkoff.makeSequence(sd, false); for (let n = 0; n < 16 && !r; n++) for (let dt = -90; dt <= 90; dt += 3) { const x = walkoff.judgeSwing(q[n], dt, 'R'); if (x.infield) { r = x; break; } } }
           return { past: near(walkoff.runnerAt(r, 6), walkoff.BASE1), back: near(walkoff.runnerAt(r, 12), walkoff.BASE1) };
         })(),
-        hr10: walkoff.runnerAt(hr, 10).dist, hrHome: near(walkoff.runnerAt(hr, 40), [0, 0]),
+        hr10: walkoff.runnerAt(hr, 10).dist, hrHome,
         camera: (() => {   // 화면은 주자 몸이 아니라 주자가 가는 베이스 쪽을 앞서 잡는다
           const q = walkoff.runnerAt(hr, 8), c = walkoff.cameraFocus(hr, 8), g = q.goals.find((x) => x.at > q.dist + 0.3).p, far = (a) => Math.hypot(a[0] - g[0], a[1] - g[1]);
           return { lead: Math.hypot(c.x - q.x, c.z - q.z), closer: far([c.x, c.z]) < far([q.x, q.z]) };
@@ -1143,7 +1147,7 @@ test.describe('화면', () => {
     expect(r.groundAtThrow).toBeGreaterThan(0.3);   // 송구가 1루에 닿을 때 아직 1루 전(1루 경주대로 반 박자 차이)
     expect(r.groundEnd.speed).toBe(0);
     expect(r.groundEnd.past).toBeLessThan(7);     // 1루를 지나쳐 달려 나가 짧은 걸음으로 멈춘다
-    expect(r.flyStopped).toBe(0);
+    expect(r.flyStopped).toBeLessThan(2.5);       // 뜬공은 잡히면 줄여 멈춘다(그 뒤는 더그아웃으로 걸어간다)
     expect(r.single.past).toBeGreaterThan(3.5);   // 1루를 돌아 2루 쪽으로 4.5m 나갔다가
     expect(r.single.back).toBeLessThan(0.6);      // 외야수가 공을 던지면 1루로 돌아와 선다
     expect(r.double).toBeLessThan(0.5);      // 2루에 선다
@@ -1153,7 +1157,7 @@ test.describe('화면', () => {
     expect(r.infield.past).toBeGreaterThan(3);    // 내야 안타는 1루를 지나쳐 달렸다가
     expect(r.infield.back).toBeLessThan(0.6);     // 돌아온다
     expect(r.hr10).toBeGreaterThan(27.43);   // 1루를 지났다
-    expect(r.hrHome).toBeLessThan(0.5);      // 홈까지 돈다
+    expect(r.hrHome).toBeLessThan(0.5);      // 홈까지 돈다(밟은 뒤에는 더그아웃으로 걸어간다)
     expect(r.camera.lead).toBeGreaterThan(1);   // 공이 넘어간 뒤 화면은 주자보다 앞(가는 베이스 쪽)을 잡아서, 주자가 화면 안을 달려 나간다
     expect(r.camera.closer).toBe(true);         // (주자 몸을 잡으면 화면 끝에 붙어 제자리에서 뛰는 것처럼 보였다)
     expect(errors).toEqual([]);
@@ -1164,8 +1168,12 @@ test.describe('화면', () => {
     const r = await page.evaluate(() => {
       const seq = walkoff.makeSequence(1, false), ground = walkoff.judgeSwing(seq[2], -80, 'R'), hr = walkoff.judgeSwing(seq[0], -25, 'R');
       let reach = 0;
-      for (let t = 0.55; t < 4; t += 0.02) {   // 우타는 0.52초에 뛰기 시작한다
+      for (let t = 0.55; t < 14; t += 0.02) {   // 우타는 0.52초에 뛰기 시작한다. 멈춘 뒤 돌아서 더그아웃으로 걷는 것까지
         const k = walkoff.runnerSkeleton(walkoff.runnerAt(ground, t));
+        for (const s of ['l', 'r']) reach = Math.max(reach, Math.hypot(k.feet[s][0] - k.hips[s][0], k.feet[s][1] - k.hips[s][1], k.feet[s][2] - k.hips[s][2]));
+      }
+      for (let t = 20; t < 34; t += 0.02) {   // 홈런: 홈을 밟으며 손을 들고, 돌아서 더그아웃으로 걷는다
+        const k = walkoff.runnerSkeleton(walkoff.runnerAt(hr, t));
         for (const s of ['l', 'r']) reach = Math.max(reach, Math.hypot(k.feet[s][0] - k.hips[s][0], k.feet[s][1] - k.hips[s][1], k.feet[s][2] - k.hips[s][2]));
       }
       const double = walkoff.judgeSwing(seq[2], -20, 'R'), t2 = walkoff.runnerReach(double, walkoff.BASE2);
@@ -1179,6 +1187,46 @@ test.describe('화면', () => {
     expect(r.reach).toBeLessThan(0.95);   // 넓적다리 0.46 + 정강이 0.45
     expect(r.flying).toBe(false);         // 날아가는 동안은 보이고
     expect(r.landed).toBe(true);          // 관중석에 떨어지면 감춘다(전에는 관중석 그림 위에 공이 그대로 보였다)
+    expect(errors).toEqual([]);
+  });
+
+  test('주루 다듬기: 몸은 0.35초에 걸쳐 돌고(전에는 한 장면 만에 180도), 베이스에 선 주자 옆으로 수비수가 비켜 서고, 아웃은 고개를 숙이고 파울 지역으로, 홈런은 손을 들고 홈을 밟은 뒤 더그아웃으로 뛰어 나간다', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const w = walkoff, seq = w.makeSequence(1, false), out = (n, dt) => w.judgeSwing(seq[n - 1], dt, 'R');
+      const find = (pred) => { for (let sd = 1; sd < 40; sd++) { const q = w.makeSequence(sd, false); for (let n = 0; n < 16; n++) for (let dt = -90; dt <= 90; dt += 3) { const x = w.judgeSwing(q[n], dt, 'R'); if (pred(x)) return x; } } return null; };
+      const single = out(1, -80), infield = find((x) => x.infield), ground = out(3, -80), fly = out(1, -65), hr = out(1, -25), double = out(3, -20), triple = find((x) => x.kind === 'triple');
+      const ang = (a, b) => Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1]))) * 180 / Math.PI;
+      const maxTurn = (x) => { let m = 0, p = null; for (let t = 0.6; t < 40; t += 1 / 60) { const q = w.runnerAt(x, t); if (q && p) m = Math.max(m, ang(p, q.dir)); p = q ? q.dir : null; } return m; };
+      // t초에 주자와 가장 가까운 수비수: 거리와, 홈 뒤 카메라에서 옆으로 떨어진 거리(x)
+      const nearest = (x, t) => { const q = w.runnerAt(x, t); return w.fieldersAt(x, t).map((f) => ({ d: Math.hypot(f.spot[0] - q.x, f.spot[1] - q.z), dx: Math.abs(f.spot[0] - q.x) })).sort((a, b) => a.d - b.d)[0]; };
+      const settled = (x, b) => Math.max(w.fieldPlay(x).ev.arrive + 0.7, w.runnerReach(x, b) + 1.6);   // 공을 받아 비켜 서고 주자가 일어선 뒤
+      const D = w.DUGOUT, toDug = (q) => Math.hypot(q.x - D[0], q.z - D[1]);
+      const stopAt = (x, from) => { for (let t = from; t < from + 6; t += 1 / 60) if (w.runnerAt(x, t)?.speed === 0) return t; return null; };
+      // 아웃: 멈춘 자리에서 나가는 곳(마지막 목표)으로 4초 동안 3m 넘게 다가가고, 나가는 곳은 1루 쪽 파울 지역(x > z)
+      const leaves = (x, t0) => { const a = w.runnerAt(x, t0 + 4), e = a.goals[a.goals.length - 1].p, to = (q) => Math.hypot(q.x - e[0], q.z - e[1]); return { moving: a.speed > 0.5, closer: to(a) < to(w.runnerAt(x, t0)) - 3, foul: e[0] > e[1] }; };
+      const gs = stopAt(ground, w.fieldPlay(ground).end), gk = w.runnerSkeleton(w.runnerAt(ground, gs + 4));
+      const fs = stopAt(fly, w.fieldPlay(fly).end);
+      let raised = -9, home = Infinity;
+      for (let t = 15; t < 32; t += 1 / 30) { const q = w.runnerAt(hr, t), h = Math.hypot(q.x, q.z - 0.3); home = Math.min(home, h); if (h < 2) { const k = w.runnerSkeleton(q); raised = Math.max(raised, k.hands.r[1] - k.head[1]); } }
+      const h40 = w.runnerAt(hr, 40);
+      return {
+        kinds: [single.kind, infield?.kind, ground.kind + ':' + ground.type, fly.kind, hr.kind, double.kind, triple?.kind],
+        turn: [single, infield, ground, fly, hr].map((x) => Math.round(maxTurn(x))),
+        aside: [nearest(single, 10), nearest(infield, 10), nearest(double, settled(double, w.BASE2)), nearest(triple, settled(triple, w.BASE3))].map((n) => ({ d: +n.d.toFixed(2), dx: +n.dx.toFixed(2) })),
+        ground: { ...leaves(ground, gs), headDown: gk.brim[1] < gk.head[1] - 0.05 },
+        fly: leaves(fly, fs),
+        hr: { home: +home.toFixed(2), raised: +raised.toFixed(2), away: toDug(h40) < Math.hypot(h40.x, h40.z) },
+      };
+    });
+    expect(r.kinds).toEqual(['single', 'single', 'out:ground', 'out', 'hr', 'double', 'triple']);
+    for (const t of r.turn) expect(t).toBeLessThan(20);   // 1/60초에 20도 아래(전에는 단타·내야 안타 귀루 때 한 장면에 179도)
+    for (const n of r.aside) { expect(n.d).toBeGreaterThan(1.4); expect(n.dx).toBeGreaterThan(1.1); }   // 단타·내야 안타는 1루, 2루타·3루타는 그 베이스에 선 주자와 수비수가 겹쳐 보이지 않는다
+    expect(r.ground).toEqual({ moving: true, closer: true, foul: true, headDown: true });   // 땅볼 아웃은 멈췄다가 고개를 숙이고 파울 지역으로 나간다
+    expect(r.fly).toEqual({ moving: true, closer: true, foul: true });   // 뜬공 아웃도
+    expect(r.hr.home).toBeLessThan(0.5);       // 홈런은 홈을 밟으며
+    expect(r.hr.raised).toBeGreaterThan(0.2);  // 한 손을 머리 위로 들고
+    expect(r.hr.away).toBe(true);              // 그다음 더그아웃 쪽으로 뛰어 나간다
     expect(errors).toEqual([]);
   });
 
