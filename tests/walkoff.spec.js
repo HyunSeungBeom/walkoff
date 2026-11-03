@@ -306,7 +306,7 @@ test.describe('판정 계산', () => {
       return { perfect: pick(walkoff.judgeSwing(curve, 0, 'R')), late: pick(walkoff.judgeSwing(curve, 30, 'R')) };
     });
     expect(r.perfect).toEqual({ kind: 'double', name: '좌중간 2루타', spray: -14, reason: '정타라 수비 사이로 빠졌어요', split: true });
-    expect(r.late).toEqual({ kind: 'double', name: '우중간 2루타', spray: 14, reason: '늦어서 밀어친 타구예요', split: false });
+    expect(r.late).toEqual({ kind: 'double', name: '우중간 2루타', spray: 15, reason: '늦어서 밀어친 타구예요', split: false });   // 2026-11-03부터 세게 뜬 공은 조금 더 넓게 간다(14 → 15도)
   });
 
   test('존 밖 공을 정확한 타이밍으로 치면 칩이 "타이밍 정확 · 존 밖 공"이다(정타 칩과 헷갈리지 않게)', async ({ page }) => {
@@ -1109,7 +1109,7 @@ test.describe('화면', () => {
     const r = await page.evaluate(() => {
       const seq = walkoff.makeSequence(1, false), out = (n, dt) => walkoff.judgeSwing(seq[n - 1], dt, 'R');
       const near = (q, b) => Math.hypot(q.x - b[0], q.z - b[1]);
-      const ground = out(3, -80), fly = out(1, -65), single = out(1, -80), double = out(1, -35), hr = out(1, -25), foul = out(1, -120);
+      const ground = out(3, -80), fly = out(1, -65), single = out(1, -80), double = out(3, -20), hr = out(1, -25), foul = out(1, -120);
       const g1 = walkoff.runnerAt(ground, walkoff.fieldPlay(ground).end), g8 = walkoff.runnerAt(ground, 8);
       return {
         kinds: [ground.kind + ':' + ground.type, fly.kind, single.kind, double.kind, hr.kind, foul.kind],
@@ -1168,7 +1168,7 @@ test.describe('화면', () => {
         const k = walkoff.runnerSkeleton(walkoff.runnerAt(ground, t));
         for (const s of ['l', 'r']) reach = Math.max(reach, Math.hypot(k.feet[s][0] - k.hips[s][0], k.feet[s][1] - k.hips[s][1], k.feet[s][2] - k.hips[s][2]));
       }
-      const double = walkoff.judgeSwing(seq[0], -35, 'R'), t2 = walkoff.runnerReach(double, walkoff.BASE2);
+      const double = walkoff.judgeSwing(seq[2], -20, 'R'), t2 = walkoff.runnerReach(double, walkoff.BASE2);
       for (let t = t2 - 1; t < t2 + 1.5; t += 0.02) {   // 2루타 슬라이딩과 일어서기
         const k = walkoff.runnerSkeleton(walkoff.runnerAt(double, t));
         for (const s of ['l', 'r']) reach = Math.max(reach, Math.hypot(k.feet[s][0] - k.hips[s][0], k.feet[s][1] - k.hips[s][1], k.feet[s][2] - k.hips[s][2]));
@@ -2136,11 +2136,12 @@ test.describe('가운데 큰 전광판', () => {
         return null;
       };
       const seq = w.makeSequence(42, w.pitcherHand(42) === 'L');
-      // 홈런, 큰 뜬공 2루타(카메라가 공 뒤로 날아간다), 폰에서 가장 많이 밀리는 좌익수 쪽 안타(seed 332 셋째 공을 40ms 빨리)
-      return [play(seq[0], 0), play(seq[0], 25), play(w.makeSequence(332, false)[2], -40)];
+      // 홈런, 큰 뜬공 2루타(seed 19 여섯째 공을 25ms 늦게, 카메라가 공 뒤로 날아간다), 폰에서 가장 많이 밀리는 좌익수 쪽 안타(seed 332 셋째 공을 40ms 빨리).
+      // 2루타는 처음에 seed 42 첫 공을 25ms 늦게 쳤는데, 2026-11-03 홈런 방향을 넓힌 뒤로 우월 홈런이 됐다
+      return [play(seq[0], 0), play(w.makeSequence(19, w.pitcherHand(19) === 'L')[5], 25), play(w.makeSequence(332, false)[2], -40)];
     });
     expect([hr.name, dbl.name, single.name]).toEqual(['중월 홈런', '우중간 2루타', '좌전 안타']);
-    for (const r of [hr, dbl, single]) expect(r.min, r.name).toBeGreaterThan(0.9);   // 붙잡기 전에는 폰에서 홈런 끝에 0%, 이 2루타는 29%
+    for (const r of [hr, dbl, single]) expect(r.min, r.name).toBeGreaterThan(0.9);   // 붙잡기 전에는 폰에서 홈런 끝에 0%, 이 2루타는 30%
     expect([hr.home, dbl.home]).toEqual([true, true]);   // 따라가는 카메라가 타석 시점으로 돌아온 뒤에 글자가 뜬다
     expect(dbl.late).toBeGreaterThan(0.3);
     expect(hr.follow).toBeGreaterThan(20);   // 글자가 끝나면 화면이 다시 주자를 따라간다
