@@ -1,5 +1,5 @@
-// 팀 id와 상점 물건(id·종류·가격). 랭킹 서버와 같이 쓴다(2026-11-03 코드 나누기 2단계. 서버 worker/src/rules.js·shop.js에 아직 복사본이 있고
-// tests/core가 같은지 본다). 이름·색·모양은 화면 쪽(main.js의 TEAM_LOOKS·ITEM_LOOKS)이 맡는다
+// 팀 id와 상점 물건(id·종류·가격). 랭킹 서버(worker/src/rules.js·shop.js)가 이 파일을 그대로 가져다 쓴다(2026-11-03 코드 나누기.
+// 전에는 서버에 복사본을 두고 tests/core가 같은지 봤다). 이름·색·모양은 화면 쪽(main.js의 TEAM_LOOKS·ITEM_LOOKS)이 맡는다
 
 export const TEAM_IDS = ['kia', 'kt', 'lg', 'nc', 'ssg', 'doosan', 'lotte', 'samsung', 'kiwoom', 'hanwha'];   // KBO 10개 구단. 팀 고르기 화면도 이 순서다
 

@@ -4,7 +4,7 @@ import worker from '../src/index.js';
 import { sign, verify, allowedReturn } from '../src/auth.js';
 import { kstDay, weekStart, maxScoreFor } from '../src/rules.js';
 import { DEFAULTS } from '../src/shop.js';
-import { makeSequence, pitcherHand, zoneMiss } from '../src/pitches.js';
+import { makeSequence, pitcherHand, zoneMiss } from '../../js/core/pitches.js';
 import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
 import { memoryD1 } from './d1.js';
 

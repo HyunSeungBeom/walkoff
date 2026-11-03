@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate, DAILY_LAST_DAY } from '../src/rules.js';
 import { SEED_TTL_MS, MIN_PITCH_MS } from '../src/seeds.js';
-import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../src/pitches.js';
+import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../../js/core/pitches.js';
 
 test('한국 시간 날짜와 월요일 0시 주 경계', () => {
   assert.equal(kstDay(Date.parse('2026-10-25T14:59:59Z')), '2026-10-25');   // 한국 시간 일요일 23:59:59

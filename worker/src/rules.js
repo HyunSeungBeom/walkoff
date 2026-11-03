@@ -1,7 +1,10 @@
-// 랭킹 규칙. 게임(index.html)도 같은 팀 목록과 주 계산을 써야 해서, 테스트로 둘이 같은지 맞춰 본다
-import { makeSequence, pitcherHand, dailySeed, zoneMiss, CHANCES, REACH_M, POINTS, PERFECT_BONUS, hrStreakBonus } from './pitches.js';
+// 랭킹 규칙. 공 순서·점수 상한(maxScoreFor)·팀 목록은 게임과 같은 파일(js/core)을 그대로 가져다 쓴다(2026-11-03 코드 나누기.
+// 전에는 worker/src/pitches.js와 이 파일에 복사본을 두고 테스트로 둘이 같은지 맞춰 봤다). 주 계산은 게임도 같은 규칙이라 테스트가 맞춰 본다
+import { makeSequence, pitcherHand, dailySeed } from '../../js/core/pitches.js';
+import { maxScoreFor } from '../../js/core/score.js';
+import { TEAM_IDS } from '../../js/core/catalog.js';
 import { SEED_TTL_MS, MIN_PITCH_MS } from './seeds.js';
-export const TEAM_IDS = ['kia', 'kt', 'lg', 'nc', 'ssg', 'doosan', 'lotte', 'samsung', 'kiwoom', 'hanwha'];   // KBO 10개 구단(게임의 TEAMS와 같은 순서)
+export { TEAM_IDS, maxScoreFor };   // 서버 테스트와 게임 테스트가 여기서 가져간다
 const DAY_MS = 864e5;
 export const DAILY_LAST_DAY = '2026-10-30';   // 오늘의 10구가 없어진 날. 그날까지 친 판만 받는다
 
@@ -13,32 +16,6 @@ export const addDays = (day, n) => new Date(Date.parse(`${day}T00:00:00Z`) + n *
 export function weekStart(day) {
   const dow = new Date(`${day}T00:00:00Z`).getUTCDay();   // 0 일요일 … 6 토요일
   return addDays(day, -((dow + 6) % 7));
-}
-
-// 전광판이 그 판의 공 순서(seq)로 실제로 나올 수 있는지 한 칸씩 따라가 보고, 나올 수 있으면 그 전광판으로 낼 수 있는
-// 가장 큰 점수를 돌려준다(나올 수 없으면 null).
-// - 볼(Y)은 존 밖 공을 그냥 보냈을 때만 나오고 기회를 쓰지 않는다. 안타(G)는 배트가 닿는 공(존에서 REACH_M 안)에만 나온다.
-// - 기회 10번을 다 쓰면 판이 끝나서 그 뒤에는 공이 없다. 기회가 남은 채 끝나는 건 공을 다 썼을 때뿐이다.
-// - 남은 기회가 1번일 때(끝내기 찬스)는 볼까지 점수가 2배다. 안타는 홈런+정타 보너스, 나머지 스윙은 정타 보너스까지 준다.
-// - 안타(G)는 모두 홈런일 수 있다고 보고 연속 홈런 보너스(hrStreakBonus)까지 준다. 볼(Y)은 연속을 끊지 않고 다른 결과(R)는 끊는다(2026-10-30).
-// 2026-10-30 전에는 칸 수와 칸별 상한만 봐서, 안타 10개 뒤에 볼 30개를 붙인 전광판으로 15,100점이 들어왔다
-export function maxScoreFor(lights, seq) {
-  let left = CHANCES, total = 0, streak = 0;
-  for (let i = 0; i < lights.length; i++) {
-    const p = seq[i];
-    if (!p || left === 0) return null;
-    const c = lights[i], miss = zoneMiss(p), k = left === 1 ? 2 : 1;
-    if (c === 'Y') {
-      if (miss === 0) return null;
-      total += POINTS.ball * k;
-      continue;
-    }
-    if (c === 'G' && miss > REACH_M) return null;
-    streak = c === 'G' ? streak + 1 : 0;
-    total += (c === 'G' ? POINTS.hr + PERFECT_BONUS + hrStreakBonus(streak) : miss <= REACH_M ? PERFECT_BONUS : 0) * k;
-    left -= 1;
-  }
-  return left === 0 || lights.length === seq.length ? total : null;
 }
 
 // 그 판의 공 순서를 만들 시드. 오늘의 10구는 날짜로 정해지고(자정을 넘겨 끝난 판을 위해 전날 순서도 본다), mode가 없는 예전 게임도

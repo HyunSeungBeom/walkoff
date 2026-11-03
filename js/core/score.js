@@ -1,5 +1,5 @@
 // 점수: 결과별 점수, 기회 수, 정타 보너스, 연속 홈런·연속 안타 보너스, 서버가 쓰는 점수 상한(maxScoreFor).
-// 점수 규칙과 상한을 한 파일에 두어 같이 바꾼다(서버 worker/src/rules.js에 아직 maxScoreFor 복사본이 있고 tests/core가 같은지 본다)
+// 점수 규칙과 상한을 한 파일에 두어 같이 바꾼다(랭킹 서버 worker/src/rules.js가 이 파일을 그대로 가져다 쓴다)
 import { REACH_M, zoneMiss } from './pitches.js';
 
 export const POINTS = { hr: 1000, triple: 800, double: 500, single: 300, ball: 100 };
@@ -8,7 +8,7 @@ export const POINTS = { hr: 1000, triple: 800, double: 500, single: 300, ball: 1
 export const CHANCES = 10;
 export const PERFECT_BONUS = 100;
 // 연속 홈런(2026-10-30 사용자 결정, 사용자 목소리 '연속 홈런 시 추가점'): 두 번째 연속(백투백)은 +500, 세 번째부터는 +1,000씩.
-// 골라낸 볼은 기회를 쓰지 않아서 연속을 끊지 않고, 끝내기 찬스면 보너스도 2배다. 서버(worker/src/pitches.js)도 같은 값으로 점수 상한을 잰다
+// 골라낸 볼은 기회를 쓰지 않아서 연속을 끊지 않고, 끝내기 찬스면 보너스도 2배다. 서버도 이 값으로 점수 상한을 잰다
 export const hrStreakBonus = (n) => (n >= 3 ? 1000 : n === 2 ? 500 : 0);
 // 이번 공 앞으로 이어진 홈런 수. 볼은 건너뛰고, 다른 결과(안타·아웃·파울·헛스윙·루킹 스트라이크)가 나오면 끊긴다
 export function hrStreakBefore(results, i) {

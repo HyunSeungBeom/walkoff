@@ -1,78 +1,8 @@
-// 상점 물건과 코인 규칙(2026-10-29 사용자 결정). 게임(index.html)의 SHOP_ITEMS와 id·종류·가격이 같아야 하고 테스트가 맞춰 본다.
-// 가격은 서버가 정한다(게임이 보낸 가격은 믿지 않는다). 가격 0은 처음부터 가진 기본 물건이다
-export const SLOTS = ['bat', 'helmet', 'glove', 'shoe', 'uniform', 'number', 'trail', 'sound'];
+// 상점 물건과 코인 규칙(2026-10-29 사용자 결정). 물건 id·종류·가격은 게임과 같은 파일(js/core/catalog.js)을 그대로 쓴다(2026-11-03 코드 나누기.
+// 전에는 여기에 복사본을 두고 테스트로 맞춰 봤다). 가격은 서버가 이 목록으로 정한다(게임이 보낸 가격은 믿지 않는다). 가격 0은 처음부터 가진 기본 물건이다
+import { SLOTS, ITEMS } from '../../js/core/catalog.js';
+export { SLOTS, ITEMS };
 
-export const ITEMS = [
-  { id: 'bat-wood', slot: 'bat', price: 0 },
-  { id: 'bat-maple', slot: 'bat', price: 120 },
-  { id: 'bat-black', slot: 'bat', price: 150 },
-  { id: 'bat-red', slot: 'bat', price: 150 },
-  { id: 'bat-blue', slot: 'bat', price: 150 },
-  { id: 'bat-silver', slot: 'bat', price: 400 },
-  { id: 'bat-gold', slot: 'bat', price: 1000 },
-  { id: 'bat-fire', slot: 'bat', price: 1200 },   // 2026-10-30 더한 물건
-  { id: 'bat-lightning', slot: 'bat', price: 1200 },
-  { id: 'bat-ice', slot: 'bat', price: 1000 },
-  { id: 'bat-hammer', slot: 'bat', price: 800 },
-  { id: 'bat-leek', slot: 'bat', price: 500 },
-  { id: 'bat-beam', slot: 'bat', price: 5000 },   // 2026-11-03 더한 고가 물건
-  { id: 'bat-diamond', slot: 'bat', price: 4000 },
-  { id: 'helmet-team', slot: 'helmet', price: 0 },
-  { id: 'helmet-black', slot: 'helmet', price: 150 },
-  { id: 'helmet-white', slot: 'helmet', price: 150 },
-  { id: 'helmet-chrome', slot: 'helmet', price: 600 },
-  { id: 'helmet-gold', slot: 'helmet', price: 1000 },
-  { id: 'helmet-turtle', slot: 'helmet', price: 500 },
-  { id: 'helmet-rabbit', slot: 'helmet', price: 500 },
-  { id: 'helmet-bear', slot: 'helmet', price: 500 },
-  { id: 'helmet-tiger', slot: 'helmet', price: 700 },
-  { id: 'helmet-lion', slot: 'helmet', price: 700 },
-  { id: 'helmet-dino', slot: 'helmet', price: 700 },
-  { id: 'helmet-crown', slot: 'helmet', price: 4000 },
-  { id: 'helmet-astro', slot: 'helmet', price: 3000 },
-  { id: 'glove-white', slot: 'glove', price: 0 },
-  { id: 'glove-black', slot: 'glove', price: 100 },
-  { id: 'glove-red', slot: 'glove', price: 100 },
-  { id: 'glove-blue', slot: 'glove', price: 100 },
-  { id: 'glove-neon', slot: 'glove', price: 150 },
-  { id: 'shoe-black', slot: 'shoe', price: 0 },
-  { id: 'shoe-white', slot: 'shoe', price: 100 },
-  { id: 'shoe-red', slot: 'shoe', price: 120 },
-  { id: 'shoe-neon', slot: 'shoe', price: 150 },
-  { id: 'shoe-gold', slot: 'shoe', price: 800 },
-  { id: 'shoe-bear', slot: 'shoe', price: 400 },
-  { id: 'shoe-tiger', slot: 'shoe', price: 400 },
-  { id: 'shoe-rabbit', slot: 'shoe', price: 400 },
-  { id: 'shoe-dino', slot: 'shoe', price: 400 },
-  { id: 'shoe-duck', slot: 'shoe', price: 300 },
-  { id: 'shoe-rocket', slot: 'shoe', price: 3000 },
-  { id: 'shoe-bolt', slot: 'shoe', price: 2500 },
-  { id: 'uniform-team', slot: 'uniform', price: 0 },
-  { id: 'uniform-home', slot: 'uniform', price: 300 },
-  { id: 'uniform-away', slot: 'uniform', price: 300 },
-  { id: 'uniform-alt', slot: 'uniform', price: 500 },
-  { id: 'uniform-legend', slot: 'uniform', price: 5000 },
-  { id: 'uniform-neon', slot: 'uniform', price: 4000 },
-  { id: 'number-none', slot: 'number', price: 0 },
-  { id: 'number-on', slot: 'number', price: 300 },
-  { id: 'trail-none', slot: 'trail', price: 0 },
-  { id: 'trail-fire', slot: 'trail', price: 600 },
-  { id: 'trail-rainbow', slot: 'trail', price: 800 },
-  { id: 'trail-lightning', slot: 'trail', price: 800 },
-  { id: 'trail-heart', slot: 'trail', price: 600 },
-  { id: 'trail-star', slot: 'trail', price: 600 },
-  { id: 'trail-comet', slot: 'trail', price: 4000 },
-  { id: 'trail-dragon', slot: 'trail', price: 6000 },
-  { id: 'sound-wood', slot: 'sound', price: 0 },
-  { id: 'sound-metal', slot: 'sound', price: 400 },
-  { id: 'sound-toy', slot: 'sound', price: 300 },
-  { id: 'sound-bomb', slot: 'sound', price: 700 },
-  { id: 'sound-laser', slot: 'sound', price: 500 },
-  { id: 'sound-bell', slot: 'sound', price: 400 },
-  { id: 'sound-drum', slot: 'sound', price: 300 },
-  { id: 'sound-thunder', slot: 'sound', price: 2500 },
-  { id: 'sound-8bit', slot: 'sound', price: 1500 },
-];
 export const itemById = (id) => ITEMS.find((i) => i.id === id) ?? null;
 export const DEFAULTS = Object.fromEntries(SLOTS.map((s) => [s, ITEMS.find((i) => i.slot === s && i.price === 0).id]));
 

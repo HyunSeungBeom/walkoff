@@ -1929,7 +1929,7 @@ test.describe('랭킹 규칙', () => {
   });
 
   test('연속 안타 보너스는 n번째마다 서버의 연속 홈런 보너스 이하라 서버 점수 상한을 넘지 않는다', async ({ page }) => {
-    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'pitches.js')).href);
+    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'score.js')).href);   // 서버가 점수 상한에 쓰는 파일
     await open(page);
     const ns = Array.from({ length: 41 }, (_, i) => i);
     const hit = await page.evaluate((ns) => ns.map(walkoff.hitStreakBonus), ns);
@@ -1937,14 +1937,14 @@ test.describe('랭킹 규칙', () => {
   });
 
   test('게임과 서버가 같은 연속 홈런 보너스를 쓴다(서버는 이걸로 점수 상한을 잰다)', async ({ page }) => {
-    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'pitches.js')).href);
+    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'score.js')).href);
     await open(page);
     const ns = [0, 1, 2, 3, 4, 5, 10, 40];
     expect(await page.evaluate((ns) => ns.map(walkoff.hrStreakBonus), ns)).toEqual(ns.map(srv.hrStreakBonus));
   });
 
   test('게임과 서버가 같은 공 순서를 만든다(서버가 전광판·점수를 그 순서로 맞춰 본다)', async ({ page }) => {
-    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'pitches.js')).href);
+    const srv = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'pitches.js')).href);   // 서버가 공 순서에 쓰는 파일
     await open(page);
     const days = ['2026-10-28', '2026-10-30', '2027-01-01'];   // 서버는 예전 탭이 보내는 오늘의 10구도 그날 시드로 검사한다
     const seeds = [1, 42, 1793319865, 2147483646, ...days.map(srv.dailySeed)];
