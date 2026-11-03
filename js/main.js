@@ -725,9 +725,10 @@ const PITCH_KEYS = [
 ];
 // 키 장면 사이를 속도가 이어지는 곡선(에르미트)으로 잇는다. 방향이 바뀌는 곳과 값이 그대로인 곳(디딘 발)은 그 방향 속도만 0이라 넘치지 않는다.
 // 전에는 장면 사이마다 따로 부드럽게 이어서 키 장면마다 멈칫했다(2026-11-02 사용자 요청 '던지는 것을 더 부드럽고 자연스럽게')
-function makeTrack(keys) {
+function makeTrack(keys, s0, s1) {
   const tans = keys.map(([t, v], j) => v.map((x, c) => {
-    if (j === 0 || j === keys.length - 1) return 0;
+    if (j === 0) return s0 ? s0[c] : 0;
+    if (j === keys.length - 1) return s1 ? s1[c] : 0;
     const [ta, va] = keys[j - 1], [tb, vb] = keys[j + 1], d0 = (x - va[c]) / (t - ta), d1 = (vb[c] - x) / (tb - t);
     if (d0 * d1 <= 0) return 0;
     const m = (vb[c] - va[c]) / (tb - ta), lim = 3 * Math.min(Math.abs(d0), Math.abs(d1));
@@ -882,9 +883,9 @@ const nearestOutfielder = (spray) => OUTFIELDERS.reduce((b, f) => (Math.abs(f.a 
 const smooth = (u) => { const k = clamp(u, 0, 1); return k * k * (3 - 2 * k); };
 const isOutfielder = (f) => OUTFIELDERS.includes(f);
 // 수비수 걸음: 내야 최고 초속 7m, 외야 8.5m(주자보다 빨리 서고, 덜 숙인다). 조깅은 커버·백업에 일찍 닿을 때
-const FIELD_RUN_IN = { top: FIELD_SPEED.in[0], tau: FIELD_SPEED.in[1], cad: [1.8, 0.05], D: 0.21, heel: 0.55, knee: 0.42, arm: 52, armMid: -4, elbow: 90, elbowAmp: 22, lean: 0.2, start: 0.35, Dstart: 0.06, drive: 0.2, dust: 0 };
+const FIELD_RUN_IN = { top: FIELD_SPEED.in[0], tau: FIELD_SPEED.in[1], cad: [1.8, 0.05], D: 0.21, effort: 1, lean: 0.2, start: 0.35, Dstart: 0.06, drive: 0.2, dust: 0 };
 const FIELD_RUN_OUT = { ...FIELD_RUN_IN, top: FIELD_SPEED.out[0], tau: FIELD_SPEED.out[1] };
-const FIELD_JOG = { top: 4, tau: 0.5, cad: [1.4, 0.07], D: 0.3, heel: 0.28, knee: 0.24, arm: 22, armMid: 6, elbow: 95, elbowAmp: 8, lean: 0.06, start: 0.1, Dstart: 0.04, drive: 0.05, dust: 0 };
+const FIELD_JOG = { top: 4, tau: 0.5, cad: [1.4, 0.07], D: 0.26, effort: 0, lean: 0.06, start: 0.1, Dstart: 0.04, drive: 0.05, dust: 0 };
 const BLEND = 0.15;   // 동작이 바뀔 때 앞 자세에서 섞는 시간(초)
 
 // 수비 자세(키 값, 투수와 같은 pitchVec 모양). 홈 쪽(-z)을 보고 선 오른손잡이 기준이고, 자리(발 사이)가 원점이다. 왼쪽이 +x다
@@ -2697,10 +2698,11 @@ function drawBatterFigure(k, col, dy = 0) {
   function drawShoe2(side) {
     const f = P(k.feet[side]);
     if (!f) return;
-    const fx = fxOf(look.shoe), kicked = k.soles?.[side] > 0.05;   // 뒤로 차올린 발은 발끝이 아래로 서서 땅에 누운 신발 모양이 맞지 않는다
+    const fx = fxOf(look.shoe), kicked = (fx || !k.feetDir) && k.soles?.[side] > 0.05;   // 뒤로 차올린 발은 발끝이 아래로 서서 땅에 누운 신발 모양이 맞지 않는다
     const act = fx === 'rocket' || fx === 'bolt' ? shoeAct(side, f) : null;   // 뛸 때 효과가 나는 신발은 빠르기·디딘 때·뒤쪽을 넘긴다(차올린 발도 밑창 대신 효과로 보인다)
     if (fx) drawShoe(f, f.s, k.front ?? batSide(), col, fx, true, act);
     else if (kicked) ellipseAt(f, 0.06 * f.s, 0.12 * f.s, col('shoe'));
+    else if (k.feetDir) drawShoeTilt(side);
     else {
       const F = k.feet[side], out = side === 'l' ? ax.lp : V.mul(ax.lp, -1);
       const d = unit3([ax.fp[0] + out[0] * 0.25, 0, ax.fp[2] + out[2] * 0.25]), w = unit3([out[0], 0, out[2]]), y0 = F[1] - 0.05;
@@ -2714,6 +2716,23 @@ function drawBatterFigure(k, col, dy = 0) {
       }
     }
     if (kicked && !act) ellipseAt({ x: f.x, y: f.y - 0.03 * f.s }, 0.05 * f.s, 0.1 * f.s, `rgba(232,228,218,${(0.95 * k.soles[side]).toFixed(2)})`);   // 차올린 발의 밑창
+  }
+  // 뛰는 사람의 신발: 발목 각(k.feetDir)대로 기운다. 뗄 때 발끝이 내려가고, 차올린 발은 밑창이 뒤를 본다(카메라 쪽이면 밑창을 칠한다)
+  function drawShoeTilt(side) {
+    const F = k.feet[side], fd = k.feetDir[side], out = side === 'l' ? ax.lp : V.mul(ax.lp, -1), fs = P(F)?.s ?? 0;
+    const h = unit3([ax.fp[0] + out[0] * 0.25, 0, ax.fp[2] + out[2] * 0.25]), w = unit3([out[0], 0, out[2]]);
+    const p = Math.atan2(fd[1], Math.hypot(fd[0], fd[2]) * (V.dot(fd, ax.fp) < 0 ? -1 : 1)), d = V.add(V.mul(h, Math.cos(p)), [0, Math.sin(p), 0]), u = V.add(V.mul(h, -Math.sin(p)), [0, Math.cos(p), 0]);
+    const at = (fwd, lat, up) => P(V.add(F, V.add(V.add(V.mul(d, fwd), V.mul(w, lat)), V.mul(u, up - 0.05))));
+    const sole = [at(-0.07, 0.032, 0), at(0.03, 0.046, 0), at(0.14, 0.042, 0), at(0.185, 0.012, 0.012), at(0.185, -0.012, 0.012), at(0.14, -0.042, 0), at(0.03, -0.046, 0), at(-0.07, -0.032, 0), at(-0.085, 0, 0.006)];
+    const top = [at(-0.07, 0.03, 0.13), at(0.0, 0.036, 0.12), at(0.09, 0.03, 0.06), at(0.09, -0.03, 0.06), at(0.0, -0.036, 0.12), at(-0.07, -0.03, 0.13)];
+    fill(hull([...sole, ...top]), col('shoe'));
+    if (lod < 1) return;
+    const face = -V.dot(u, unit3(V.sub([cam.x, cam.y, cam.z], F)));
+    if (face > 0.2) { if (smoothPath(sole)) { ctx.fillStyle = `rgba(232,228,218,${(0.9 * clamp((face - 0.2) / 0.4, 0, 1)).toFixed(2)})`; ctx.fill(); } }
+    else if (Math.abs(p) < 0.35) {
+      const lowS = sole.filter(Boolean), lowT = lowS.map((q) => ({ x: q.x, y: q.y - 0.012 * fs }));
+      if (smoothPath([...lowS, ...lowT.reverse()])) { ctx.fillStyle = 'rgba(255,255,255,0.16)'; ctx.fill(); }
+    }
   }
   // 뛰는 주자(stride)면 빠르기, 이 발을 디딘 뒤 시간, 발 뒤쪽이 화면에서 어느 쪽인지(0.3m 뒤 점을 비춰 본다). 서 있으면 빠르기 0
   function shoeAct(side, f) {
@@ -3254,11 +3273,10 @@ const RUN_START = 0.28, RUN_BRAKE = 6;
 // 내야 안타는 1루를 지나쳐 멈췄다가 0.5초 뒤 돌아온다(TROT: 천천히 뛰어 돌아오기)
 const SLIDE_BRAKE = 10, SLIDE_IN = 0.12, SLIDE_DOWN = 0.5, SLIDE_UP = 0.45;
 // 걸음새: top 최고 빠르기(m/s), tau 빨라지는 시간 상수(초), cad 걸음 놀림(1초에 도는 바퀴 = 두 걸음, cad[0] + cad[1] × 빠르기), D 한 발이 땅에 붙어 있는 몫,
-// heel 뒤꿈치를 엉덩이 쪽으로 차올린 발 높이(m), knee 무릎을 끌어올렸을 때 발 높이(m), arm 팔을 앞뒤로 흔드는 각(도, 가운데 armMid),
-// elbow 팔꿈치 굽힘(도, 앞으로 올 때 elbowAmp만큼 더 접혀 손이 얼굴 앞에 오고 뒤로 갈 때 그만큼 펴져 손이 엉덩이 뒤로 간다),
+// effort 걸음 모양(1 전력 질주, 0 천천히 뛰기, 사이는 섞음. 자세는 runnerSkeleton의 RUN_POSE),
 // lean 다 빨라졌을 때 숙임, start 출발할 때 더 숙임(라디안), Dstart 출발할 때 더 오래 디딤, drive 출발할 때 몸 뒤를 디뎌 미는 거리(m), dust 발을 찰 때 흙먼지
-const SPRINT = { top: 8.3, tau: 0.8, cad: [1.75, 0.045], D: 0.2, heel: 0.74, knee: 0.46, arm: 60, armMid: -4, elbow: 90, elbowAmp: 25, lean: 0.26, start: 0.62, Dstart: 0.1, drive: 0.45, dust: 1 };
-const JOG = { top: 5.4, tau: 1.2, cad: [1.45, 0.06], D: 0.28, heel: 0.3, knee: 0.26, arm: 22, armMid: 6, elbow: 95, elbowAmp: 8, lean: 0.06, start: 0.12, Dstart: 0.04, drive: 0.05, dust: 0, bank: 0.45 };   // bank: 베이스를 돌 때 기우는 정도(전력의 45%)
+const SPRINT = { top: 8.3, tau: 0.8, cad: [1.75, 0.045], D: 0.2, effort: 1, lean: 0.26, start: 0.62, Dstart: 0.1, drive: 0.45, dust: 1 };
+const JOG = { top: 5.4, tau: 1.2, cad: [1.45, 0.06], D: 0.24, effort: 0, lean: 0.06, start: 0.12, Dstart: 0.04, drive: 0.05, dust: 0, bank: 0.45 };   // bank: 베이스를 돌 때 기우는 정도(전력의 45%)
 const TROT = { ...JOG, top: 3.2, tau: 0.6 };
 const unitTo = (a, b) => { const dx = b[0] - a[0], dz = b[1] - a[1], d = Math.hypot(dx, dz) || 1; return [dx / d, dz / d]; };
 // 지나는 점들을 부드러운 곡선(캣멀-롬)으로 이어 촘촘한 꺾은선으로 만든다(모서리에서 방향이 갑자기 꺾이지 않게)
@@ -3419,24 +3437,21 @@ function phaseIndex(tr, ph) {
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (tr.PH[m] < ph) lo = m; else hi = m; }
   return hi;
 }
-function distAtPhase(tr, ph) { return tr.S[phaseIndex(tr, ph)]; }
-// 한 발의 j번째 걸음: D 디딤 몫, b 몸 뒤로 디디는 거리. 출발 직후일수록 오래 디디고 몸 뒤를 밀어서 뒷발부터 머리까지 한 줄로 기운다.
+// 표의 1/120초 칸 사이를 이어 읽는다(칸 값 그대로면 최고 속도에서 7cm씩 틀어져 걸음마다 엉덩이 높이가 들쭉날쭉했다)
+function distAtPhase(tr, ph) {
+  const i = phaseIndex(tr, ph);
+  if (i <= 0 || tr.PH[i] <= tr.PH[i - 1]) return tr.S[i];
+  return lerp(tr.S[i - 1], tr.S[i], clamp((ph - tr.PH[i - 1]) / (tr.PH[i] - tr.PH[i - 1]), 0, 1));
+}
+// 한 발의 j번째 걸음: D 디딤 몫, b 몸 뒤로 디디는 거리, land 빨리 뛸 때 몸 가운데보다 뒤에 딛는 거리(딛는 발이 몸 앞 멀리 나가지 않게).
+// 출발 직후일수록 오래 디디고 몸 뒤를 밀어서 뒷발부터 머리까지 한 줄로 기운다.
 // 걸음마다 그 걸음을 디딜 때의 빠르기로 정해서 디딘 발이 미끄러지지 않는다. 멈출 때(빠르기가 줄 때)는 그대로 둔다
 function runStep(tr, G, j, off) {
-  const i = phaseIndex(tr, j - off), braking = i > 6 && tr.V[i] < tr.V[i - 6] - 0.01;
-  const e = braking ? 0 : Math.pow(1 - clamp(tr.V[i] / G.top, 0, 1), 1.6);
-  return { D: G.D + (G.Dstart ?? 0) * e, b: (G.drive ?? 0) * e };
+  const i = phaseIndex(tr, j - off), braking = i > 6 && tr.V[i] < tr.V[i - 6] - 0.01, kv = clamp(tr.V[i] / G.top, 0, 1);
+  const e = braking ? 0 : Math.pow(1 - kv, 1.6);
+  return { D: G.D + (G.Dstart ?? 0) * e, b: (G.drive ?? 0) * e, land: landOf(G, kv) };
 }
-const plantDist = (tr, j, off, st) => distAtPhase(tr, j - off + st.D / 2) - st.b;   // j번째 걸음에 디딘 자리(길 위 거리)
-// (w, x, y) 키들을 에르미트 곡선으로 잇는다. 안쪽 키의 기울기는 양옆 키로 정하고, 양 끝 기울기는 ends로 받는다
-function hermiteKeys(keys, w, ends) {
-  let i = 1;
-  while (i < keys.length - 1 && keys[i][0] < w) i++;
-  const slope = (j, c) => (j === 0 ? ends[0][c] : j === keys.length - 1 ? ends[1][c] : (keys[j + 1][c + 1] - keys[j - 1][c + 1]) / (keys[j + 1][0] - keys[j - 1][0]));
-  const h = keys[i][0] - keys[i - 1][0], u = clamp((w - keys[i - 1][0]) / h, 0, 1), u2 = u * u, u3 = u2 * u;
-  const h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
-  return [0, 1].map((c) => h00 * keys[i - 1][c + 1] + h10 * h * slope(i - 1, c) + h01 * keys[i][c + 1] + h11 * h * slope(i, c));
-}
+const plantDist = (tr, j, off, st) => distAtPhase(tr, j - off + st.D / 2) - st.b - st.land;   // j번째 걸음에 디딘 자리(길 위 거리)
 // 친 타자가 베이스 b를 밟는(가장 가까이 가는) 때(맞은 뒤 초). 그 베이스까지 가지 않으면 null
 function runnerReach(r, b) {
   const plan = runPlan(r);
@@ -3540,57 +3555,150 @@ function walkoffTime(r) {
   return (homes[need - 1] ?? homes[homes.length - 1] ?? 0) + 0.6;
 }
 
-// 뛰는 자세(화면 기준 좌표). 디딘 발은 길 위의 디딘 자리에 붙어 있고, 뗀 발은 엉덩이를 기준으로 실제 질주의 발 길을 따라간다:
-// 뒤로 차 떼고 → 뒤꿈치를 엉덩이 쪽으로 차올리고 → 접은 채 엉덩이 밑을 지나 → 허벅지가 수평이 되게 무릎을 끌어올리고 → 정강이를 펴 앞으로 뻗었다가 → 몸 앞에 쓸어 딛는다.
-// 전에는 뗀 발을 앞뒤 발자국 사이에 낮게 고르게 옮겨서 무릎이 올라오지 않았고, 팔은 발이 몸 앞뒤로 나간 만큼만 흔들어 손이 배 앞에 붙어 있었다(사용자 '뜀걸음처럼 뛴다')
+// 뛰는 자세(화면 기준 좌표). 2026-11-03 사용자 '뛰는 폼이 너무 안 자연스럽다, 살짝 만화 같은 느낌을 이용해 다시'로 시안 A(자연스럽게 + 과장 조금)·B(더 만화처럼)
+// 가운데 A를 골랐다. 한 걸음을 애니메이션 키 자세로 짠다: 딛기 → 눌림(가장 낮음) → 떼기 → 날기(가장 높음).
+// 디딘 발은 길 위 디딘 자리에 붙어 있고 뒤꿈치부터 들려 발볼로 민다. 엉덩이 높이는 딛는·떼는 순간에도 무릎이 조금 굽게 정해 다리가 뻣뻣하게 펴지지 않는다.
+// 뗀 다리는 허벅지 각(수직 아래 0, 앞 +)과 무릎 굽힘을 키로 준다: 떼기 → 뒤꿈치 차올림 → 지나가기 → 무릎 끌어올림 → 정강이 펴기 → 딛기.
+// 떼기·딛기 키는 디딘 다리 계산과 같은 각이고 기울기도 이어서 발이 튀거나 미끄러지지 않는다. 신발은 발목 각대로 기운다(feetDir).
+// 전에는 뗀 발 자리를 엉덩이 기준 키로 줘서 딛기 직전 앞발이 일찍 땅에 내려와 다리를 찢은 것처럼(런지) 보였고, 딛는 순간 무릎이 쭉 펴졌고,
+// 무릎 방향을 IK로 정해 뒤에서 정강이가 옆으로 벌어졌다(사용자 '오징어 다리')
+// RUN_POSE: bump 날 때 오르는 높이(물리 값의 배수), drop 디딘 발 위에서 더 내려앉는 높이(m), sway·roll 디딘 발 쪽으로 옮기기(m)·기울기(도),
+// twist·hipTwist 어깨·엉덩이를 서로 반대로 돌리기(도), leanK 숙임(걸음새 lean의 배수). 걸음 묶음(sprint 최고 속도, drive 출발, jog 천천히 뛰기)은
+// td·to 딛는·떼는 순간 무릎 굽힘, land 몸 가운데보다 뒤에 딛는 거리(m, 빠를수록), toeTD·toeTO 딛는·떼는 순간 발끝 내림, keys [뗀 몫, 허벅지, 무릎],
+// ankle [뗀 몫, 발목 펴기], arm 어깨 앞뒤(fwd·back)·팔꿈치 굽힘(elFwd·elBack)·뒤로 칠 때 바깥으로 벌림(flare)·앞으로 올 때 안쪽으로(cross). 각은 모두 도
+const RUN_POSE = {
+  bump: 1, drop: 0.022, sway: 0.02, roll: 3, twist: 16, hipTwist: 9, leanK: 0.75,
+  sprint: { td: 22, to: 27, land: 0.12, toeTD: 8, toeTO: 45, keys: [[0.1, -15, 72], [0.3, 6, 128], [0.5, 42, 114], [0.68, 70, 98], [0.86, 54, 40]], ankle: [[0.3, 30], [0.7, 6]],
+    arm: { fwd: 50, back: -62, elFwd: 72, elBack: 108, flare: 13, cross: 10 } },
+  drive: { td: 38, to: 16, land: 0, toeTD: 4, toeTO: 50, keys: [[0.12, -18, 50], [0.32, 0, 92], [0.52, 40, 108], [0.7, 68, 100], [0.88, 30, 50]], ankle: [[0.3, 25], [0.7, 8]],
+    arm: { fwd: 66, back: -66, elFwd: 80, elBack: 100, flare: 12, cross: 8 } },
+  jog: { td: 24, to: 28, land: 0.06, toeTD: 0, toeTO: 30, keys: [[0.12, -12, 48], [0.32, 2, 92], [0.52, 26, 84], [0.7, 42, 68], [0.88, 36, 24]], ankle: [[0.3, 25], [0.7, 4]],
+    arm: { fwd: 34, back: -32, elFwd: 78, elBack: 100, flare: 7, cross: 7 } },
+};
+const LEG1 = 0.46, LEG2 = 0.45, ANKLE_Y = 0.06, FOOT_W = 0.09;   // 넓적다리·정강이 길이, 땅에 선 발목 높이, 발이 몸 가운데에서 옆으로 떨어진 거리
+const legLen = (k) => Math.sqrt(LEG1 * LEG1 + LEG2 * LEG2 + 2 * LEG1 * LEG2 * Math.cos(k));   // 무릎을 k 굽혔을 때 엉덩이~발목
+// 엉덩이에서 발목까지(앞 dx, 아래 dy)의 허벅지 각과 무릎 굽힘(라디안). 무릎은 앞으로 굽는다
+function legAngles(dx, dy) {
+  const L = Math.min(Math.hypot(dx, dy), LEG1 + LEG2 - 0.002), phi = Math.atan2(dx, dy);
+  const alpha = Math.acos(clamp((LEG1 * LEG1 + L * L - LEG2 * LEG2) / (2 * LEG1 * L), -1, 1));
+  const inner = Math.acos(clamp((LEG1 * LEG1 + LEG2 * LEG2 - L * L) / (2 * LEG1 * LEG2), -1, 1));
+  return [phi + alpha, Math.PI - inner];
+}
+// 발끝을 phi만큼 내려(뒤꿈치를 들어) 발볼로 설 때 발목이 움직이는 양(앞, 위)
+const heelLift = (phi) => [0.12 - 0.12 * Math.cos(phi) + 0.05 * Math.sin(phi), 0.12 * Math.sin(phi) + 0.05 * Math.cos(phi) - 0.05];
+// 디딤 동안(us 0 → 1) 발끝 내림: 발볼로 딛어 뒤꿈치를 내리고, 디딤 뒤쪽 반부터 뒤꿈치를 들어 발끝으로 민다
+const toeAt = (Q, us) => (Q.toeTD * (1 - smooth(us / 0.25)) + Q.toeTO * Math.pow(clamp((us - 0.45) / 0.55, 0, 1), 2)) * DEG;
+// 끝 기울기: 이웃 키 쪽과 방향이 반대면 0, 크기는 그 구간 평균 기울기의 3배까지(넘침 막기)
+const endSlope = (s, d) => (s * d <= 0 ? 0 : Math.sign(s) * Math.min(Math.abs(s), 3 * Math.abs(d)));
+const mixPose = (a, b, k) => (typeof a === 'number' ? lerp(a, b, k) : Array.isArray(a) ? a.map((x, i) => mixPose(x, b[i], k)) : Object.fromEntries(Object.keys(a).map((key) => [key, mixPose(a[key], b[key], k)])));
+// 걸음새 G를 빠르기 vv로 뛸 때의 걸음 묶음. 전력(effort 1)은 출발(drive) → 최고 속도(sprint)로 섞고, 천천히 뛰기(effort 0)는 느릴수록 작게 움직인다
+function runPose(G, vv) {
+  const P = RUN_POSE, sp = mixPose(P.drive, P.sprint, Math.pow(clamp(vv / G.top, 0, 1), 1.3)), ef = G.effort ?? 1;
+  if (ef >= 1) return sp;
+  const s = 0.6 + 0.4 * clamp((vv - 1.2) / 4.2, 0, 1), J = P.jog;
+  const jog = { ...J, keys: J.keys.map(([w, a, b]) => [w, a * s, b * s]), arm: mixPose({ ...J.arm, fwd: 0, back: 0 }, J.arm, s) };
+  return ef <= 0 ? jog : mixPose(jog, sp, ef);
+}
+const landOf = (G, kv) => lerp(RUN_POSE.jog.land, lerp(RUN_POSE.drive.land, RUN_POSE.sprint.land, Math.pow(kv, 1.3)), G.effort ?? 1) * kv;
 function runnerSkeleton(run) {
   if (run.slide) return slideSkeleton(run);
   const th = Math.atan2(run.dir[1], run.dir[0]), facing = (deg) => [Math.cos(th + deg * DEG), 0, Math.sin(th + deg * DEG)], left = (deg) => [-Math.sin(th + deg * DEG), 0, Math.cos(th + deg * DEG)];
-  const G = run.gait ?? SPRINT, tr = run.track, v = run.speed, D = G.D, f = facing(0), l = left(0), up = [0, 1, 0], base = [run.x, 0, run.z];
-  const g = clamp(v / 1.2, 0, 1);                                  // 거의 서 있을 때는 두 발을 모으고 선다
-  const kv = clamp(v / G.top, 0, 1), k = Math.pow(kv, 0.6), kk = Math.sqrt(clamp(v / 2.5, 0, 1));   // 뒤꿈치는 빠를수록 높이 차올리고, 무릎은 출발부터 높이 끌어올린다
-  const early = run.braking ? 0 : Math.pow(1 - kv, 1.6);           // 출발 직후일수록 1
-  const cad = G.cad[0] + G.cad[1] * v, now = { D: D + (G.Dstart ?? 0) * early, b: (G.drive ?? 0) * early }, R = v * now.D / (2 * cad) + now.b;   // R: 디딘 발이 몸 뒤로 가장 멀리 가는 거리
-  const foot = (off, side) => {
-    const ph = run.ph + off, n = Math.floor(ph), q = ph - n, cur = runStep(tr, G, n, off), nxt = runStep(tr, G, n + 1, off);   // 오른발은 반 걸음 늦다
-    let rel = plantDist(tr, n, off, cur) - run.dist, h = 0;   // 디딘 발은 땅에 붙어 있다
-    if (q >= cur.D) {
-      const w = (q - cur.D) / (1 - cur.D), x0 = plantDist(tr, n, off, cur) - distAtPhase(tr, n - off + cur.D), x1 = plantDist(tr, n + 1, off, nxt) - distAtPhase(tr, n + 1 - off);   // 뗄 때·디딜 때 몸에서 발까지
-      const keys = [[0, x0, 0], [0.18, x0 - 0.05 * k, 0.28 * k], [0.38, -0.2 * k, G.heel * k], [0.55, 0.06 * kk, Math.max(0.94 * G.heel * k, 0.8 * G.knee * kk)], [0.7, 0.3 * kk, G.knee * kk], [0.86, x1 + 0.15 * kk, 0.17 * kk], [1, x1, 0]];
-      const back = -0.5 * v * (1 - cur.D) / cad;   // 뗄 때와 디딜 때 발은 몸보다 뒤로 움직인다(땅에 대해서는 거의 멈춰 있다)
-      [rel, h] = hermiteKeys(keys, w, [[back, 1.2 * k], [back, -1.2 * k]]);
-    }
-    const gp = alongRoute(run.route, Math.max(0, run.dist + rel)), gait = [gp[0] + l[0] * side * 0.1, 0.06 + Math.max(0, h), gp[1] + l[2] * side * 0.1];
-    const stand = V.add(base, V.add(V.mul(l, side * 0.13), [0, 0.06, 0]));
-    return V.add(V.mul(stand, 1 - g), V.mul(gait, g));
+  const G = run.gait ?? SPRINT, tr = run.track, v = run.speed, D = G.D, f = facing(0), l = left(0), up = [0, 1, 0], base = [run.x, 0, run.z], RP = RUN_POSE;
+  const g = clamp(v / 1.2, 0, 1), ka = clamp(v / 1.5, 0, 1), amp = clamp(v / 2.5, 0, 1), ef = G.effort ?? 1;   // g: 거의 서 있을 때는 두 발을 모으고 선다
+  const cadAt = (vv) => G.cad[0] + G.cad[1] * vv, cad = cadAt(v), early = run.braking ? 0 : Math.pow(1 - clamp(v / G.top, 0, 1), 1.6);   // early: 출발 직후일수록 1
+  const swingAt = (ph) => Math.cos(2 * Math.PI * (ph - (D + 0.68 * (1 - D))));   // +1이면 오른팔이 가장 앞(왼무릎이 가장 높다)
+  const hipTurnAt = (ph) => -RP.hipTwist * swingAt(ph) * ka * g;
+  const hipFwdAt = (side, ph) => -side * 0.11 * Math.sin(hipTurnAt(ph) * DEG);   // 엉덩이를 돌려 엉덩이 관절이 앞뒤로 나간 거리
+  // 한 발의 n번째 디딤: 디딘 자리, 딛는·떼는 순간 발목(엉덩이 관절 기준), 그때와 디딤 가운데의 엉덩이 높이(그 무릎 굽힘이 되는 높이)
+  const steps = new Map();
+  const info = (off, n) => {
+    const key = `${off}:${n}`;
+    if (steps.has(key)) return steps.get(key);
+    const st = runStep(tr, G, n, off), ph0 = n - off, vS = tr.V[phaseIndex(tr, ph0)], Q = runPose(G, vS), side = off === 0 ? 1 : -1, plant = plantDist(tr, n, off, st);
+    const lTD = heelLift(Q.toeTD * DEG), lTO = heelLift(Q.toeTO * DEG);
+    const aTD = [plant + lTD[0] - distAtPhase(tr, ph0) - hipFwdAt(side, ph0), ANKLE_Y + lTD[1]];
+    const aTO = [plant + lTO[0] - distAtPhase(tr, ph0 + st.D) - hipFwdAt(side, ph0 + st.D), ANKLE_Y + lTO[1]];
+    const xMid = plant - distAtPhase(tr, ph0 + st.D / 2) - hipFwdAt(side, ph0 + st.D / 2);
+    const reach = (k, a) => a[1] + Math.sqrt(Math.max(0.01, legLen(k * DEG) * legLen(k * DEG) - a[0] * a[0]));
+    const hTD = reach(Q.td, aTD), hTO = reach(Q.to, aTO);
+    const hMid = clamp(Math.min(hTD, hTO) - RP.drop * clamp(vS / 3, 0, 1), reach(55, [xMid, ANKLE_Y]), reach(10, [xMid, ANKLE_Y]));
+    const s = { D: st.D, plant, side, hTD, hTO, hMid, Q, v: vS, ph0 };
+    steps.set(key, s);
+    return s;
   };
-  const feet = { l: foot(0, 1), r: foot(0.5, -1) };
-  // 팔은 반대쪽 다리와 함께 친다: 오른팔은 왼무릎이 가장 높이 올라올 때 가장 앞이다
-  const ka = clamp(v / 1.5, 0, 1), swingR = Math.cos(2 * Math.PI * (run.ph - (D + 0.68 * (1 - D)))) * ka, swingL = -swingR;
-  const lean = run.braking ? -0.04 : (G.lean + G.start * early) * clamp(v, 0, 1);   // 출발할 때 크게 숙였다가 빨라질수록 세운다
-  // 디딜 때마다 몸이 위아래로 실리고(디딘 발 위에서 가장 낮다) 디딘 발 쪽으로 옮겨 간다. 뒤에서 볼 때 무릎·팔은 화면 안쪽으로 움직여 안 보여서
-  // 이것과 팔꿈치·밑창·흙이 걸음을 보여 준다(2026-11-02 사용자 '뒤에서 보니 안 달리는 느낌')
-  const bob = 0.03 * k * Math.cos(4 * Math.PI * (run.ph - D / 2)), sway = V.mul(l, 0.03 * k * Math.cos(2 * Math.PI * (run.ph - D / 2)));
-  const hipY = Math.min(0.9, 0.06 + Math.sqrt(Math.max(0, 0.905 * 0.905 - R * R)));   // 발을 뗄 때 뒷다리가 다 펴지는 높이
-  const bank = (run.bank ?? 0) * g, inward = V.mul(l, Math.sin(bank));             // 베이스를 돌 때 안쪽으로 기운다
-  const pelvis = V.add(V.add(V.add(base, V.mul(inward, 0.12)), sway), [0, hipY - bob, 0]);
-  const roll = V.mul(sway, 0.05 / 0.03);   // 몸통도 디딘 발 쪽으로 살짝(3도) 기운다
+  const nextStep = (off, n) => (off === 0 ? [0.5, n + 1] : [0, n]);
+  // 한 걸음(이 발을 디딘 때부터 다른 발을 디딜 때까지, u 0 → 1)의 엉덩이 높이: 딛기 → 눌림(가장 낮음) → 떼기 → 날기(가장 높음) → 다음 딛기
+  const curves = new Map();
+  const stepCurve = (off, n) => {
+    const key = `${off}:${n}`;
+    if (curves.has(key)) return curves.get(key);
+    const A = info(off, n), B = info(...nextStep(off, n)), tf = (0.5 - A.D) / cadAt(A.v);
+    const bump = RP.bump * lerp(0.6, 1, ef) * 9.8 * tf * tf / 8 * clamp(A.v / 3, 0, 1), uTO = 2 * A.D, uPk = (uTO + 1) / 2, pk = Math.max(A.hTO, B.hTD) + bump;
+    const s0 = endSlope((A.hMid - pk) / (A.D + 1 - uPk), (A.hMid - A.hTD) / A.D), s1 = endSlope((B.hMid - pk) / (B.D + 1 - uPk), (B.hTD - pk) / (1 - uPk));
+    const c = makeTrack([[0, [A.hTD]], [A.D, [A.hMid]], [uTO, [A.hTO]], [uPk, [pk]], [1, [B.hTD]]], [s0], [s1]);
+    curves.set(key, c);
+    return c;
+  };
+  // 디딘 다리의 각(us: 디딤 동안 0 → 1)
+  const stanceAt = (off, n, us) => {
+    const A = info(off, n), H = stepCurve(off, n)(2 * A.D * us)[0], toe = toeAt(A.Q, us), lift = heelLift(toe), ph = A.ph0 + A.D * us;
+    return { ang: legAngles(A.plant + lift[0] - distAtPhase(tr, ph) - hipFwdAt(A.side, ph), H - ANKLE_Y - lift[1]), toe };
+  };
+  // 지금 걸음은 가장 최근에 디딘 발의 걸음이다
+  const qL = run.ph - Math.floor(run.ph), qR = run.ph + 0.5 - Math.floor(run.ph + 0.5), curOff = qL <= qR ? 0 : 0.5;
+  const standH = Math.min(0.9, 0.06 + Math.sqrt(Math.max(0, 0.905 * 0.905 - Math.pow((G.drive ?? 0) * early, 2))));
+  const H = g > 0 ? lerp(standH, stepCurve(curOff, Math.floor(run.ph + curOff))(2 * Math.min(qL, qR))[0], g) : standH;
+  const P = g > 0 ? runPose(G, v) : null, swing = swingAt(run.ph) * ka;
+  const swayK = RP.sway * amp * Math.cos(2 * Math.PI * (run.ph - D / 2)), bank = (run.bank ?? 0) * g, inward = V.mul(l, Math.sin(bank));   // 베이스를 돌 때 안쪽으로 기운다
+  const pelvis = V.add(V.add(V.add(base, V.mul(inward, 0.12)), V.mul(l, swayK)), [0, H, 0]);
+  const hipTurn = hipTurnAt(run.ph), shTurn = RP.twist * swing * g;   // 오른팔이 나가면 오른 어깨가 앞으로, 엉덩이는 반대로 돈다
+  const hips = { l: V.add(pelvis, V.mul(left(hipTurn), 0.11)), r: V.add(pelvis, V.mul(left(hipTurn), -0.11)) };
+  const sg0 = (e) => e.ang[0] - e.ang[1] + e.toe;   // 떼는·딛는 순간 발목 펴기(정강이 기울기 + 발끝 내림)
+  const leg = (off, side) => {
+    const hip = hips[side > 0 ? 'l' : 'r'], stand = V.add(base, V.add(V.mul(l, side * 0.13), [0, ANKLE_Y, 0]));
+    if (g <= 0) return { foot: stand, knee: bendJoint(hip, stand, LEG1, LEG2, f), dir: f };
+    const ph = run.ph + off, n = Math.floor(ph), q = ph - n, A = info(off, n);
+    let foot, knee = null, dir;
+    if (q < A.D) {   // 디딘 발: 디딘 자리에서 뒤꿈치부터 들려 발볼로 민다
+      const toe = toeAt(A.Q, q / A.D), lift = heelLift(toe), gp = alongRoute(run.route, Math.max(0, A.plant + lift[0]));
+      foot = [gp[0] + l[0] * side * FOOT_W, ANKLE_Y + lift[1], gp[1] + l[2] * side * FOOT_W];
+      dir = V.add(V.mul(f, Math.cos(toe)), V.mul(up, -Math.sin(toe)));
+    } else {   // 뗀 발: 키 사이를 잇되 양 끝은 떼는·딛는 순간의 디딘 다리 각과 그 기울기
+      const w = (q - A.D) / (1 - A.D), B = info(off, n + 1), K = P.keys.map(([kw, a, b]) => [kw, [a * DEG, b * DEG]]), last = K[K.length - 1];
+      const e0 = stanceAt(off, n, 1), e0b = stanceAt(off, n, 0.94), e1 = stanceAt(off, n + 1, 0), e1b = stanceAt(off, n + 1, 0.06);
+      const k0 = (1 - A.D) / (A.D * 0.06), k1 = (1 - A.D) / (B.D * 0.06);   // 디딤 몫 → 뗀 몫 기울기
+      const s0 = [0, 1].map((c) => endSlope((e0.ang[c] - e0b.ang[c]) * k0, (K[0][1][c] - e0.ang[c]) / K[0][0]));
+      const s1 = [0, 1].map((c) => endSlope((e1b.ang[c] - e1.ang[c]) * k1, (e1.ang[c] - last[1][c]) / (1 - last[0])));
+      const [tA, kA] = makeTrack([[0, e0.ang], ...K, [1, e1.ang]], s0, s1)(w), sg = tA - kA;
+      // 발목: 뗄 때 발끝이 내려가 있고, 차올릴 때 힘을 빼 늘어뜨렸다가, 딛기 전에 다시 세운다
+      const beta = makeTrack([[0, [sg0(e0)]], ...P.ankle.map(([kw, b]) => [kw, [b * DEG]]), [1, [sg0(e1)]]])(w)[0];
+      const hipFwd = V.dot(V.sub(hip, base), f), hipLat = V.dot(V.sub(hip, base), l), kx = Math.sin(tA) * LEG1, ky = -Math.cos(tA) * LEG1;
+      knee = V.add(V.add(V.add(base, V.mul(f, hipFwd + kx)), V.mul(l, (hipLat + side * FOOT_W) / 2)), [0, hip[1] + ky, 0]);
+      foot = V.add(V.add(V.add(base, V.mul(f, hipFwd + kx + Math.sin(sg) * LEG2)), V.mul(l, side * FOOT_W)), [0, Math.max(ANKLE_Y, hip[1] + ky - Math.cos(sg) * LEG2), 0]);
+      dir = V.add(V.mul(f, Math.cos(sg - beta)), V.mul(up, Math.sin(sg - beta)));
+    }
+    if (g < 1 || !knee) { foot = V.add(V.mul(stand, 1 - g), V.mul(foot, g)); knee = bendJoint(hip, foot, LEG1, LEG2, f); dir = unit3(V.add(V.mul(f, 1 - g), V.mul(dir, g))); }
+    return { foot, knee, dir };
+  };
+  const L_ = leg(0, 1), R_ = leg(0.5, -1), feet = { l: L_.foot, r: R_.foot }, knees = { l: L_.knee, r: R_.knee }, feetDir = { l: L_.dir, r: R_.dir };
+  // 몸통: 출발할 때 크게 숙였다가 빨라질수록 세우고, 디딘 발 쪽으로 조금 기운다
+  const lean = run.braking ? -0.04 : (G.lean * RP.leanK + G.start * early) * clamp(v, 0, 1);
+  const roll = V.mul(l, Math.sin(RP.roll * DEG * amp * Math.cos(2 * Math.PI * (run.ph - D / 2))));
   const tUp0 = V.add(V.add(V.add(V.mul(up, Math.cos(lean) * Math.cos(bank)), V.mul(f, Math.sin(lean))), inward), roll), tUp = V.mul(tUp0, 1 / (V.len(tUp0) || 1));
   const tFwd = V.add(V.mul(up, -Math.sin(lean)), V.mul(f, Math.cos(lean)));
   const chest = V.add(pelvis, V.mul(tUp, 0.5));
-  const shTurn = 18 * swingR * g, hipTurn = -10 * swingR * g;   // 오른팔이 나가면 오른 어깨가 앞으로, 엉덩이는 반대로 돈다
-  const hips = { l: V.add(pelvis, V.mul(left(hipTurn), 0.11)), r: V.add(pelvis, V.mul(left(hipTurn), -0.11)) };
   const shoulders = { l: V.add(chest, V.mul(left(shTurn), 0.2)), r: V.add(chest, V.mul(left(shTurn), -0.2)) };
-  const knees = { l: bendJoint(hips.l, feet.l, 0.46, 0.45, f), r: bendJoint(hips.r, feet.r, 0.46, 0.45, f) };
-  // 팔: 몸통을 따라 아래(0도)에서 앞으로 돈 각. 앞으로는 손이 턱 높이까지, 뒤로는 손이 엉덩이 뒤까지 가고 팔꿈치가 등 뒤로 올라간다
+  // 팔은 반대쪽 다리와 함께 친다. 앞으로는 팔꿈치를 접어 손이 얼굴 앞, 뒤로는 팔꿈치를 펴며 바깥으로 조금 벌려 뒤에서도 팔 치기가 보인다
   const limb = (deg) => V.add(V.mul(tUp, -Math.cos(deg * DEG)), V.mul(tFwd, Math.sin(deg * DEG)));
+  const AR = P ? P.arm : RP.jog.arm;
   const arm = (sh, s, sd) => {
-    const a = G.armMid + G.arm * s, b = G.elbow + G.elbowAmp * s;
-    // 앞으로 올 때 팔꿈치는 몸에 붙이고, 뒤로 칠 때는 조금 벌어져 뒤에서도 팔 치기가 보인다(늘 벌리면 닭 날개처럼 보였다)
-    const elbow = V.add(V.add(sh, V.mul(limb(a), 0.3)), V.mul(l, sd * (0.11 * Math.max(0, -s) - 0.03 * Math.max(0, s))));
-    return { elbow, hand: V.add(V.add(elbow, V.mul(limb(a + b), 0.29)), V.mul(l, -sd * 0.06 * Math.max(0, s))) };   // 앞으로 올 때 손이 몸 가운데 쪽으로 조금
+    const u = (s + 1) / 2, a = lerp(AR.back, AR.fwd, u), b = lerp(AR.elBack, AR.elFwd, u);
+    const out = V.mul(l, sd), flare = AR.flare * DEG * Math.max(0, -s), cross = AR.cross * DEG * Math.max(0, s);
+    const elbow = V.add(sh, V.mul(V.add(V.mul(limb(a), Math.cos(flare)), V.mul(out, Math.sin(flare))), 0.3));
+    const fa = V.add(V.mul(limb(a + b), Math.cos(cross)), V.mul(out, -Math.sin(cross)));
+    return { elbow, hand: V.add(elbow, V.mul(fa, 0.29 / (V.len(fa) || 1))) };
   };
-  const al = arm(shoulders.l, swingL, 1), ar = arm(shoulders.r, swingR, -1);
+  const al = arm(shoulders.l, -swing, 1), ar = arm(shoulders.r, swing, -1);
   if (run.raise > 0) {   // 홈런: 홈을 밟으며 오른손을 머리 위로 든다(위팔 0.3m·아래팔 0.29m 그대로)
     const k = run.raise, e2 = V.add(shoulders.r, V.add(V.mul(up, 0.29), V.add(V.mul(l, -0.05), V.mul(f, 0.05)))), h2 = V.add(e2, V.add(V.mul(up, 0.29), V.mul(f, 0.02)));
     ar.elbow = V.add(V.mul(ar.elbow, 1 - k), V.mul(e2, k)); ar.hand = V.add(V.mul(ar.hand, 1 - k), V.mul(h2, k));
@@ -3598,15 +3706,15 @@ function runnerSkeleton(run) {
   const neck = V.add(V.mul(tUp, 0.6), V.mul(up, 0.4)), head = V.add(chest, V.mul(neck, 0.24 / (V.len(neck) || 1)));   // 몸은 숙여도 고개는 들어 앞을 본다
   // 1루를 지나치면 오른쪽(파울 쪽)을 본다. 수비수는 공을 본다(고개는 몸 앞에서 110°까지)
   const look = run.look ? clampLook(run.look, f) : run.lookFoul ? V.add(V.mul(f, 0.6), V.mul(l, -0.8)) : V.add(f, [0, -0.25 * early, 0]);
-  // 엉덩이 뒤로 높이 차올린 발은 밑창이 뒤를 향한다. 카메라가 뒤에 있을 때만 보인다
+  // 밑창이 카메라를 보는 정도(땅에서 뜬 발만). 차올린 발은 밑창이 뒤를 봐서 카메라가 뒤에 있을 때 보인다
   const sole = (sd) => {
-    const ft = feet[sd], toCam = V.sub([cam.x, cam.y, cam.z], ft), behind = -V.dot(V.sub(ft, hips[sd]), f);
-    return clamp((ft[1] - 0.22) / 0.3, 0, 1) * clamp(behind / 0.15, 0, 1) * Math.max(0, -V.dot(f, toCam) / (V.len(toCam) || 1));
+    const ft = feet[sd], d = feetDir[sd], toCam = unit3(V.sub([cam.x, cam.y, cam.z], ft)), p = Math.atan2(d[1], Math.hypot(d[0], d[2]) * (V.dot(d, f) < 0 ? -1 : 1));
+    return clamp((ft[1] - 0.15) / 0.2, 0, 1) * Math.max(0, V.dot(V.add(V.mul(f, Math.sin(p)), V.mul(up, -Math.cos(p))), toCam));
   };
   // 신발 효과(로켓 불꽃, 번개 운동화 발밑 번개)용 걸음: 빠르기, 앞쪽, 발마다 디딘 뒤 시간(디딤은 위상의 정수 자리)과 걸음 번호
   const plantOf = (off) => { const p = run.ph + off, n = Math.floor(p); return { age: (p - n) / cad, n }; };
   const stride = { v, fwd: f, l: plantOf(0), r: plantOf(0.5) };
-  return { world: true, noBat: true, front: Math.sign(f[0]) || 1, side: 1, e: 0, shTurn, hipTurn, pelvis, chest, hips, shoulders, feet, knees, elbows: { l: al.elbow, r: ar.elbow }, hands: { l: al.hand, r: ar.hand }, soles: { l: sole('l'), r: sole('r') }, hand: ar.hand, tip: ar.hand, yaw: 0, left, facing, head, brim: V.add(head, V.add([0, -0.04, 0], V.mul(look, 0.12 / (V.len(look) || 1)))), stride };
+  return { world: true, noBat: true, front: Math.sign(f[0]) || 1, side: 1, e: 0, shTurn, hipTurn, pelvis, chest, hips, shoulders, feet, knees, feetDir, elbows: { l: al.elbow, r: ar.elbow }, hands: { l: al.hand, r: ar.hand }, soles: { l: sole('l'), r: sole('r') }, hand: ar.hand, tip: ar.hand, yaw: 0, left, facing, head, brim: V.add(head, V.add([0, -0.04, 0], V.mul(look, 0.12 / (V.len(look) || 1)))), stride };
 }
 // 슬라이딩(4자): 엉덩이를 0.28m로 낮추고 상체를 뒤로 0.9라디안 눕혀, 왼다리는 펴서 발로 베이스를 짚고 오른다리는 접어 왼무릎 밑에 넣고 두 손은 위로 든다
 function slidePose(run) {

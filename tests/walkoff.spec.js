@@ -1190,6 +1190,35 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('뛰는 폼: 딛는·떼는 순간에도 무릎이 조금 굽고, 무릎은 140도 넘게 접히지 않고 옆으로 꺾이지 않으며, 발끝으로 차고 차올린 발은 밑창이 뒤를 본다', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const seq = walkoff.makeSequence(1, false), ground = walkoff.judgeSwing(seq[2], -80, 'R'), hr = walkoff.judgeSwing(seq[0], -25, 'R');
+      const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], len = (a) => Math.hypot(...a);
+      const out = { stanceMin: 180, flexMax: 0, side: 0, toeOff: 0, soleBack: 0 };
+      const look = (run) => {
+        const k = walkoff.runnerSkeleton(run), l = [-run.dir[1], 0, run.dir[0]], f = [run.dir[0], 0, run.dir[1]];
+        for (const s of ['l', 'r']) {
+          const a = sub(k.hips[s], k.knees[s]), c = sub(k.feet[s], k.knees[s]), flex = 180 - Math.acos(dot(a, c) / len(a) / len(c)) * 180 / Math.PI;
+          out.flexMax = Math.max(out.flexMax, flex);
+          if (k.feet[s][1] < 0.065) out.stanceMin = Math.min(out.stanceMin, flex);   // 발이 땅에 붙어 있을 때(뒤꿈치를 들기 전)
+          out.side = Math.max(out.side, Math.abs(dot(sub(k.knees[s], k.hips[s]), l) - dot(sub(k.feet[s], k.hips[s]), l) / 2));   // 무릎이 엉덩이·발목 사이에서 옆으로 벗어난 거리
+          if (k.feet[s][1] < 0.2 && k.feetDir[s][1] < -0.5) out.toeOff++;   // 떼기 직전 발끝으로 선다
+          if (k.feet[s][1] > 0.5 && dot(k.feetDir[s], f) < -0.3) out.soleBack++;   // 뒤꿈치를 차올린 발은 발끝이 뒤를 본다
+        }
+      };
+      for (let t = 1.6; t < 5; t += 1 / 120) look(walkoff.runnerAt(ground, t));   // 전력 질주(출발 뒤)
+      for (let t = 8; t < 16; t += 1 / 120) look(walkoff.runnerAt(hr, t));       // 홈런 조깅
+      return out;
+    });
+    expect(r.stanceMin).toBeGreaterThan(15);   // 전에는 딛는·떼는 순간 다리가 쭉 펴져(7도) 다리를 찢은 것처럼 보였다
+    expect(r.flexMax).toBeLessThan(140);       // 전에는 뒤꿈치를 차올릴 때 172도까지 접혔다
+    expect(r.side).toBeLessThan(0.06);         // 뒤에서 볼 때 정강이가 옆으로 벌어지지 않는다
+    expect(r.toeOff).toBeGreaterThan(20);
+    expect(r.soleBack).toBeGreaterThan(20);
+    expect(errors).toEqual([]);
+  });
+
   test('주루 다듬기: 몸은 0.35초에 걸쳐 돌고(전에는 한 장면 만에 180도), 베이스에 선 주자 옆으로 수비수가 비켜 서고, 아웃은 고개를 숙이고 파울 지역으로, 홈런은 손을 들고 홈을 밟은 뒤 더그아웃으로 뛰어 나간다', async ({ page }) => {
     const errors = await open(page);
     const r = await page.evaluate(() => {
