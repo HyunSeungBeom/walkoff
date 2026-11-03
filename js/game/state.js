@@ -8,6 +8,7 @@ export const game = {
   clockAt: 0,        // t를 마지막으로 올린 시각(performance.now 기준)
   swingAt: null,     // 공을 놓은 뒤 몇 초에 휘둘렀는지
   outcome: null, gained: 0, resultT: 0, revealAt: 0, flightT: 0,
+  skipAt: null, skipHint: false,   // 공이 날아가는 동안 눌러 결과로 건너뛴 때(resultT), 이번 판에 '탭하면 바로 결과'를 띄우는지
   hitstop: 0, flash: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false,   // burst: 효과 배트로 맞힌 효과 { fx, t(지난 초), seed }
   toast: null, newBest: false, best: 0,
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지

@@ -535,7 +535,8 @@ function boardMoment() {
   if (game.state !== 'result' || !r?.hit || game.replay != null) return null;
   // 카메라가 공 뒤로 날아가 있으면 타석 시점으로 돌아온 뒤에 띄운다. 전에는 홈런만 그랬고, 큰 뜬공 2루타는 카메라가 40m 앞에 있는 동안
   // HIT을 띄워 폰에서 전광판이 30%쯤만 보였다(2026-11-03 사용자 '전광판을 화면에 붙잡기')
-  const t0 = chaseable(r) && !game.replayed ? Math.max(game.revealAt, chaseEnd(r)) : game.revealAt;
+  // 공이 날아가는 동안 눌러 건너뛰었으면(skipToBeat) 그 순간에 띄운다
+  const t0 = game.skipAt != null ? Math.max(game.revealAt, game.skipAt) : chaseable(r) && !game.replayed ? Math.max(game.revealAt, chaseEnd(r)) : game.revealAt;
   return { word: r.kind === 'hr' ? 'HOMERUN' : 'HIT', t0, t1: t0 + (r.kind === 'hr' ? SCOREBOARD.hrMoment : SCOREBOARD.moment) };
 }
 // 결과 카드를 그려도 되는지(전광판이 HIT·HOMERUN을 띄우는 동안과 그 전에는 숨긴다)
@@ -3744,7 +3745,7 @@ function chaseEnd(r) {
 }
 function chaseTarget() {
   const g = game, r = g.outcome;
-  if (g.state !== 'result' || g.replayed || g.replay != null || !chaseable(r) || g.flightT > chaseEnd(r)) return null;
+  if (g.state !== 'result' || g.replayed || g.replay != null || g.skipAt != null || !chaseable(r) || g.flightT > chaseEnd(r)) return null;   // 건너뛰면 타석 시점으로 끊는다
   if (g.flightT < CHASE.start) return CAM_HOME;
   const T = flightDuration(r);
   const b = flightPos(r, Math.min(g.flightT, T)), land = flightPos(r, T);
@@ -4047,19 +4048,37 @@ function pillRow(items, y, size) {
   items.forEach(([s, bg, color], i) => { pill(s, x + widths[i] / 2, y, { size, bg, color }); x += widths[i] + gap; });
 }
 
+// 결과 제목 한 줄이 서는 자리: 위 점수판 패널 아래와 가운데 전광판 위 끝(타석 시점) 사이 빈자리 가운데. 글자는 빈자리 높이의 0.72배까지라
+// 패널·전광판을 가리지 않는다(빈자리: 폰 390 60~141px, 360 60~130, PC 1440×900 74~118, 1920×1080 74~142)
+function resultTitleBox(r = game.outcome) {
+  const m = view.mobile, L = boardLayout(), top = L.py + L.ph, z = fenceDist(0) + SCOREBOARD.back;
+  const bottom = view.cy - (SCOREBOARD.y1 - CAM_HOME.y) * view.f / (z - CAM_HOME.z);
+  const size = Math.max(16, Math.min((m ? 32 : 44) * (r && r.kind === 'hr' ? 1.3 : 1), (bottom - top) * 0.72));
+  return { y: Math.max(top + size / 2, (top + bottom) / 2), size, top, bottom };
+}
+const resultTitle = (r) => (r.kind !== 'hr' ? r.name : r.streak >= 3 ? `${r.streak}연속 홈런!` : r.streak === 2 ? '백투백 홈런!' : '홈런!');
 function drawResultCard() {
   const r = game.outcome;
   if (!r || game.resultT < game.revealAt) return;
-  // 결과 카드는 가운데 큰 전광판과 같은 자리라, 안타·홈런은 전광판이 HIT·HOMERUN을 띄운 뒤에 나온다(홈런·큰 뜬공 안타는 따라가는 카메라가 돌아온 뒤 전광판부터)
+  // 제목 한 줄(제목과 얻은 점수)은 결과를 알리는 순간(안타·홈런은 전광판이 HIT·HOMERUN을 띄우는 때)에 함성과 함께 튀어나와 그 자리에 그대로 있는다
+  // (2026-11-03 유저 피드백 '환호성 → 전광판 HIT → 결과 순서로 하나씩 나와 어색하다', 사용자 결정 '한 박자로 모으기'). 전에는 결과 카드가 전광판 자리를
+  // 가려서 HIT·HOMERUN이 끝난 뒤(안타 1.2초·홈런 1.6초 뒤) 제목부터 통째로 나왔다. 홈런·큰 뜬공의 함성은 공이 담장을 넘거나 떨어질 때(두 박자)
+  const bm = boardMoment(), beat = bm ? bm.t0 : game.revealAt;
+  if (game.resultT < beat) return;
+  const m = view.mobile, cx = view.w / 2, hr = r.kind === 'hr', T = resultTitleBox(r), title = resultTitle(r);
+  const pts = game.gained > 0 ? `+${game.gained.toLocaleString()}${game.lastChance ? ' (2배)' : ''}` : '';
+  const kt = easeOut((game.resultT - beat) / 0.2), sc = 1 + 0.15 * (1 - kt), small = T.size * 0.62;
+  ctx.save(); ctx.globalAlpha = kt; ctx.translate(cx, T.y); ctx.scale(sc, sc);
+  ctx.font = font(T.size, 900); const w1 = ctx.measureText(title).width;
+  ctx.font = font(small, 900); const gap = pts ? T.size * 0.3 : 0, x0 = -(w1 + gap + (pts ? ctx.measureText(pts).width : 0)) / 2;
+  text(title, x0, 0, { size: T.size, weight: 900, color: KIND_COLOR[r.kind], align: 'left', shadow: true });
+  if (pts) text(pts, x0 + w1 + gap, 0, { size: small, weight: 900, color: '#f2c94c', align: 'left', shadow: true });
+  ctx.restore();
+  // 자세한 카드(비거리·칩·타이밍 막대·타구·이유)는 전광판이 HIT·HOMERUN을 다 띄운 뒤에 제목 아래로 나온다(전광판 자리를 가린다). 투수 머리 위까지만 쓴다
   if (!cardDetails()) return;
-  const bm = boardMoment(), shownAt = bm ? bm.t1 : game.revealAt;
-  // 투수 머리 위까지만 쓴다
-  const m = view.mobile, k = easeOut((game.resultT - shownAt) / 0.25), cx = view.w / 2, hr = r.kind === 'hr';
+  const shownAt = bm ? bm.t1 : game.revealAt, k = easeOut((game.resultT - shownAt) / 0.25);
   ctx.globalAlpha = k;
-  let y = (m ? 84 : 102) + (1 - k) * 10;   // 위 전광판 패널(폰 60px·PC 74px까지) 아래에서 시작한다
-  const title = !hr ? r.name : r.streak >= 3 ? `${r.streak}연속 홈런!` : r.streak === 2 ? '백투백 홈런!' : '홈런!';
-  text(title, cx, y, { size: (m ? 32 : 44) * (hr ? 1.3 : 1), weight: 900, color: KIND_COLOR[r.kind], shadow: true });
-  y += hr ? (m ? 38 : 48) : (m ? 32 : 40);
+  let y = T.y + T.size / 2 + (m ? 16 : 20) + (1 - k) * 10;
   if (hr) { text(`${r.name} · ${Math.round(carryOf(r))}m`, cx, y, { size: m ? 15 : 18, shadow: true }); y += m ? 28 : 30; }
   const chips = [];
   if (!r.took) {
@@ -4069,8 +4088,7 @@ function drawResultCard() {
   }
   if (r.streakBonus) chips.push([`연속 홈런 +${r.streakBonus.toLocaleString()}`, 'rgba(255,90,40,0.85)', '#ffffff']);
   if (r.hitBonus) chips.push([`${r.hitStreak}연속 안타 +${r.hitBonus}`, 'rgba(61,220,110,0.85)', '#0b1424']);
-  if (game.gained > 0) chips.push([`+${game.gained.toLocaleString()}${game.lastChance ? ' (2배)' : ''}`, 'rgba(0,0,0,0.5)', '#f2c94c']);
-  if (r.bonus) chips.push(['기회 +1', 'rgba(61,220,110,0.22)', '#8ef0a8']);
+  if (r.bonus) chips.push(['기회 +1', 'rgba(61,220,110,0.22)', '#8ef0a8']);   // 얻은 점수는 제목 줄에 있다
   if (game.mode === 'scenario' && game.scnEvent) {
     const end = game.scn.end;
     chips.push([game.scnEvent, end === 'win' ? '#f2c94c' : 'rgba(0,0,0,0.55)', end === 'win' ? '#1b1405' : end ? '#ff9a9a' : '#ffffff']);
@@ -5972,6 +5990,7 @@ function startGame(mode, waited = false) {
   game.throws = pitcherHand(game.seed);
   game.opponent = pickOpponent(game.seed);
   game.rankInfo = null;
+  game.skipHint = takeSkipHint();
   if (mode === 'scenario') {
     game.rnd = mulberry32(game.seed);
     game.scn = makeScenario(game.rnd);
@@ -6056,6 +6075,7 @@ function finish(r) {
   game.resultT = 0; game.flightT = 0;
   game.revealAt = r.took ? 0.15 : r.kind === 'whiff' ? 0.3 : fieldPlay(r).revealReal;   // 아웃은 잡거나 1루에 닿을 때, 안타는 떨어질 때(느린 화면이면 그만큼 늦게)
   game.cheered = false;   // 안타 환호는 결과 글자와 함께(update)
+  game.skipAt = null;
   if (r.kind === 'ball') setTimeout(() => Sound.ding(), 150);
   if (game.mode === 'challenge' && challengeOver()) recordGame();   // 마지막 기회를 쓰면 '결과 보기'를 누르기 전에 기록한다
 }
@@ -6149,6 +6169,27 @@ function update(dt) {
 }
 
 // ===== 입력: 스페이스바, 클릭, 탭 =====
+// 공이 날아가는 동안 누르면 결과가 나오는 순간(한 박자: 함성·HIT·결과 제목)으로 건너뛴다(2026-11-03 유저 보이스 '치고 날아가는 모션 스킵은 없나요,
+// 떨어질 때까지 기다리기 힘들다', 사용자 결정 '탭하면 바로 결과'). 맞은 뒤 SKIP_GUARD초 동안은 받지 않는다(치면서 두 번 누르는 실수).
+// 공·수비·주자는 모두 flightT로 그려서 flightT를 결과가 정해지는 때로 옮기면 그 자리로 간다. 놓친 장면은 '다시 보기'로 본다
+// 결과가 정해진 뒤(revealAt 뒤, 홈런은 카메라가 아직 공을 따라가는 중이어도)에 누르면 전처럼 다음 공으로 간다
+const SKIP_GUARD = 0.4;
+const beatAt = () => boardMoment()?.t0 ?? game.revealAt;   // 결과를 알리는 순간: 안타·홈런은 전광판이 HIT·HOMERUN을 띄우는 때
+const canSkip = () => game.state === 'result' && hasBattedBall() && game.replay == null && game.resultT >= SKIP_GUARD && game.resultT < game.revealAt;
+function skipToBeat() {
+  game.resultT = Math.max(game.resultT, game.revealAt);
+  game.flightT = Math.max(game.flightT, fieldPlay(game.outcome).reveal);   // 1루 간발 느린 화면도 건너뛴다
+  game.skipAt = game.resultT;   // 따라가는 카메라는 타석 시점으로 끊고(chaseTarget), 전광판은 지금 띄운다(boardMoment)
+}
+// 이 기기에서 처음 세 판만 공이 날아가는 동안 '탭하면 바로 결과'를 작게 띄운다(2026-11-03 사용자 결정 '처음 몇 번만 작게').
+// 판을 시작할 때 센다(walkoff.skipHint, 보여 준 판 수). 저장소를 못 쓰면 띄우지 않는다(매번 처음이 되므로)
+const SKIP_HINT_GAMES = 3;
+function takeSkipHint() {
+  const n = Number(store.get('skipHint', 0)) || 0;
+  if (n >= SKIP_HINT_GAMES) return false;
+  store.set('skipHint', n + 1);
+  return Number(store.get('skipHint', 0)) === n + 1;
+}
 // 버튼 위를 누르면 그 버튼, 아니면 화면마다 정한 기본 동작(시작, 스윙, 다음 공)을 한다
 function primaryAction(eventTime, x, y) {
   Sound.init();
@@ -6162,6 +6203,7 @@ function primaryAction(eventTime, x, y) {
   else if (game.state === 'calib') calibTap(eventTime);
   else if (game.state === 'records' && x == null) goTitle();
   else if (game.state === 'ranking' && x == null) closeRanking();
+  else if (canSkip()) skipToBeat();   // 건너뛰게 한 탭은 다음 공으로 넘어가지 않는다
   else if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) next();
   else if (game.state === 'over' && game.resultT > 0.6 && x == null) {
     startGame(game.mode);
@@ -6273,6 +6315,7 @@ function render(time) {
   }
   if (game.state === 'result') {
     drawResultCard();
+    if (game.skipHint && canSkip()) text(view.mobile ? '탭하면 바로 결과' : '스페이스바 · 클릭하면 바로 결과', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 14 : 16, color: 'rgba(255,255,255,0.7)', shadow: true });
     if (game.resultT > game.revealAt) {
       drawPitchInfo(L.info);
       if (hasBattedBall()) drawMiniMap(L.map);
@@ -6305,5 +6348,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, resultTitleBox, canSkip, beatAt,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };
