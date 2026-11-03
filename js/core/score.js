@@ -16,10 +16,11 @@ export function hrStreakBefore(results, i) {
   for (let j = i - 1; j >= 0; j--) { const kind = results[j]?.kind; if (kind === 'ball') continue; if (kind !== 'hr') break; n++; }
   return n;
 }
-// 연속 안타(2026-11-03 사용자 결정 '연속 안타 보너스, 밸런스 있게'): 두 번째 연속 +100, 세 번째 +200, 네 번째부터 +300씩. 홈런·2루타·내야 안타도 안타다.
+// 연속 안타(2026-11-03 사용자 결정 '연속 안타 보너스, 밸런스 있게', 같은 날 유저 피드백 '연속 안타 점수 더 올려 달라'로 사용자가 B를 골라 올림):
+// 두 번째 연속 +300, 세 번째 +500, 네 번째부터 +800씩(전에는 +100·200·300). 보통 실력(공마다 안타 40%)이면 연속 안타로 받는 점수가 한 판 평균 201 → 557점(356점 더). 홈런·2루타·내야 안타도 안타다.
 // 연속 홈런처럼 골라낸 볼은 끊지 않고 다른 결과는 끊는다. 홈런이면 연속 홈런 보너스와 더하지 않고 큰 쪽만 준다. 그래서 n번째마다 연속 홈런
 // 보너스보다 작거나 같아, 서버 점수 상한(전광판 안타를 모두 홈런·연속 홈런 보너스로 본다)을 넘지 않는다
-export const hitStreakBonus = (n) => (n >= 4 ? 300 : n === 3 ? 200 : n === 2 ? 100 : 0);
+export const hitStreakBonus = (n) => (n >= 4 ? 800 : n === 3 ? 500 : n === 2 ? 300 : 0);
 export function hitStreakBefore(results, i) {
   let n = 0;
   for (let j = i - 1; j >= 0; j--) { const r = results[j]; if (r?.kind === 'ball') continue; if (!r?.hit) break; n++; }

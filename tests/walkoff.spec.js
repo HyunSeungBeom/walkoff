@@ -1038,18 +1038,18 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('연속 안타는 볼을 골라내도 이어지고 다른 결과는 끊는다. 2연속 +100, 3연속 +200, 4연속부터 +300', async ({ page }) => {
+  test('연속 안타는 볼을 골라내도 이어지고 다른 결과는 끊는다. 2연속 +300, 3연속 +500, 4연속부터 +800', async ({ page }) => {
     const errors = await open(page);
     const before = (rs) => page.evaluate((rs) => { walkoff.game.results = rs.map((kind) => ({ kind, hit: ['single', 'double', 'hr'].includes(kind) })); return walkoff.hitStreakBefore(rs.length); }, rs);
     expect(await before(['single', 'ball', 'double'])).toBe(2);
     expect(await before(['single', 'out', 'double'])).toBe(1);
     expect(await before(['hr', 'single', 'foul'])).toBe(0);
     expect(await before(['out', 'hr', 'single', 'ball', 'double'])).toBe(3);
-    expect(await page.evaluate(() => [1, 2, 3, 4, 10].map(walkoff.hitStreakBonus))).toEqual([0, 100, 200, 300, 300]);
+    expect(await page.evaluate(() => [1, 2, 3, 4, 10].map(walkoff.hitStreakBonus))).toEqual([0, 300, 500, 800, 800]);
     expect(errors).toEqual([]);
   });
 
-  test('실제 판: 안타 뒤 안타면 연속 안타 +100 칩, 홈런은 연속 홈런 보너스와 더하지 않고 큰 쪽만(seed 42 첫 두 공은 홈런)', async ({ page }) => {
+  test('실제 판: 안타 뒤 안타면 연속 안타 +300 칩, 홈런은 연속 홈런 보너스와 더하지 않고 큰 쪽만(seed 42 첫 두 공은 홈런)', async ({ page }) => {
     const errors = await open(page, '?seed=42');
     await page.evaluate(() => walkoff.startGame('challenge'));
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
@@ -1058,7 +1058,7 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.4);
     await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
-    await pressAt(page, 0);                                                          // 둘째 공도 홈런: 연속 홈런 +500(연속 안타 +100보다 크다)
+    await pressAt(page, 0);                                                          // 둘째 공도 홈런: 연속 홈런 +500(연속 안타 +300보다 크다)
     await page.waitForFunction(() => walkoff.game.state === 'result');
     const r = await page.evaluate(() => { const o = walkoff.game.outcome; return { kind: o.kind, streakBonus: o.streakBonus, hitBonus: o.hitBonus ?? 0, gained: walkoff.game.gained, perfect: o.perfect }; });
     expect(r).toMatchObject({ kind: 'hr', streakBonus: 500, hitBonus: 0 });
@@ -2327,16 +2327,16 @@ test.describe('결과 한 박자·건너뛰기', () => {
     expect(errors).toEqual([]);
   });
 
-  test('결과 제목은 위 점수판 패널과 가운데 전광판 사이 빈자리에 들어간다(360·390·1440·1920 폭)', async ({ page, isMobile }) => {
+  test('결과 제목은 위 점수판 패널과 가운데 전광판 사이 빈자리에 들어간다(360·390·1440·1920 폭, 아이폰 사파리 390×664)', async ({ page, isMobile }) => {
     test.skip(isMobile, '창 크기를 바꿔 가며 보므로 PC에서만 본다');
     const errors = await open(page, '?seed=42');
-    for (const [w, h] of [[360, 640], [360, 780], [390, 844], [1440, 900], [1920, 1080]]) {
+    for (const [w, h] of [[360, 640], [360, 780], [390, 664], [390, 844], [1440, 900], [1920, 1080]]) {   // 390×664는 아이폰 사파리(주소창 포함)
       await page.setViewportSize({ width: w, height: h });
       await page.waitForFunction((w) => walkoff.view.w === w, w);
       const b = await page.evaluate(() => { const T = walkoff.resultTitleBox({ kind: 'hr' }), R = walkoff.scoreboardRect(); return { top: T.top, y: T.y, size: T.size, boardTop: R.y }; });
       expect(b.y - b.size / 2, `${w}×${h}`).toBeGreaterThanOrEqual(b.top - 1);
       expect(b.y + b.size / 2, `${w}×${h}`).toBeLessThanOrEqual(b.boardTop + 1);
-      expect(b.size, `${w}×${h}`).toBeGreaterThanOrEqual(18);
+      expect(b.size, `${w}×${h}`).toBeGreaterThanOrEqual(22);   // 처음엔 빈자리의 0.72배라 아이폰 사파리에서 18px이었다
     }
     expect(errors).toEqual([]);
   });
@@ -2384,6 +2384,66 @@ test.describe('결과 한 박자·건너뛰기', () => {
     expect(r.shown).toEqual([true, true, true, false]);
     expect(r.gone).toBe(true);   // 결과가 나오면 사라진다
     expect(r.count).toBe(3);
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('타구 정보', () => {
+  test('맞는 순간 가운데 전광판이 타구 속도·발사각을 띄우고 날아가는 동안 비거리가 올라가며, 결과 전에는 세이프·아웃이 드러나지 않는다. 안타는 HIT 뒤, 아웃도 마지막 타구 정보를 어둡게 남기고, 헛스윙은 투수판이다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const r = await page.evaluate(() => {
+      const w = walkoff, g = w.game; w.paused = true;
+      const hit = (p, dt) => { w.startGame('challenge'); g.seq[0] = p; for (let k = 0; k < 3000 && g.state !== 'result'; k++) { if (g.state === 'pitch' && g.swingAt == null && w.ballTime() + 1 / 60 >= p.T + dt / 1000) w.swing(g.clockAt + Math.max(0, p.T + dt / 1000 - w.ballTime()) * 1000); g.clockAt += 1000 / 60; w.update(1 / 60); } };
+      const trace = () => { const out = []; for (let k = 0; k < 60 * 8 && g.state === 'result'; k++) { g.clockAt += 1000 / 60; w.update(1 / 60); const s = w.scoreboardShows(); out.push({ t: g.resultT, s, b: s === 'ball' ? w.ballInfo() : null }); } return out; };
+      const summary = (rows) => {
+        const before = rows.filter((q) => q.t < g.revealAt), after = rows.filter((q) => q.t > g.revealAt + 2);
+        const d = before.filter((q) => q.b).map((q) => q.b.dist);
+        return { beforeShows: [...new Set(before.map((q) => q.s))], rising: d.length > 10 && d[d.length - 1] > d[0] + 5 && d.every((x, i) => i === 0 || x >= d[i - 1]), beforeDim: before.some((q) => q.b?.dim),
+          afterShows: [...new Set(after.map((q) => q.s))], afterDim: after.every((q) => !q.b || q.b.dim), final: after.at(-1)?.b?.dist ?? null, ev: before.at(-1)?.b?.ev };
+      };
+      const res = {};
+      hit(w.makeSequence(332, false)[2], -40); res.single = { ...summary(trace()), name: g.outcome.name, outEv: g.outcome.ev };
+      hit(w.makeSequence(1, w.pitcherHand(1) === 'L')[5], -78); res.ground = { ...summary(trace()), name: g.outcome.name };
+      hit(w.makeSequence(42, w.pitcherHand(42) === 'L')[0], -200); res.whiff = { kind: g.outcome.kind, shows: [...new Set(trace().map((q) => q.s))] };
+      return res;
+    });
+    expect(r.single).toMatchObject({ name: '좌전 안타', beforeShows: ['ball'], rising: true, beforeDim: false, afterShows: ['ball'], afterDim: true });   // 날아가는 동안 타구 정보, HIT 뒤 어둡게 남김
+    expect(r.single.ev).toBe(r.single.outEv);
+    expect(r.ground).toMatchObject({ name: '3루수 땅볼', beforeShows: ['ball'], rising: true, afterShows: ['ball'], afterDim: true });   // 1루 승부 전에는 속도·각도·거리만
+    expect(r.whiff).toEqual({ kind: 'whiff', shows: ['pitcher'] });   // 헛스윙은 타구가 없어 투수판
+    // 전광판 그림에 쓴 글자: '타구 정보'·발사각·비거리
+    await page.evaluate(() => { const w = walkoff, g = w.game; w.startGame('challenge'); const p = w.makeSequence(332, false)[2]; g.seq[0] = p; for (let k = 0; k < 3000 && g.state !== 'result'; k++) { if (g.state === 'pitch' && g.swingAt == null && w.ballTime() + 1 / 60 >= p.T - 0.04) w.swing(g.clockAt + Math.max(0, p.T - 0.04 - w.ballTime()) * 1000); g.clockAt += 1000 / 60; w.update(1 / 60); } while (g.resultT < 1.2) { g.clockAt += 1000 / 60; w.update(1 / 60); } w.paused = false; });
+    // 폰은 카메라가 당긴 타구를 따라가 전광판이 화면 밖이라 같은 정보를 위 빈자리에 한 줄로 띄운다(PC는 전광판이 보여 안 띄운다)
+    const line = (await drawnTexts(page)).some((s) => /^타구 109km\/h · 24° · \d+m$/.test(s));
+    expect(line).toBe(await page.evaluate(() => { const R = walkoff.scoreboardRect(); return (Math.min(walkoff.view.w, R.x + R.w) - Math.max(0, R.x)) / R.w < 0.5; }));
+    const words = await boardWords(page);
+    expect(words).toContain('타구 정보');
+    expect(words).toContain('발사각 24°');
+    expect(words.some((s) => /^비거리 \d+m$/.test(s))).toBe(true);
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('상점 배트 미리 보기', () => {
+  test('배트 탭 미리 보기는 2.5초마다 공을 치고, 효과 배트면 맞는 순간 효과가 터지고 효과 없는 배트는 스윙만 한다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const r = await page.evaluate(() => {
+      const w = walkoff; w.paused = true;
+      // t초(배트를 고른 뒤)의 미리 보기를 그릴 때 번짐(createRadialGradient)을 몇 번 그리는지와 타자 손 높이
+      const at = (bat, t) => {
+        w.setWallet({ look: { ...w.wallet.look, bat } });
+        if (w.game.state !== 'shop') w.openShop();
+        w.game.shop.tab = 'bat'; w.game.shop.demo = performance.now() - t * 1000;
+        const proto = CanvasRenderingContext2D.prototype, rg = proto.createRadialGradient; let n = 0;
+        proto.createRadialGradient = function (...a) { n++; return rg.apply(this, a); };
+        try { w.render(performance.now() / 1000); } finally { proto.createRadialGradient = rg; }
+        return n;
+      };
+      return { fireHit: at('bat-fire', 1.1), woodHit: at('bat-wood', 1.1), fireWait: at('bat-fire', 0.5), fireNext: at('bat-fire', 2.5 + 1.1) };
+    });
+    expect(r.fireHit).toBeGreaterThan(r.woodHit);    // 불꽃 배트는 맞는 순간 불덩이가 터지고
+    expect(r.fireWait).toBe(r.woodHit);              // 기다리는 동안은 안 터지고(원목 배트와 같은 수)
+    expect(r.fireNext).toBe(r.fireHit);              // 2.5초마다 되풀이한다
     expect(errors).toEqual([]);
   });
 });

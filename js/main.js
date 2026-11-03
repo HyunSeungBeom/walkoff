@@ -611,6 +611,44 @@ function drawPracticeBoard(g, W, H, c) {
   boardText(g, 'km/h', W * 0.73, y + H * 0.07, W * 0.26, Math.max(10, line * 0.8), 'rgba(255,255,255,0.6)', 700, 'left');
   boardText(g, `직전 ${c.last.name}`, W / 2, H * 0.87, W * 0.9, line);
 }
+// 타구 정보(2026-11-03 유저 피드백 '타구 날아갈 때 전광판이 비어 있다', 사용자 결정 '타구 정보'): 맞는 순간 실제 구장 전광판처럼
+// 타구 속도·발사각을 띄우고, 공이 날아가는(구르는) 동안 비거리가 올라간다. 결과가 정해지기 전에는 이것만 보여 줘서 세이프·아웃이 미리 드러나지 않는다
+// (1루 간발). 안타·홈런은 결과가 정해지면 HIT·HOMERUN으로 넘어갔다가 돌아오고, 아웃·파울도 마지막 타구 정보를 남긴다. 결과 카드가 나오면
+// (전광판 자리에 겹쳐 그린다) 글자가 읽히게 어둡게 남긴다(dim). 헛스윙·지켜본 공은 타구가 없어 투수판 그대로다
+function ballInfo(r = game.outcome) {
+  const T = flightDuration(r), final = Math.round(carryOf(r));
+  const dist = game.flightT >= T ? final : Math.min(final, Math.round(flightPos(r, game.flightT).s));
+  return { ev: r.ev, la: r.la, dist, dim: game.resultT >= game.revealAt && cardDetails() };
+}
+// 가운데 전광판이 지금 보여 주는 것: 'moment'(HIT·HOMERUN), 'ball'(타구 정보), 'pitcher'(투수판, 시작 화면·보정은 WALK OFF), null(꺼짐)
+function scoreboardShows() {
+  const bm = boardMoment();
+  if (bm && game.resultT >= bm.t0 && game.resultT < bm.t1) return 'moment';
+  if (game.state === 'result' && hasBattedBall() && game.replay == null) return 'ball';
+  return ['windup', 'pitch', 'result', 'title', 'over', 'calib'].includes(game.state) ? 'pitcher' : null;
+}
+// 공이 날아가는 동안 전광판이 화면 밖(반 넘게)이면 같은 타구 정보를 위 점수판 아래 빈자리(결과 제목 자리)에 LED 한 줄로 띄운다.
+// 폰은 시야가 좁아 카메라가 당긴·민 타구를 따라가면 가운데 전광판이 화면 밖으로 나간다. 결과 제목이 뜨면 그 자리를 내준다
+function drawBallInfoLine() {
+  if (scoreboardShows() !== 'ball' || game.resultT >= beatAt()) return;
+  const R = scoreboardRect();
+  if (R && (Math.min(view.w, R.x + R.w) - Math.max(0, R.x)) / R.w >= 0.5) return;
+  const b = ballInfo(), T = resultTitleBox(), size = Math.min(16, T.size * 0.6), str = `타구 ${b.ev}km/h · ${b.la}° · ${b.dist}m`;
+  ctx.font = font(size, 800);
+  const w = ctx.measureText(str).width + size * 1.4, h = size * 1.7;
+  roundRect(view.w / 2 - w / 2, T.y - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(5,7,13,0.78)'; ctx.fill();
+  text(str, view.w / 2, T.y + 0.5, { size, weight: 800, color: LED_AMBER });
+}
+function drawBallBoard(g, W, H, b) {
+  const hh = H * 0.24, line = Math.max(10, H * 0.135), y = hh + (H * 0.6 - hh) / 2;
+  g.fillStyle = '#24314a'; g.fillRect(0, 0, W, hh);
+  g.fillStyle = '#f2c94c'; g.fillRect(0, hh * 0.86, W, hh * 0.14);
+  boardText(g, '타구 정보', W / 2, hh * 0.45, W * 0.9, hh * 0.56, '#fff', 900);
+  seg7(g, String(b.ev), W * 0.66, y, H * 0.26, LED_AMBER, 'right');
+  boardText(g, 'km/h', W * 0.69, y + H * 0.06, W * 0.29, Math.max(10, line * 0.8), 'rgba(255,255,255,0.6)', 700, 'left');
+  boardText(g, `발사각 ${b.la}°`, W / 2, H * 0.73, W * 0.92, line);
+  boardText(g, `비거리 ${b.dist}m`, W / 2, H * 0.88, W * 0.92, line, LED_AMBER);
+}
 function drawScoreboard() {
   const R = scoreboardRect();
   if (!R || R.w < 20) return;
@@ -618,9 +656,8 @@ function drawScoreboard() {
   ctx.fillStyle = '#05070d'; ctx.fillRect(R.x - pad, R.y - pad, R.w + pad * 2, R.h + pad * 2);   // 틀
   ctx.fillStyle = '#0a101c'; ctx.fillRect(R.x, R.y, R.w, R.h);                                    // 화면
   ctx.strokeStyle = 'rgba(242,201,76,0.4)'; ctx.lineWidth = Math.max(1, pad * 0.4); ctx.strokeRect(R.x - pad * 0.5, R.y - pad * 0.5, R.w + pad, R.h + pad);
-  const us = teamById(settings.team), bm = boardMoment();
-  const playing = ['windup', 'pitch'].includes(game.state), idle = playing || game.state === 'title' || game.state === 'over' || game.state === 'calib';
-  if (bm && game.resultT >= bm.t0 && game.resultT < bm.t1) {   // HIT·HOMERUN: 우리 팀 색 바탕에 한 글자씩
+  const us = teamById(settings.team), bm = boardMoment(), shows = scoreboardShows();
+  if (shows === 'moment') {   // HIT·HOMERUN: 우리 팀 색 바탕에 한 글자씩
     const u = game.resultT - bm.t0, main = us?.main ?? '#c2410c', alt = us?.accent && us.accent !== '#ffffff' ? us.accent : '#f2c94c', hr = bm.word === 'HOMERUN';
     ctx.save(); ctx.beginPath(); ctx.rect(R.x, R.y, R.w, R.h); ctx.clip();
     ctx.fillStyle = tint(main, hr ? 0.75 + 0.25 * Math.max(0, Math.sin(u * 10)) : 0.8); ctx.fillRect(R.x, R.y, R.w, R.h);
@@ -638,9 +675,9 @@ function drawScoreboard() {
       });
     });
     ctx.restore();
-  } else if (idle) {   // 투수판(투구 중에는 움직이지 않는다). 바뀔 때만 작은 캔버스에 그려 두고 붙인다(빛 번짐 그림자가 무거워서)
-    const brand = game.state === 'title' || game.state === 'calib' || !game.seq.length, card = brand ? null : pitcherCard();
-    const key = [Math.round(R.w), Math.round(R.h), brand ? 'brand' : JSON.stringify(card)].join('|');
+  } else if (shows) {   // 투수판(투구 중에는 움직이지 않는다)·타구 정보. 바뀔 때만 작은 캔버스에 그려 두고 붙인다(빛 번짐 그림자가 무거워서)
+    const brand = shows === 'pitcher' && (game.state === 'title' || game.state === 'calib' || !game.seq.length), ball = shows === 'ball' ? ballInfo() : null, card = brand || ball ? null : pitcherCard();
+    const key = [Math.round(R.w), Math.round(R.h), brand ? 'brand' : ball ? `ball|${ball.ev}|${ball.la}|${ball.dist}` : JSON.stringify(card)].join('|');
     if (scoreboardCache.key !== key) {
       const c = scoreboardCache.canvas ??= document.createElement('canvas'), dpr = Math.min(view.dpr || 1, 2), g = c.getContext('2d');
       c.width = Math.ceil(R.w * dpr); c.height = Math.ceil(R.h * dpr);
@@ -649,10 +686,12 @@ function drawScoreboard() {
         const size = Math.min(R.h * 0.22, R.w / 5.2);
         g.font = font(size, 900); g.shadowColor = '#f2c94c'; g.shadowBlur = size * 0.5; g.fillStyle = '#f2c94c';
         g.fillText('WALK', R.w / 2, R.h * 0.36); g.fillText('OFF', R.w / 2, R.h * 0.64);
-      } else drawPitcherBoard(g, R.w, R.h, card);
+      } else if (ball) drawBallBoard(g, R.w, R.h, ball);
+      else drawPitcherBoard(g, R.w, R.h, card);
       scoreboardCache.key = key;
     }
     ctx.drawImage(scoreboardCache.canvas, R.x, R.y, R.w, R.h);
+    if (ball?.dim) { ctx.fillStyle = 'rgba(5,7,13,0.68)'; ctx.fillRect(R.x, R.y, R.w, R.h); }   // 결과 카드 글자가 읽히게
   }
   ctx.fillStyle = 'rgba(0,0,0,0.2)';   // LED 가로줄 무늬
   for (let yy = R.y + 1; yy < R.y + R.h; yy += Math.max(2, R.h / 22)) ctx.fillRect(R.x, yy, R.w, Math.max(0.6, R.h / 70));
@@ -4048,12 +4087,13 @@ function pillRow(items, y, size) {
   items.forEach(([s, bg, color], i) => { pill(s, x + widths[i] / 2, y, { size, bg, color }); x += widths[i] + gap; });
 }
 
-// 결과 제목 한 줄이 서는 자리: 위 점수판 패널 아래와 가운데 전광판 위 끝(타석 시점) 사이 빈자리 가운데. 글자는 빈자리 높이의 0.72배까지라
-// 패널·전광판을 가리지 않는다(빈자리: 폰 390 60~141px, 360 60~130, PC 1440×900 74~118, 1920×1080 74~142)
+// 결과 제목 한 줄이 서는 자리: 위 점수판 패널 아래와 가운데 전광판 위 끝(타석 시점) 사이 빈자리 가운데. 글자 크기는 빈자리 높이의 0.95배까지
+// (한글은 글자 높이가 크기의 0.9배쯤이라 패널·전광판을 가리지 않는다. 처음 0.72배는 아이폰 사파리(390×664, 빈자리 25px)에서 18px로 너무 작았다).
+// 빈자리: 폰 390×844 60~141px, 390×664 60~85, 360×640 60~87, PC 1440×900 74~118, 1920×1080 74~142
 function resultTitleBox(r = game.outcome) {
   const m = view.mobile, L = boardLayout(), top = L.py + L.ph, z = fenceDist(0) + SCOREBOARD.back;
   const bottom = view.cy - (SCOREBOARD.y1 - CAM_HOME.y) * view.f / (z - CAM_HOME.z);
-  const size = Math.max(16, Math.min((m ? 32 : 44) * (r && r.kind === 'hr' ? 1.3 : 1), (bottom - top) * 0.72));
+  const size = Math.max(16, Math.min((m ? 32 : 44) * (r && r.kind === 'hr' ? 1.3 : 1), (bottom - top) * 0.95));
   return { y: Math.max(top + size / 2, (top + bottom) / 2), size, top, bottom };
 }
 const resultTitle = (r) => (r.kind !== 'hr' ? r.name : r.streak >= 3 ? `${r.streak}연속 홈런!` : r.streak === 2 ? '백투백 홈런!' : '홈런!');
@@ -5750,9 +5790,26 @@ function demoRunSkeleton() {
   const run = { ...routeState(demoLeg.route, demoLeg.track, SPRINT, tt), drawShift: 0, lookFoul: false, top: SPRINT.top };
   return { ...shiftSkeleton(runnerSkeleton(run), -run.x), soles: { l: 0, r: 0 } };   // 밑창은 길 위 실제 자리로 카메라를 재서 옮기기 전 값이 틀린다(옆에서 보면 안 보인다)
 }
+// 배트 탭 미리 보기는 저절로 되풀이한다(2026-11-03 유저 피드백 '상점에 배트 효과도 보이면 좋겠다', 사용자 결정 '저절로 되풀이'):
+// BAT_DEMO.cycle초마다 공이 와서 타자가 치고, 효과 배트면 맞는 순간 효과(drawBatBurst)가 터진다. 효과 없는 배트는 스윙만. 배트를 고르면 처음부터(sh.demo)
+const BAT_DEMO = { cycle: 2.5, hit: 1.0, come: 0.35, fly: 0.4 };
+function batDemoAt(sh) {   // 기다리는 동안은 배트를 세운 준비 자세(손을 당기는 준비 동작은 배트가 카메라 쪽으로 누워 안 보여서 뺀다)
+  const u = ((performance.now() - sh.demo) / 1000) % BAT_DEMO.cycle;
+  return { u, tau: u >= BAT_DEMO.hit ? u - BAT_DEMO.hit : null };
+}
+function drawBatDemoBall(d) {   // 미리 보기 상자 안(타자와 같은 변환)에서 공이 오고, 맞으면 날아간다
+  const H = [HIT_SPOT.x, HIT_SPOT.y, HIT_SPOT.z], from = [H[0] + 0.15, H[1] + 0.35, H[2] + 7], to = [H[0] - 2.5, H[1] + 2.2, H[2] + 5];
+  let q = null;
+  if (d.tau == null && d.u > BAT_DEMO.hit - BAT_DEMO.come) { const k = (d.u - (BAT_DEMO.hit - BAT_DEMO.come)) / BAT_DEMO.come; q = from.map((v, i) => lerp(v, H[i], k)); }
+  else if (d.tau != null && d.tau < BAT_DEMO.fly) { const k = easeOut(d.tau / BAT_DEMO.fly); q = H.map((v, i) => lerp(v, to[i], k)); }
+  const p = q && project(q[0], q[1], q[2]);
+  if (!p) return;
+  ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(2, BALL_R * p.s), 0, Math.PI * 2); ctx.fillStyle = '#ffffff'; ctx.fill();
+}
 function drawShopPreview(box) {
-  const sh = game.shop, runDemo = sh.tab === 'shoe' && RUN_SHOE_FX.includes(fxOf(currentLook().shoe));
-  const k = runDemo ? demoRunSkeleton() : batterSkeleton(sh.tab === 'number' ? SWING_TIME * 2 : null), zoom = runDemo ? null : PREVIEW_ZOOM[sh.tab];
+  const sh = game.shop, runDemo = sh.tab === 'shoe' && RUN_SHOE_FX.includes(fxOf(currentLook().shoe)), demo = sh.tab === 'bat' ? batDemoAt(sh) : null;
+  const k = runDemo ? demoRunSkeleton() : batterSkeleton(sh.tab === 'number' ? SWING_TIME * 2 : demo?.tau ?? null);
+  const frameK = demo ? batterSkeleton(null) : k, zoom = runDemo ? null : PREVIEW_ZOOM[sh.tab];   // 배트 탭 틀은 준비 자세로 잰다(휘두르는 동안 틀이 흔들리지 않게)
   roundRect(box.x, box.y, box.w, box.h, 14);
   const g = ctx.createLinearGradient(0, box.y, 0, box.y + box.h);
   g.addColorStop(0, 'rgba(20,40,70,0.9)'); g.addColorStop(0.62, 'rgba(26,74,48,0.9)'); g.addColorStop(1, 'rgba(120,86,52,0.9)');
@@ -5770,7 +5827,8 @@ function drawShopPreview(box) {
     ctx.restore();
     return;
   }
-  const pts = (zoom ? zoom(k) : [k.head, k.tip, k.hand, k.feet.l, k.feet.r, k.knees.l, k.knees.r]).map(batterPoint).filter(Boolean);
+  const pts = (zoom ? zoom(frameK) : [k.head, k.tip, k.hand, k.feet.l, k.feet.r, k.knees.l, k.knees.r]).map(batterPoint).filter(Boolean);
+  if (demo) for (const [dx, dy] of [[-0.45, -0.3], [0.45, -0.3], [0, 0.35]]) { const p = project(HIT_SPOT.x + dx, HIT_SPOT.y + dy, HIT_SPOT.z); if (p) pts.push(p); }   // 맞는 자리 둘레(효과가 터지는 곳)도 담는다
   if (pts.length < 2) return;
   const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
   const minY = Math.min(...pts.map((p) => p.y)) - (zoom ? 0 : 20), maxY = Math.max(...pts.map((p) => p.y)) + (zoom ? 0 : 12);
@@ -5781,7 +5839,12 @@ function drawShopPreview(box) {
   else { ctx.translate(box.x + box.w * (sh.tab === 'trail' ? 0.3 : 0.5), box.y + box.h * 0.05); ctx.scale(sc, sc); ctx.translate(-(minX + maxX) / 2, -minY); }
   drawFigureShadow(k);
   const C = batterColors();
+  if (demo) drawBatDemoBall(demo);
   drawBatterFigure(k, (name) => C[name], 0);
+  if (demo && demo.tau != null) {   // 효과 배트로 맞힌 순간 효과(게임과 같은 자리·같은 함수)
+    const fx = fxOf(currentLook().bat), c = project(HIT_SPOT.x, HIT_SPOT.y, HIT_SPOT.z);
+    if (c && BAT_BURSTS[fx]) drawBatBurst({ fx, t: demo.tau, seed: 7 }, c, demo.tau);
+  }
   ctx.restore();
   const trail = currentLook().trail;
   if (sh.tab === 'trail' && trail !== 'trail-none') {   // 공이 왼쪽 아래에서 오른쪽 위로 날아간다(1.4초마다 다시)
@@ -6315,6 +6378,7 @@ function render(time) {
   }
   if (game.state === 'result') {
     drawResultCard();
+    drawBallInfoLine();
     if (game.skipHint && canSkip()) text(view.mobile ? '탭하면 바로 결과' : '스페이스바 · 클릭하면 바로 결과', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 14 : 16, color: 'rgba(255,255,255,0.7)', shadow: true });
     if (game.resultT > game.revealAt) {
       drawPitchInfo(L.info);
@@ -6348,5 +6412,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, resultTitleBox, canSkip, beatAt,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };
