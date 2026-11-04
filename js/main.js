@@ -696,7 +696,7 @@ const FPOSE = {
   hold: fpose({ pel: [0, 0.9, 0], lean: 0.08, gl: [0.12, 1.15, -0.3], bh: [-0.06, 1.15, -0.32] }),   // 잡은 공을 글러브에 들고 선다
   point: fpose({ bh: [-0.12, 2.1, -0.3] }),   // 내야 뜬공: 투수가 손으로 가리킨다
   squat: fpose({ pel: [0, 0.48, 0.1], lean: 0.3, lf: [0.36, 0.03, -0.05], rf: [-0.36, 0.03, -0.05], gl: [0.15, 0.8, -0.42], bh: [-0.15, 0.68, -0.22] }),   // 포수가 쪼그려 앉아 받을 준비
-  kneel: fpose({ pel: [0, 0.5, 0.1], lean: 0.4, lf: [0.2, 0.03, -0.3], rf: [-0.2, 0.15, 0.45], gl: [0.25, 0.6, -0.2], bh: [-0.25, 0.6, -0.2] }),
+  slump: fpose({ pel: [0, 0.74, 0.1], lean: 0.95, lf: [0.24, 0.03, -0.02], rf: [-0.24, 0.03, 0.02], gl: [0.2, 0.5, -0.22], bh: [-0.2, 0.5, -0.22] }),   // 무릎에 손을 짚고 숙인다(홈런 맞은 투수)
   gather: fpose({ pel: [0, 0.84, 0.06], hip: 215, sh: 195, lean: 0.25, tilt: 0.05, lf: [0.06, 0.03, -0.32], rf: [-0.02, 0.03, 0.3], gl: [0.12, 1.2, -0.28], bh: [-0.02, 1.18, -0.18] }),   // 잡은 공을 글러브에서 빼며 던질 쪽으로 몸을 닫는다
 };
 const FTRACK = {
@@ -738,8 +738,41 @@ const FTRACK = {
     [0.55, fpose({ pel: [0, 0.8, -0.08], hip: 262, sh: 266, lean: 0.35, lf: [0.14, 0.03, -0.32], rf: [-0.14, 0.06, 0.18], gl: [0.28, 0.98, -0.1], bh: [-0.08, 0.92, -0.5] })],
     [1, fpose({ pel: [0, 0.86, -0.12], hip: 270, sh: 272, lean: 0.2, lf: [0.14, 0.03, -0.32], rf: [-0.12, 0.12, 0.08], gl: [0.27, 1.0, -0.05], bh: [-0.04, 1.32, -0.52] })],
   ]),
+  // 홈런 맞은 투수: 어깨가 먼저 처지고 숙여 무릎에 손을 짚는다 / 천천히 일어난다
+  slump: makeTrack([
+    [0, fpose({})],
+    [0.4, fpose({ pel: [0, 0.88, 0.04], lean: 0.25, gl: [0.22, 0.8, -0.08], bh: [-0.22, 0.8, -0.06] })],
+    [1, FPOSE.slump],
+  ]),
+  rise: makeTrack([
+    [0, FPOSE.slump],
+    [0.6, fpose({ pel: [0, 0.88, 0.03], lean: 0.25, gl: [0.24, 0.82, -0.08], bh: [-0.24, 0.82, -0.06] })],
+    [1, fpose({ lean: 0.08 })],
+  ]),
 };
 const THROW_LEN = 0.45, THROW_AT = 0.55, DIVE_LEN = 0.6, DIVE_HIT = 0.55, GETUP_LEN = 0.7;   // 던지기는 0.45초 동작의 55%에 공을 놓는다
+// 수비 다듬기(2026-11-04, 사용자 우선순위 ④): 투수 옆 FLINCH_NEAR m 안을 초속 8m 넘게 지나가는 땅볼에 투수가 움찔한다(FLINCH_LEN초, 공이 지나기
+// FLINCH_LEAD초 앞에 시작해 지날 때 가장 높이 뜨고, 공 반대쪽으로 FLINCH_STEP m 비킨다). 뜬공을 잡은 외야수는 LOB_WAIT초 뒤 중계하러 나온 키스톤에게
+// 초속 LOB_SPEED m로 높게(거리의 LOB_ARC배) 던져 준다. 홈런이면 투수가 공이 담장을 넘고 SLUMP_DELAY초 뒤 무릎을 짚고, SLUMP_HOLD초 뒤 일어난다
+const FLINCH_NEAR = 2, FLINCH_LEN = 0.6, FLINCH_LEAD = 0.18, FLINCH_STEP = 0.15;
+const LOB_WAIT = 0.9, LOB_SPEED = 28, LOB_LEN = 0.6, LOB_ARC = 0.06;
+const SLUMP_DELAY = 0.2, SLUMP_LEN = 0.7, SLUMP_HOLD = 2.4, RISE_LEN = 0.9;
+// 움찔: 몸을 낮췄다가 공이 지날 때 공 반대쪽으로 뛰어올라 다리를 접고 글러브를 공 쪽 아래로 내린 뒤 내려앉아 선다.
+// s는 공이 지나는 쪽(+1 왼쪽, -1 오른쪽, 0 가랑이 사이), g는 글러브 손(+1 왼손, 좌완은 -1). 홈 쪽을 본 자세 기준이다
+const FLINCH = new Map();
+function flinchTrack(s, g) {
+  const key = `${s},${g}`;
+  if (!FLINCH.has(key)) {
+    const sh = -s * FLINCH_STEP, hands = (glove, other) => (g > 0 ? { gl: glove, bh: other } : { gl: other, bh: glove }), side = s || g;
+    FLINCH.set(key, makeTrack([
+      [0, fpose({ pel: [0, 0.8, 0.05], lean: 0.35, lf: [0.28, 0.03, 0], rf: [-0.28, 0.03, 0], ...hands([g * 0.15, 0.72, -0.3], [-g * 0.15, 0.72, -0.28]) })],
+      [0.3, fpose({ pel: [sh * 0.6, 1.08, 0.06], lean: 0.12, tilt: -s * 0.18, lf: [0.24 + sh * 0.6, s > 0 ? 0.42 : 0.3, 0.06], rf: [-0.24 + sh * 0.6, s < 0 ? 0.42 : 0.3, 0.06], ...hands([side * 0.38, 0.42, -0.32], [-side * 0.42, 1.28, 0.05]) })],
+      [0.6, fpose({ pel: [sh, 0.72, 0.06], lean: 0.42, tilt: -s * 0.06, lf: [0.28 + sh, 0.03, 0.02], rf: [-0.28 + sh, 0.03, 0.02], ...hands([g * 0.2, 0.6, -0.3], [-g * 0.2, 0.75, -0.2]) })],
+      [1, fpose({ pel: [sh, 0.9, 0.02], lean: 0.1, lf: [0.17 + sh, 0.03, 0], rf: [-0.17 + sh, 0.03, 0.02], ...hands([g * 0.24, 0.9, -0.1], [-g * 0.24, 0.9, -0.06]) })],
+    ]));
+  }
+  return FLINCH.get(key);
+}
 // 몸 앞(키의 -z)으로 나는 다이빙. 엉덩이는 달려온 빠르기 v0로 날기 시작해 글러브가 공에 닿을 때(DIVE_HIT) F m를 날고, 땅에 떨어져 미끄러지며 선다.
 // 발·손은 엉덩이를 따라간다(팔다리 길이는 그대로). 전에는 다이빙 첫 장면이 멈춰 있어 달려오던 몸이 잠깐 섰다가 튀어 나갔다
 const diveTrack = (F, v0 = 0) => {
@@ -1109,6 +1142,20 @@ function buildPlay(r, o = {}) {
   const backOf = (at, k, ref = [0, 0.3]) => stepToward(at, ref, -k);   // 홈에서 볼 때 at의 k m 뒤
   const backupSpot = (f, at, k) => { const p = inPark(backOf(at, k), 2.5); return flatDist(p, at) < k * 0.6 ? stepToward(at, homeOf(f), k * 0.8) : p; };   // 뒤를 받친다. 담장 앞이면 자기 쪽 옆으로
   const otherOF = (o) => OUTFIELDERS.filter((x) => x !== o).reduce((b, x) => (Math.abs(x.a - side) < Math.abs(b.a - side) ? x : b));
+  // 땅볼이 투수 옆(FLINCH_NEAR m 안)을 빠르게 지나가면 투수가 움찔한다(force면 거리와 상관없이). 움찔이 끝나는 때·비켜 선 자리·공이 지난 쪽을 돌려준다
+  const flinch = (path, force = false) => {
+    const p0 = homeOf(P), far = Math.hypot(p0[0], p0[1]) + 3;
+    let best = null;
+    for (let i = 1; i < 360; i++) {
+      const t = i / 120, q = path.pos(t), d = flatDist(q, p0);
+      if (!best || d < best.d) best = { d, t, x: q[0] - p0[0], v: path.speed(t) };
+      if (Math.hypot(q[0], q[1]) > far) break;
+    }
+    if (!force && (best.d > FLINCH_NEAR || best.v < 8)) return null;
+    const s = Math.abs(best.x) < 0.15 ? 0 : Math.sign(best.x), g = game.seq[game.i]?.lefty ? -1 : 1, t0 = Math.max(0.12, best.t - FLINCH_LEAD), at = [p0[0] - s * FLINCH_STEP, p0[1]];
+    anim(P, t0, p0, faceTo(p0, [0, 0.3]), flinchTrack(s, g), FLINCH_LEN, { name: 'flinch', look: 'ball', endAt: at });
+    return { t1: t0 + FLINCH_LEN, at, s };
+  };
   let reveal = 0, end = 0;
 
   if (r.type === 'ground' && (r.kind === 'out' || r.kind === 'single' || r.kind === 'double')) {
@@ -1194,8 +1241,9 @@ function buildPlay(r, o = {}) {
       if (X !== B3) arriveBy(B3, bag3, end, FPOSE.readyIn, { faceTo: at });
       else if (cv2 !== SS) arriveBy(SS, stepToward(bag3, BASE2, 4), end, FPOSE.readyIn, { faceTo: at });
       if (X !== P && to !== 'P' && !(dp?.out2 && X === B1)) {
+        const fl = flinch(path);   // 투수 옆을 지나간 공이면 움찔한 뒤에
         if (X === B2 || X === B1) arriveBy(P, stepToward(BASE1, [0, MOUND], 4), end, FPOSE.cover, { faceTo: at, name: 'cover' });   // 1루 커버를 가다 멈춘다
-        else pose(P, FIELD_REACT.p, homeOf(P), faceTo(homeOf(P), at), FPOSE.stand, { name: 'watch', look: 'ball' });
+        else pose(P, fl ? fl.t1 : FIELD_REACT.p, fl ? fl.at : homeOf(P), faceTo(fl ? fl.at : homeOf(P), at), FPOSE.stand, { name: 'watch', look: 'ball' });
       }
       arriveBy(RF, stepToward(BASE1, at, -11), end + 0.2, FPOSE.backup, { faceTo: BASE1, name: 'backup' });
       arriveBy(CF, stepToward(homeOf(CF), BASE2, 9), end, FPOSE.backup, { faceTo: at, name: 'backup' });
@@ -1214,7 +1262,8 @@ function buildPlay(r, o = {}) {
         if (i === 0 && diveShort(c.at, homeOf(c.f), c.t, reactOf(c.f), ...speedOf(c.f)) < 1.2) diveMiss(c.f, c.at, c.t);   // 거의 닿는 공: 몸을 날려도 글러브 끝을 지나간다
         else arriveBy(c.f, stepToward(homeOf(c.f), c.at, clamp(flatDist(homeOf(c.f), c.at) - 2, 0, 5)), c.t + 0.3, readyOf(c.f), { faceTo: c.at, look: 'ball' });   // 몇 걸음 쫓다 선다
       });
-      if (r.gap === '투수 옆') pose(P, 0.15, homeOf(P), faceTo(homeOf(P), [0, 0]), FPOSE.kneel, { name: 'duck' });   // 몸을 숙여 피한다
+      const fl = flinch(path, r.gap === '투수 옆');   // 투수 옆으로 빠지는 공은 늘 움찔하고, 옆으로 돌아서서 빠져나간 공을 본다(전에는 한 번에 숙인 자세로 굳었다)
+      if (r.gap === '투수 옆') pose(P, fl.t1, fl.at, faceTo(fl.at, [fl.at[0] + (fl.s || 1), fl.at[1]]), FPOSE.stand, { name: 'watch', look: 'ball' });
       const O = nearestOutfielder(side), [top, tau] = speedOf(O);
       const ic = reachGround(path, homeOf(O), reactOf(O), top, tau, SET_REACH, 0.35, Infinity, path.tStop + 4) ?? { ...interceptGround(path, homeOf(O), reactOf(O), top, tau, path.tStop + 4) };
       const hp = r.scnPlay?.home, goHome = !!hp && !hp.hold;
@@ -1254,6 +1303,14 @@ function buildPlay(r, o = {}) {
       arriveBy(B1, stepToward(BASE1, [0, 0], 1.2), tc, FPOSE.readyIn, { faceTo: got.at });
       arriveBy(B3, bag3, tc, FPOSE.readyIn, { faceTo: got.at });
       arriveBy(P, stepToward([0, MOUND], BASE2, 4), tc, FPOSE.stand, { faceTo: got.at, name: 'watch' });
+      if (!tg?.go) {   // 잡은 공은 공 쪽 키스톤(중계하러 나온 유격수·2루수)에게 가볍게 던져 준다. 전에는 잡은 채 서 있었다
+        const rv = got.at[0] < 0 ? SS : B2, rvAt = stepToward(homeOf(rv), got.at, 6), from = where(X), face = faceTo(rvAt, from);
+        const th = throwTo(X, from, rv, rvAt, FPOSE.catchChest, Math.max(freeAt(X), tc + LOB_WAIT), LOB_SPEED, undefined, { hop: false, len: LOB_LEN, arc: LOB_ARC * flatDist(from, rvAt), name: 'lob' });
+        pose(rv, Math.max(freeAt(rv), th.tRel - 0.25), rvAt, face, FPOSE.cover, { name: 'cover' });
+        pose(rv, th.tArr - 0.2, rvAt, face, FPOSE.catchChest, { name: 'catch' });
+        pose(rv, th.tArr + 0.35, rvAt, faceTo(rvAt, [0, MOUND]), FPOSE.hold, { name: 'hold' });
+        play.ev.lob = { to: rv.pos, release: th.tRel, arrive: th.tArr };
+      }
     } else {
       for (const f of [B1, B2, SS, B3]) if (f !== X && flatDist(homeOf(f), at) < 22) arriveBy(f, stepToward(at, homeOf(f), 5), tc, FPOSE.stand, { faceTo: at, name: 'watch', look: 'ball' });
       if (r.type === 'pop') pose(P, FIELD_REACT.p, homeOf(P), faceTo(homeOf(P), at), FPOSE.point, { name: 'point' });
@@ -1314,6 +1371,14 @@ function buildPlay(r, o = {}) {
     }
     const ob = otherOF(O); arriveBy(ob, stepToward(homeOf(ob), wall, 12), over, FPOSE.stand, { faceTo: wall, name: 'watch', look: 'ball' });
     watchAll(0, [O, ob]);
+    // 투수: 공이 간 쪽으로 옆으로 돌아서서 보다가, 담장을 넘으면 무릎에 손을 짚고 고개를 숙인다(옆모습이라 홈 뒤 카메라에서 잘 보인다).
+    // SLUMP_HOLD초 뒤 천천히 일어나 고개를 숙인 채 선다
+    const pAt = homeOf(P), pFace = side < 0 ? Math.PI : 0, s0 = over + SLUMP_DELAY;
+    pose(P, FIELD_REACT.p, pAt, pFace, FPOSE.stand, { name: 'watch', look: 'ball' });
+    anim(P, s0, pAt, pFace, FTRACK.slump, SLUMP_LEN, { name: 'slump', look: 'down' });
+    pose(P, s0 + SLUMP_LEN, pAt, pFace, FPOSE.slump, { name: 'slump', look: 'down' });
+    anim(P, s0 + SLUMP_HOLD, pAt, pFace, FTRACK.rise, RISE_LEN, { name: 'rise', look: 'down' });
+    pose(P, s0 + SLUMP_HOLD + RISE_LEN, pAt, pFace, FPOSE.stand, { name: 'dejected', look: 'down' });
     reveal = Math.min(over, REVEAL_MAX); end = dur;
   } else {   // 파울: 공만 날아가고 수비는 바라본다
     seg(0, (t) => ({ ...flightPos(r, t), trail: true }));
@@ -1351,6 +1416,7 @@ function entrySpot(e, t) {
   return e.at;
 }
 function entryLook(play, e, at, t, f) {
+  if (e.look === 'down') return [Math.cos(e.face), -1.1, Math.sin(e.face)];   // 고개를 숙인다(홈런 맞은 투수)
   if (e.look !== 'ball' || !play) return null;
   let sg = play.segs[0];
   for (const q of play.segs) if (t >= q.t0) sg = q;
@@ -5754,6 +5820,11 @@ function drawTitle(time) {
 // 빨간 점(시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
+  { id: '2026-11-04c', label: '11/4 저녁', items: [
+    '투수 옆을 빠르게 지나는 땅볼에 투수가 움찔해요',
+    '외야수가 뜬공을 잡으면 내야수에게 공을 가볍게 던져 줘요',
+    '홈런을 맞으면 투수가 무릎에 손을 짚고 고개를 숙여요',
+  ] },
   { id: '2026-11-04b', label: '11/4', items: [   // 2026-11-04b: 외야 판정 두 줄을 더하며 id를 올려 이미 읽은 사람에게도 다시 점이 뜬다
     '끝내기 상황도 코인을 받아요(로그인하면). 친 공마다 10구 도전과 같은 점수, 이기면 보너스 10~30코인',
     '끝내기 상황 주루 플레이: 단타 때 2루 주자 홈 승부, 뜬공 태그업, 병살',

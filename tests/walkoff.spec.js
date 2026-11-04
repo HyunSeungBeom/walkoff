@@ -1649,7 +1649,7 @@ test.describe('수비', () => {
       const pl = walkoff.fieldPlay(r), tc = pl.ev.catch, cf = walkoff.DEFENSE.find((x) => x.pos === '중견수');
       const at = (t) => { const q = walkoff.fieldersAt(r, t).find((x) => x.f.pos === '중견수'); return { x: q.spot[0], z: q.spot[1], pose: q.pose }; };
       const glove = (t) => { const k = walkoff.actorSkeleton(pl, cf, t).hands.l; return { x: k[0], y: k[1], z: k[2] }; };
-      return { tc, reveal: pl.reveal, dur: walkoff.flightDuration(r), home: at(0), atCatch: { ball: pl.ball(tc), glove: glove(tc), cf: at(tc) }, later: { ball: pl.ball(tc + 1), glove: glove(tc + 1) } };
+      return { tc, reveal: pl.reveal, dur: walkoff.flightDuration(r), home: at(0), atCatch: { ball: pl.ball(tc), glove: glove(tc), cf: at(tc) }, later: { ball: pl.ball(tc + 0.6), glove: glove(tc + 0.6) } };   // 중계수에게 던져 주기(잡고 0.9초) 전
     });
     expect(d.reveal).toBeCloseTo(Math.min(d.tc, 2.6), 5);
     expect(d.tc).toBeLessThanOrEqual(d.dur);
@@ -2006,6 +2006,59 @@ test.describe('수비', () => {
     await page.evaluate(() => walkoff.startReplay());
     const spots = await page.evaluate(() => walkoff.fieldersNow().map((q) => [q.pose, Math.hypot(q.spot[0] - Math.sin(q.f.a * Math.PI / 180) * q.f.d, q.spot[1] - Math.cos(q.f.a * Math.PI / 180) * q.f.d)]));
     expect(spots.every(([pose, off]) => pose === 'ready' && off < 0.01)).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  test('수비 다듬기: 투수 옆을 빠르게 지나는 땅볼에 투수가 움찔하고(멀면 안 함), 뜬공을 잡은 외야수는 중계수에게 가볍게 던져 주고(내야 뜬공은 안 함), 홈런이면 투수가 무릎에 손을 짚었다가 일어난다', async ({ page }) => {
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const w = walkoff, P = w.DEFENSE.find((f) => f.pos === '투수'), F = (pos) => w.DEFENSE.find((f) => f.pos === pos), pHome = [0, 16.94];
+      const seq = w.makeSequence(1, w.pitcherHand(1) === 'L'), play = (i, dt) => { const r = w.judgeSwing(seq[i], dt, 'R'); return { r, pl: w.fieldPlay(r) }; };
+      const act = (pl, name) => pl.acts['투수'].find((e) => e.name === name), flat = (b, p) => Math.hypot(b.x - p[0], b.z - p[1]);
+      const gap = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      // 움찔: 유격수 땅볼(시드 1 일곱째 공 -25ms)은 투수 옆으로 지나간다. 가장 높이 뜬 때 공이 투수 옆을 지나고, 두 발이 뜨고, 글러브는 허리 아래로
+      const a = play(6, -25), fa = act(a.pl, 'flinch'), top = w.actorSkeleton(a.pl, P, fa.t0 + 0.18), land = w.actorSkeleton(a.pl, P, fa.t1 + 0.3);
+      const glove = top.mitt === 'r' ? top.hands.r : top.hands.l;
+      const flinch = { name: a.r.name, pass: flat(a.pl.ball(fa.t0 + 0.18), pHome), feet: [top.feet.l[1], top.feet.r[1]], gloveBelow: top.pelvis[1] - glove[1], landFeet: [land.feet.l[1], land.feet.r[1]] };
+      const farR = { kind: 'out', type: 'ground', spray: -13, dist: 40, ev: 120, la: 2, fielder: F('유격수') };   // 유격수 정면 땅볼은 투수에게서 4m 넘게 떨어져 지나간다
+      const far = !!act(w.fieldPlay(farR), 'flinch');
+      // 투수 옆 안타(시드 1 일곱째 공 -10ms): 움찔한 뒤 옆으로 돌아서서 빠져나간 공을 본다(전에는 숙인 자세로 굳었다)
+      const b = play(6, -10), fb = act(b.pl, 'flinch'), watchB = b.pl.acts['투수'].find((e) => e.t0 >= fb.t1 && e.name === 'watch');
+      // 가볍게 던져 주기: 좌익수 뜬공(시드 1 첫 공 -50ms)을 잡고 0.9초 넘게 지나 유격수에게 높게 던지고, 공은 유격수 글러브에 닿는다
+      const c = play(0, -50), L = c.pl.ev.lob, ss = w.actorSkeleton(c.pl, F(L.to), L.arrive + 0.05).hands.l, inGlove = c.pl.ball(L.arrive + 0.05);
+      let high = 0; for (let t = L.release; t <= L.arrive; t += 0.02) high = Math.max(high, c.pl.ball(t).y);
+      const lob = { name: c.r.name, to: L.to, wait: L.release - c.pl.ev.catch, flight: L.arrive - L.release, high, gap: gap([inGlove.x, inGlove.y, inGlove.z], ss) };
+      let pop = null;   // 내야 뜬공은 던져 주지 않는다
+      for (let i = 0; i < 16 && !pop; i++) for (let dt = -90; dt <= 90 && !pop; dt += 5) { const r = w.judgeSwing(seq[i], dt, 'R'); if (r.kind === 'out' && r.type === 'pop') pop = { lob: !!w.fieldPlay(r).ev.lob }; }
+      // 홈런(시드 1 첫 공 -10ms): 옆으로 돌아서서 보다가, 공이 담장을 넘으면 무릎에 손을 짚고 고개를 숙이고, 일어난 뒤에도 고개를 숙인 채 선다
+      const h = play(0, -10), watch = act(h.pl, 'watch'), st = w.actorSkeleton(h.pl, P, watch.t0 + 0.3), s = h.pl.acts['투수'].find((e) => e.name === 'slump' && !e.track), rise = act(h.pl, 'rise');   // st: 서서 공을 보는 때
+      const k = w.actorSkeleton(h.pl, P, s.t0 + 0.3), up = w.actorSkeleton(h.pl, P, rise.t1 + 0.3), over = h.pl.ball(s.t0 - 0.7 - 0.2);
+      const hr = { name: h.r.name, watchSide: Math.abs(Math.cos(watch.face)), overDist: Math.hypot(over.x, over.z), knees: [gap(k.hands.l, k.knees.l), gap(k.hands.r, k.knees.r)], drop: st.head[1] - k.head[1], down: k.head[1] - k.brim[1], upDrop: st.head[1] - up.head[1], upDown: up.head[1] - up.brim[1] };
+      return { flinch, far, b: { name: b.r.name, flinch: !!fb, watchSide: watchB ? Math.abs(Math.cos(watchB.face)) : 0 }, lob, pop, hr };
+    });
+    expect(d.flinch.name).toBe('유격수 땅볼');
+    expect(d.flinch.pass).toBeLessThan(2.2);   // 가장 높이 뜬 때 공이 투수 옆을 지난다
+    expect(Math.min(...d.flinch.feet)).toBeGreaterThan(0.2);   // 두 발이 뜬다
+    expect(d.flinch.gloveBelow).toBeGreaterThan(0.4);   // 글러브는 공 쪽 아래로
+    expect(Math.max(...d.flinch.landFeet)).toBeLessThan(0.08);   // 내려앉아 선다
+    expect(d.far).toBe(false);
+    expect(d.b).toEqual({ name: '중전 안타', flinch: true, watchSide: expect.any(Number) });
+    expect(d.b.watchSide).toBeGreaterThan(0.99);   // 옆으로 돌아선다(홈을 보던 데서 90도)
+    expect(d.lob.name).toBe('좌익수 뜬공');
+    expect(d.lob.to).toBe('유격수');
+    expect(d.lob.wait).toBeGreaterThan(0.9);
+    expect(d.lob.flight).toBeGreaterThan(1.2);   // 가볍게(외야 송구보다 느리게, 높게)
+    expect(d.lob.high).toBeGreaterThan(2.5);
+    expect(d.lob.gap).toBeLessThan(0.05);   // 유격수 글러브에 닿는다
+    expect(d.pop).toEqual({ lob: false });
+    expect(d.hr.name).toBe('좌중월 홈런');
+    expect(d.hr.watchSide).toBeGreaterThan(0.99);   // 옆으로 돌아서서 본다
+    expect(d.hr.overDist).toBeGreaterThan(100);   // 공이 담장을 넘은 뒤에 숙인다
+    expect(Math.max(...d.hr.knees)).toBeLessThan(0.15);   // 두 손이 무릎에
+    expect(d.hr.drop).toBeGreaterThan(0.35);   // 숙였다
+    expect(d.hr.down).toBeGreaterThan(0.05);   // 고개를 숙인다
+    expect(d.hr.upDrop).toBeLessThan(0.08);   // 일어났다
+    expect(d.hr.upDown).toBeGreaterThan(0.05);   // 일어나도 고개는 숙인 채
     expect(errors).toEqual([]);
   });
 });
