@@ -124,9 +124,9 @@ export default {
       if (url.pathname === '/auth/kakao/callback' && method === 'GET') return await loginCallback(url, env, now);
       // 이용 통계(stats.js). 게임은 sendBeacon으로 보내서 본문이 text/plain으로 온다. 로그인은 보지 않는다
       if (url.pathname === '/events' && method === 'POST') {
-        const checked = validateEvent(await request.text().then((t) => JSON.parse(t)).catch(() => null));
+        const checked = validateEvent(await request.text().then((t) => JSON.parse(t)).catch(() => null), kstDay(now));
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
-        await recordEvent(env.DB, checked.value, kstDay(now));
+        await recordEvent(env.DB, checked.value);
         return new Response(null, { status: 204, headers: HEADERS });
       }
 

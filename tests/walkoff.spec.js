@@ -2160,9 +2160,13 @@ test.describe('이용 통계', () => {
       navigator.sendBeacon = (url, body) => { window.__beacons.push({ url, body: JSON.parse(body) }); return true; };
     }, human);
   }
+  const beacons = (page) => page.evaluate(() => window.__beacons);
+  const leave = (page) => page.evaluate(() => window.dispatchEvent(new Event('pagehide')));   // 창을 닫거나 다른 앱으로 갈 때
 
-  test('사람이 친 판은 시작과 끝을 보내고, 기기 번호·모드·시작끝·터치 여부 말고는 보내지 않는다', async ({ page }) => {
-    const { MODES } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
+  // 2026-11-04부터 판 시작·끝을 모아 두었다가 묶음 하나로 보낸다(js/infra/stats.js, 서버 하루 요청·DB 쓰기 한도 때문)
+  test('사람이 친 판은 시작·끝을 모아 화면을 떠날 때 묶음 하나로 보내고, 기기 번호·날짜·모드별 수·터치 여부 말고는 보내지 않는다', async ({ page }) => {
+    const { MODES, validateEvent } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
+    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
     await catchBeacons(page, { human: true });
     const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
     await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝나게
@@ -2170,34 +2174,55 @@ test.describe('이용 통계', () => {
     await page.keyboard.press('Space');
     await page.waitForFunction(() => walkoff.game.state === 'over');
     for (const mode of ['scenario', 'practice']) await page.evaluate((m) => walkoff.startGame(m), mode);   // 다른 모드는 시작만(오늘의 10구는 없앴다)
-    const beacons = await page.evaluate(() => window.__beacons);
-    expect(beacons.map((b) => [b.url, b.body.mode, b.body.type])).toEqual([
-      [`${API}/events`, 'challenge', 'start'], [`${API}/events`, 'challenge', 'end'],
-      [`${API}/events`, 'scenario', 'start'], [`${API}/events`, 'practice', 'start'],
-    ]);
-    for (const b of beacons) {
-      expect(Object.keys(b.body).sort()).toEqual(['device', 'mobile', 'mode', 'type']);
-      expect(MODES).toContain(b.body.mode);   // 서버(worker/src/stats.js)가 받는 모드만 보낸다
-    }
+    expect(await beacons(page)).toEqual([]);   // 판마다 보내지 않는다
+    await leave(page);
+    const sent = await beacons(page);
+    expect(sent.map((b) => b.url)).toEqual([`${API}/events`]);
+    const body = sent[0].body, today = kstDay(Date.now());
+    expect(Object.keys(body).sort()).toEqual(['counts', 'day', 'device', 'mobile']);
+    expect(body.day).toBe(today);
+    expect(body.counts).toEqual({ challenge: { starts: 1, ends: 1 }, scenario: { starts: 1, ends: 0 }, practice: { starts: 1, ends: 0 } });
+    for (const mode of Object.keys(body.counts)) expect(MODES).toContain(mode);   // 서버(worker/src/stats.js)가 받는 모드만 보낸다
+    expect(validateEvent(body, today)).toMatchObject({ ok: true, value: { n: 4 } });   // 서버가 그대로 받는 모양이다
     const ids = await page.evaluate(() => ({ device: localStorage.getItem('walkoff.device'), player: walkoff.settings.playerId }));
     expect(ids.device).toMatch(/^[a-z0-9-]{8,40}$/);
-    expect(beacons.every((b) => b.body.device === ids.device)).toBe(true);
+    expect(body.device).toBe(ids.device);
     expect(ids.device).not.toBe(ids.player);   // 랭킹 ID와 다른 번호라 통계와 랭킹이 이어지지 않는다
+    await leave(page);
+    expect((await beacons(page)).length).toBe(1);   // 보낸 묶음은 비웠다
+    expect(await page.evaluate(() => localStorage.getItem('walkoff.statsQueue'))).toBe(null);
     expect(errors).toEqual([]);
+  });
+
+  test('20개가 쌓이면 화면을 떠나기 전에도 보내고, 못 보낸 묶음(보내기가 막혔거나 창을 갑자기 닫음)은 다음에 열 때 보낸다', async ({ page }) => {
+    await catchBeacons(page, { human: true });
+    await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    for (let i = 0; i < 21; i++) await page.evaluate(() => walkoff.startGame('practice'));
+    expect((await beacons(page)).map((b) => b.body.counts)).toEqual([{ practice: { starts: 20, ends: 0 } }]);
+    for (let i = 0; i < 2; i++) await page.evaluate(() => walkoff.startGame('scenario'));   // 남은 연습 1 + 끝내기 2는 기기에 적혀 있다
+    await page.evaluate(() => { navigator.sendBeacon = () => false; });   // 떠날 때 보내기가 막혔다(새로고침도 떠나는 신호를 내서 막아야 남는다)
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    expect((await beacons(page)).map((b) => b.body.counts)).toEqual([{ practice: { starts: 1, ends: 0 }, scenario: { starts: 2, ends: 0 } }]);
+    expect(await page.evaluate(() => localStorage.getItem('walkoff.statsQueue'))).toBe(null);
   });
 
   test('자동 브라우저(테스트, 봇)는 세지 않는다', async ({ page }) => {
     await catchBeacons(page, { human: false });
     await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
     await page.evaluate(() => walkoff.startGame('challenge'));
-    expect(await page.evaluate(() => window.__beacons)).toEqual([]);
+    await leave(page);
+    expect(await beacons(page)).toEqual([]);
+    expect(await page.evaluate(() => localStorage.getItem('walkoff.statsQueue'))).toBe(null);
   });
 
   test('이 컴퓨터에서 연 게임(?api 없이)은 세지 않는다', async ({ page }) => {
     await catchBeacons(page, { human: true });
     await open(page);
     await page.evaluate(() => walkoff.startGame('challenge'));
-    expect(await page.evaluate(() => window.__beacons)).toEqual([]);
+    await leave(page);
+    expect(await beacons(page)).toEqual([]);
+    expect(await page.evaluate(() => localStorage.getItem('walkoff.statsQueue'))).toBe(null);
   });
 });
 

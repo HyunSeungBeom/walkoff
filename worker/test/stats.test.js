@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { kstDay, addDays } from '../src/rules.js';
-import { EVENT_CAP, STATS_SQL } from '../src/stats.js';
+import { BATCH_MAX, EVENT_CAP, LATE_DAYS, STATS_SQL } from '../src/stats.js';
 import { memoryD1 } from './d1.js';
 
 // 게임이 sendBeacon으로 보내는 것처럼 text/plain 본문으로 보낸다
@@ -68,4 +68,59 @@ test('npm run stats 표: 최근 7일만, 날짜마다 한 줄', async () => {
     날짜: today, 기기: 2, '터치 기기': 1, '시작한 판': 3, '끝낸 판': 1,
     '10구 도전': 1, '끝내기 상황': 1, 연습: 0,
   }]);
+});
+
+// 게임이 모아 보내는 묶음(2026-11-04, js/infra/stats.js): { device, mobile, day, counts: { 모드: { starts, ends } } }
+const batch = (patch) => ({ device: 'd-device-0001', mobile: true, day: kstDay(Date.now()), counts: { challenge: { starts: 12, ends: 3 }, scenario: { starts: 2, ends: 1 } }, ...patch });
+
+test('이용 통계 묶음: 모드별 시작·끝을 한 번에 더하고, 기기의 그날 신호 수에도 묶음 수만큼 더한다', async () => {
+  const env = { DB: memoryD1() }, today = kstDay(Date.now());
+  assert.equal((await send(env, batch())).status, 204);
+  assert.equal((await send(env, ev())).status, 204);   // 예전 게임의 한 건도 같이 받는다
+  assert.equal((await send(env, batch({ counts: { practice: { starts: 1, ends: 0 }, scenario: { starts: 0, ends: 0 } } }))).status, 204);   // 0인 모드는 건너뛴다
+  assert.deepEqual(env.DB.rows('SELECT day, mode, starts, ends FROM play_stats ORDER BY mode'), [
+    { day: today, mode: 'challenge', starts: 13, ends: 3 },
+    { day: today, mode: 'practice', starts: 1, ends: 0 },
+    { day: today, mode: 'scenario', starts: 2, ends: 1 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT device, mobile, events FROM play_devices'), [{ device: 'd-device-0001', mobile: 1, events: 20 }]);
+});
+
+test(`이용 통계 묶음: 모은 날로 세되 서버 날짜보다 뒤면 오늘로, ${LATE_DAYS}일 넘게 지난 묶음은 받지 않는다`, async () => {
+  const env = { DB: memoryD1() }, today = kstDay(Date.now()), one = { challenge: { starts: 1, ends: 0 } };
+  for (const [day, status] of [[addDays(today, -1), 204], [addDays(today, -LATE_DAYS), 204], [addDays(today, 1), 204], [addDays(today, -LATE_DAYS - 1), 400], ['bad', 204]]) {
+    assert.equal((await send(env, batch({ day, counts: one }))).status, status, day);
+  }
+  assert.deepEqual(env.DB.rows('SELECT day, starts FROM play_stats ORDER BY day'), [
+    { day: addDays(today, -LATE_DAYS), starts: 1 }, { day: addDays(today, -1), starts: 1 }, { day: today, starts: 2 },   // 내일·모양이 틀린 날짜는 오늘로
+  ]);
+});
+
+test('이용 통계 묶음: 규칙에 없는 묶음은 거절하고 세지 않는다', async () => {
+  const env = { DB: memoryD1() };
+  const bad = [
+    [batch({ counts: [] }), 'bad_counts'],
+    [batch({ counts: null }), 'bad_counts'],
+    [batch({ counts: { ranked: { starts: 1, ends: 0 } } }), 'bad_mode'],
+    [batch({ counts: { challenge: { starts: -1, ends: 2 } } }), 'bad_counts'],
+    [batch({ counts: { challenge: { starts: 1.5, ends: 0 } } }), 'bad_counts'],
+    [batch({ counts: { challenge: { starts: '3', ends: 0 } } }), 'bad_counts'],
+    [batch({ counts: { challenge: { starts: 0, ends: 0 } } }), 'bad_counts'],   // 빈 묶음
+    [batch({ counts: { challenge: { starts: BATCH_MAX, ends: 1 } } }), 'bad_counts'],
+    [batch({ device: 'x' }), 'bad_device'],
+  ];
+  for (const [body, error] of bad) {
+    const r = await send(env, body);
+    assert.deepEqual([r.status, (await r.json()).error], [400, error], JSON.stringify(body.counts));
+  }
+  assert.equal(env.DB.rows('SELECT * FROM play_stats').length, 0);
+  assert.equal(env.DB.rows('SELECT * FROM play_devices').length, 0);
+});
+
+test(`이용 통계 묶음: 그날 ${EVENT_CAP}번을 넘긴 기기의 묶음은 세지 않는다`, async () => {
+  const env = { DB: memoryD1() };
+  await send(env, batch());
+  await env.DB.prepare('UPDATE play_devices SET events = ?').bind(EVENT_CAP).run();
+  assert.equal((await send(env, batch())).status, 204);
+  assert.deepEqual(env.DB.rows('SELECT mode, starts FROM play_stats ORDER BY mode'), [{ mode: 'challenge', starts: 12 }, { mode: 'scenario', starts: 2 }]);
 });

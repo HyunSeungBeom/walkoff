@@ -3,10 +3,17 @@
 // 자동 브라우저(테스트, navigator.webdriver)와 이 컴퓨터에서 연 게임은 빼고, ?api=로 서버를 바꿔 열면 그 서버로 보낸다.
 // 결과는 worker 폴더에서 npm run stats
 // (2026-11-04 코드 나누기 3단계에서 main.js에서 옮김)
+// 모아 보내기(2026-11-04): 판 시작·끝마다 보내던 신호가 서버 하루 요청의 65%, DB 쓰기의 60%라 무료 한도(요청·쓰기 하루 10만)에 먼저 걸려서,
+// 날짜별로 모드마다 센 묶음 { device, mobile, day, counts: { 모드: { starts, ends } } }을 화면을 떠날 때·20개가 쌓일 때·날짜가 바뀔 때 보낸다.
+// 묶음은 저장소에도 적어 두어, 창을 갑자기 닫아 못 보낸 것은 다음에 열 때 보낸다(서버는 이틀 전 것까지 받는다)
 import { RANKING_API } from './api.js';
 import { store } from './store.js';
 
 const STATS_ON = !navigator.webdriver && (location.hostname === 'hyunseungbeom.github.io' || new URLSearchParams(location.search).has('api'));
+const FLUSH_EVENTS = 20, QUEUE_KEY = 'statsQueue';
+const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);   // 서버(worker/src/rules.js kstDay)와 같은 한국 시간 날짜
+let queue = null;   // { day, counts, n }. 저장소를 못 쓰는 브라우저(사생활 보호 모드)도 이 판 동안은 모아 보낸다
+
 function ensureDeviceId() {
   const saved = String(store.get('device', ''));
   if (/^[a-z0-9-]{8,40}$/.test(saved)) return saved;
@@ -14,11 +21,34 @@ function ensureDeviceId() {
   store.set('device', id);
   return id;
 }
+
+// 모은 묶음을 보낸다. 보내기를 받아 주면(sendBeacon이 true) 비우고, 못 보내면 남겨 두었다가 다음에 다시 보낸다
+function flush(q = queue) {
+  if (!q?.n) return;
+  try {
+    const body = JSON.stringify({ device: ensureDeviceId(), mobile: matchMedia('(pointer: coarse)').matches, day: q.day, counts: q.counts });
+    if (!navigator.sendBeacon(`${RANKING_API}/events`, body)) return;
+  } catch { return; /* 통계를 못 보내도 게임은 그대로 */ }
+  if (q === queue) queue = null;
+  store.remove(QUEUE_KEY);
+}
+
 // type은 'start'(판 시작)·'end'(판 끝), mode는 그 판의 모드
 export function track(type, mode) {
   if (!STATS_ON) return;
-  try {
-    const body = JSON.stringify({ device: ensureDeviceId(), mode, type, mobile: matchMedia('(pointer: coarse)').matches });
-    navigator.sendBeacon(`${RANKING_API}/events`, body);
-  } catch { /* 통계를 못 보내도 게임은 그대로 */ }
+  const day = kstDay();
+  if (queue && queue.day !== day) { flush(); queue = null; }   // 날짜가 바뀌면 지난날 묶음을 먼저 보낸다(못 보내면 버린다)
+  queue ??= { day, counts: {}, n: 0 };
+  const c = (queue.counts[mode] ??= { starts: 0, ends: 0 });
+  c[type === 'start' ? 'starts' : 'ends'] += 1;
+  queue.n += 1;
+  store.set(QUEUE_KEY, queue);
+  if (queue.n >= FLUSH_EVENTS) flush();
+}
+
+if (STATS_ON) {
+  const left = store.get(QUEUE_KEY, null);   // 지난번에 못 보낸 묶음(창을 갑자기 닫았거나 보내기가 막혔을 때)
+  if (left?.n > 0 && left.counts) flush(left);
+  addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+  addEventListener('pagehide', () => flush());
 }
