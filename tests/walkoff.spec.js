@@ -31,6 +31,7 @@ const SAMPLE_RANKING = {
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
+  const { replayScenario, WIN_BONUS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'scenario.js')).href);
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
   const calls = [], tickets = [];
@@ -44,7 +45,18 @@ async function mockApi(page, opts = {}) {
       return new Promise((done) => setTimeout(done, 300)).then(() => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>kakao</title>' }));
     }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
-    if (['/seeds', '/me', '/scores', '/shop/buy', '/shop/equip'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (['/seeds', '/me', '/scores', '/scenario', '/shop/buy', '/shop/equip'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (url.pathname === '/scenario') {   // 끝내기 상황: 실제 서버 코드(replayScenario)로 표의 시드로 판을 다시 돌려 끝·점수를 정하고 코인을 준다
+      if (opts.scenarioFail) return reply({ ok: false, error: 'server_error' }, 500);
+      const { token, bats, moves } = JSON.parse(req.postData() || '{}'), ticket = tickets.find((t) => t.token === token);
+      if (!ticket || ticket.used) return reply({ ok: false, error: ticket ? 'seed_used' : 'bad_seed' }, 400);
+      ticket.used = true;
+      const g = replayScenario(ticket.seed, moves, bats);
+      if (!g) return reply({ ok: false, error: 'replay_mismatch' }, 400);
+      const bonus = g.end === 'win' ? WIN_BONUS[g.k] ?? 0 : 0, earned = Math.floor(g.points / 100) + bonus;
+      shop.coins += earned;
+      return reply({ ok: true, end: g.end, points: g.points, earned, bonus, coins: shop.coins });
+    }
     if (url.pathname === '/seeds') {
       if (opts.seedFail) return reply({ ok: false, error: 'server_error' }, 500);
       const t = { token: `00000000-0000-4000-8000-${String(tickets.length + 1).padStart(12, '0')}`, seed: opts.seed ?? 42 };
@@ -708,6 +720,63 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label.startsWith('이번 주 최고 ')));
     expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toContain(`이번 주 최고 ${(second.score + 1000).toLocaleString()}점 · 3위 · 랭킹 보기 ›`);
     expect(sentScores(errors).map((c) => c.body.token)).toEqual(errors.calls.tickets.slice(0, 2).map((t) => t.token));   // 판마다 새 시드
+    expect(errors).toEqual([]);
+  });
+
+  // 끝내기 상황 한 판을 끝까지 친다(공마다 공이 오는 때에 휘두르고, 결과가 나오면 다음 공). 끝날 때의 요약과 남긴 moves를 돌려준다
+  const playScenario = (page) => page.evaluate(() => {
+    const w = walkoff, g = w.game;
+    w.startGame('scenario'); w.paused = true;
+    for (let k = 0; k < 120000 && g.state !== 'over'; k++) {
+      if (g.state === 'pitch' && g.swingAt == null) { const p = g.seq[g.i]; if (w.ballTime() + 1 / 60 >= p.T) w.swing(g.clockAt + Math.max(0, p.T - w.ballTime()) * 1000); }
+      if (g.state === 'result' && g.resultT > g.revealAt + 1.5 && g.flightT > (g.outcome.hit ? w.fieldPlay(g.outcome).end + 1 : 0)) w.tap(g.clockAt);
+      g.clockAt += 1000 / 60; w.update(1 / 60);
+    }
+    w.paused = false;
+    return { state: g.state, end: g.summary?.end, score: g.summary?.score, moves: g.moves.slice(), pitches: g.seq.length, token: g.ticket?.token ?? null };
+  });
+  const sentScenarios = (errors) => errors.calls.filter((c) => c.method === 'POST' && c.path === '/scenario');
+
+  test('끝내기 코인: 로그인하고 친 끝내기는 서버 시드로 치고, 끝나면 공마다 휘두른 때를 보내 서버가 다시 돌린 끝·점수가 게임과 같고, 받은 코인이 끝 화면과 지갑에 들어간다', async ({ page }) => {
+    const errors = await open(page, '', { login: true });
+    await seedReady(page);
+    const g = await playScenario(page);
+    expect(g.state).toBe('over');
+    expect(g.token).toBe(errors.calls.tickets[0].token);
+    expect(g.moves).toHaveLength(g.pitches);   // 공마다 하나(휘두르면 ms, 지켜보면 null)
+    await page.waitForFunction(() => walkoff.game.scnCoin?.status === 'ok');
+    expect(sentScenarios(errors).map((c) => c.body)).toEqual([{ token: g.token, bats: 'R', moves: g.moves }]);
+    // 가짜 서버는 실제 서버 코드(replayScenario)로 판을 다시 돌려 끝·점수를 정한다. 게임과 다르면 replay_mismatch로 거절해 status가 ok가 안 된다
+    const { replayScenario, WIN_BONUS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'scenario.js')).href), rep = replayScenario(42, g.moves, 'R');
+    expect(rep).toMatchObject({ end: g.end, points: g.score });
+    const bonus = g.end === 'win' ? WIN_BONUS[rep.k] : 0, earned = Math.floor(g.score / 100) + bonus;
+    expect(await page.evaluate(() => ({ coin: walkoff.game.scnCoin, wallet: walkoff.wallet.coins }))).toEqual({ coin: { status: 'ok', earned, bonus }, wallet: earned });
+    const texts = await drawnTexts(page);
+    expect(texts).toContain(`점수 ${g.score.toLocaleString()} · +${earned}코인${bonus ? ` (승리 보너스 ${bonus})` : ''}`);
+    expect(errors).toEqual([]);
+  });
+
+  test('끝내기 코인: 서버 오류면 남겨 두고 다음에 열 때 다시 보낸다. 로그인 안 하고 친 판은 보내지 않고 로그인하라는 줄', async ({ page }) => {
+    const api = { scenarioFail: true };
+    const errors = await open(page, '', { login: true, api });
+    await seedReady(page);
+    const g = await playScenario(page);
+    await page.waitForFunction(() => walkoff.game.scnCoin?.status === 'error');
+    expect(await drawnTexts(page)).toContain(`점수 ${g.score.toLocaleString()} · 연결하지 못해 다음에 열 때 보낼게요`);
+    expect(JSON.parse(await page.evaluate(() => localStorage.getItem('walkoff.scnPending')))).toEqual({ token: g.token, bats: 'R', moves: g.moves });
+    api.scenarioFail = false;
+    await page.reload(); await page.waitForFunction(() => !!window.walkoff);
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('walkoff.scnPending'))).toBeNull();
+    expect(sentScenarios(errors).map((c) => c.body.token)).toEqual([g.token, g.token]);
+    const { replayScenario, WIN_BONUS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'scenario.js')).href), rep = replayScenario(42, g.moves, 'R');
+    expect(await page.evaluate(() => walkoff.wallet.coins)).toBe(Math.floor(g.score / 100) + (rep.end === 'win' ? WIN_BONUS[rep.k] : 0));
+    // 로그아웃하고 친 판: 시드를 받지 않고 보내지 않는다
+    await page.evaluate(() => { localStorage.removeItem('walkoff.session'); });
+    await page.reload(); await page.waitForFunction(() => !!window.walkoff);
+    const before = sentScenarios(errors).length, h = await playScenario(page);
+    expect(h.token).toBeNull();
+    expect(sentScenarios(errors)).toHaveLength(before);
+    expect(await drawnTexts(page)).toContain(`점수 ${h.score.toLocaleString()} · 카카오로 로그인하면 코인을 받아요 ›`);
     expect(errors).toEqual([]);
   });
 

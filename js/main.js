@@ -9,7 +9,7 @@ import {
   RUN_REACH, RUN_TO_1B, SET_REACH, smoothRoute, sprintDist, sprintTime, TOSS_STEP,
 } from './core/race.js';
 import { FAIR_MS, FOUL_MS, hrExtra, hrLiftK, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
-import { applyScenario as applyScenarioIn, HOME_PLATE, HOME_THROW, leadAt, makeScenario as makeScenarioIn, RUN_JUMP, SCENARIOS, RUN_TAU, RUNNER_ROUTES, scenarioPitch, SLIDE_BRAKE as BASE_SLIDE, TAG_TIME } from './core/scenario.js';
+import { applyScenario as applyScenarioIn, HOME_PLATE, HOME_THROW, leadAt, makeScenario as makeScenarioIn, RUN_JUMP, SCENARIOS, RUN_TAU, RUNNER_ROUTES, scenarioPitch, scenarioPoints, SLIDE_BRAKE as BASE_SLIDE, TAG_TIME } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos, interceptRoll, rollPath, THROW_OUT } from './core/flight.js';
 import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
 import { labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, zoneOffText } from './view/text.js';
@@ -4595,7 +4595,8 @@ function applyScenario(s, r) { return scenarioMessage(s, applyScenarioIn(s, r));
 function finishScenario() {
   const s = game.scn;
   Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
-  game.summary = { end: s.end, away: s.away, home: s.home, pa: s.pa.join(''), pitches: game.seq.length, label: s.label, bats: settings.bats };
+  game.summary = { end: s.end, away: s.away, home: s.home, pa: s.pa.join(''), pitches: game.seq.length, label: s.label, bats: settings.bats, score: game.score };
+  submitScenario();
   const ss = store.get('scnStats', { plays: 0, wins: 0 });
   store.set('scnStats', { plays: ss.plays + 1, wins: ss.wins + (s.end === 'win' ? 1 : 0) });
   prepareShareCard();
@@ -4621,6 +4622,12 @@ function drawScenarioOver() {
   text(`타석 ${pa.length} · 안타 ${cnt('G')} · 볼넷 ${cnt('Y')} · 투구 ${s.pitches}개`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
   y += m ? 24 : 28;
   text(`처음 상황: ${s.label}`, cx, y, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.6)' });
+  y += m ? 26 : 30;
+  // 점수와 받은 코인. 로그인 안 했으면 로그인하라는 줄(누르면 카카오 로그인)
+  const c = game.scnCoin, coin = !loggedIn() ? '카카오로 로그인하면 코인을 받아요 ›' : c?.status === 'ok' ? `+${c.earned.toLocaleString()}코인${c.bonus > 0 ? ` (승리 보너스 ${c.bonus})` : ''}` : c?.status === 'sending' ? '코인 받는 중…' : c?.status === 'error' ? '연결하지 못해 다음에 열 때 보낼게요' : c ? '이 판은 코인을 받지 못했어요' : '';
+  const line = `점수 ${(s.score ?? 0).toLocaleString()}${coin ? ` · ${coin}` : ''}`;
+  text(line, cx, y, { size: m ? 14 : 16, weight: 700, color: c?.status === 'ok' ? '#f2c94c' : 'rgba(255,255,255,0.85)' });
+  if (!loggedIn()) addButton({ x: cx - 160, y: y - 16, w: 320, h: 32 }, '끝내기 로그인 줄', 'none', startKakaoLogin);
   y += m ? 30 : 36;
   drawBatsToggle(y + 19);
   y += 38 + 18;
@@ -4897,6 +4904,39 @@ async function submitScore(s, mode) {
   } else game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error };
 }
 
+// 끝내기 상황 코인(2026-11-04 사용자 결정 '이기면 코인, 서버 검증'): 로그인하고 서버 시드로 친 판이 끝나면 공마다 휘두른 때(moves)를 보낸다.
+// 서버가 같은 core로 판을 다시 돌려 점수의 1/100 + 이기면 상황별 보너스를 준다(응답 earned는 이번에 받은 코인, coins는 지갑 합계).
+// 네트워크·서버 오류면 이 브라우저에 남겨 두고 다음에 열 때 다시 보낸다(서버 표는 사흘 간다). 서버가 거절한 판(400)은 버린다
+async function postScenario(body) {
+  const res = await api('/scenario', { method: 'POST', body });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+async function submitScenario() {
+  if (!loggedIn() || !game.ticket) return;
+  const body = { token: game.ticket.token, bats: settings.bats, moves: game.moves };
+  store.set('scnPending', body);
+  game.scnCoin = { status: 'sending' };
+  let res;
+  try { res = await postScenario(body); } catch { res = { status: 0, data: {} }; }
+  const { status, data } = res;
+  if (status === 401) { logout('expired'); return; }   // 남겨 둔 판은 다시 로그인하면 보낸다
+  if (status > 0 && status < 500 && store.get('scnPending', null)?.token === body.token) store.remove('scnPending');
+  if (status === 200 && data.ok) {
+    setWallet({ coins: data.coins });
+    game.scnCoin = { status: 'ok', earned: data.earned ?? 0, bonus: data.bonus ?? 0 };
+  } else game.scnCoin = { status: status === 400 ? 'rejected' : 'error', error: data.error };
+}
+async function resendScenario() {
+  const body = store.get('scnPending', null);
+  if (!body || typeof body !== 'object' || !body.token || !loggedIn()) return;
+  try {
+    const { status, data } = await postScenario(body);
+    if (status === 401) return;
+    if (status < 500) store.remove('scnPending');
+    if (status === 200 && data.ok) { setWallet({ coins: data.coins }); if (data.earned > 0) toast(`끝내기 상황 코인 +${data.earned}`); }
+  } catch { /* 다음에 열 때 다시 */ }
+}
+
 // 로그인하거나 다시 열었을 때 남겨 둔 판을 보낸다
 async function resendPending() {
   const d = await sendPending();
@@ -5134,6 +5174,7 @@ async function syncAccount() {
     if (auth.fresh) toast(msg);
     auth.fresh = false;
     await resendPending();
+    await resendScenario();
   } catch { /* 네트워크 오류면 다음에 열 때 다시 맞춘다 */ }
 }
 
@@ -6132,7 +6173,7 @@ const seedFromUrl = () => urlSeed() ?? (Date.now() % 2147483647);
 // mode: 'challenge'(10구 도전, 매번 다른 공) | 'scenario'(끝내기 상황) | 'practice'(연습)
 // 로그인한 10구 도전은 서버가 내준 시드로 친다. 받아 둔 것이 없으면(막 열었을 때) 받을 때까지 잠깐 기다리고, 그동안 누른 것은 받지 않는다
 function startGame(mode, waited = false) {
-  const ranked = mode === 'challenge' && loggedIn() && urlSeed() == null;
+  const ranked = (mode === 'challenge' || mode === 'scenario') && loggedIn() && urlSeed() == null;   // 끝내기 상황도 서버 시드로 쳐야 코인을 받는다(2026-11-04)
   if (ranked && !waited && prefetchSeed() && !seedTicket.ready) {   // prefetchSeed는 받아 둔 것이 없거나 오래됐으면 새로 받기 시작한다
     const from = game.state, slow = setTimeout(() => toast('공을 받는 중…'), 400);
     game.waitingSeed = true;
@@ -6148,7 +6189,7 @@ function startGame(mode, waited = false) {
   game.ticket = ranked ? takeSeedTicket() : null;
   game.fixedSeed = mode === 'challenge' && urlSeed() != null;
   game.seed = game.ticket?.seed ?? seedFromUrl();
-  Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0, recorded: false });
+  Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0, recorded: false, moves: [], scnCoin: null });
   game.throws = pitcherHand(game.seed);
   game.opponent = pickOpponent(game.seed);
   game.rankInfo = null;
@@ -6184,6 +6225,7 @@ function swing(eventTime) {
   const bt = ballTime() + Math.max(0, (eventTime - game.clockAt) / 1000);
   game.swingAt = bt;
   const dtMs = Math.round((bt - p.T) * 1000 - settings.offset);
+  if (game.mode === 'scenario') game.moves[game.i] = dtMs;
   const r = judgeSwing(p, dtMs, settings.bats);
   if (game.mode === 'challenge' && r.hit) {   // 연속 홈런·연속 안타 보너스 중 큰 쪽 하나
     const hits = hitStreakBefore(game.i) + 1, hb = hitStreakBonus(hits);
@@ -6219,7 +6261,8 @@ function finish(r) {
     const pr = game.practice;
     if (!r.took) { pr.swings++; pr.sumAbs += Math.min(Math.abs(r.dt), 300); if (r.perfect) pr.perfect++; }
   } else if (game.mode === 'scenario') {
-    game.gained = 0;
+    game.gained = scenarioPoints(r);   // 10구와 같은 점수(볼·연속 보너스·2배는 없다, core scenarioPoints)
+    game.score += game.gained;
     game.scnBefore = JSON.parse(JSON.stringify(game.scn));   // 결과 글자 전까지는 공이 맞기 전 상황판을 그린다
     game.scnEvent = applyScenario(game.scn, r);
     game.scnWinT = game.scn.end === 'win' ? walkoffTime(r) : null;   // 끝내기 승리면 이긴 점수가 홈을 밟을 때 끝 화면으로(update)
@@ -6305,7 +6348,7 @@ function update(dt) {
   const p = game.seq[game.i];
 
   if (game.state === 'windup' && ballTime() >= 0) { game.state = 'pitch'; Sound.release(); }
-  if (game.state === 'pitch' && game.swingAt == null && ballTime() > p.T + FOUL_MS / 1000) finish(judgeTake(p));
+  if (game.state === 'pitch' && game.swingAt == null && ballTime() > p.T + FOUL_MS / 1000) { if (game.mode === 'scenario') game.moves[game.i] = null; finish(judgeTake(p)); }
   if ((game.state === 'pitch' || game.state === 'result') && !hasBattedBall() && !game.mittDone && ballTime() > p.T * 1.05) {
     game.mittDone = true; Sound.mitt();
   }

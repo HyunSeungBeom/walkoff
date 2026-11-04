@@ -14,6 +14,7 @@ export const game = {
   left: 0, extra: 0, lastChance: false,   // 10구 모드: 남은 기회, 볼로 얻은 추가 기회, 지금 공이 마지막 기회인지
   opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
   ticket: null, fixedSeed: false, waitingSeed: false, recorded: false,   // 이번 판에 쓴 서버 시드, 주소의 ?seed=로 친 판인지, 서버 시드를 기다리는 중인지, 이번 판을 기록했는지
+  moves: [], scnCoin: null,   // 끝내기 상황: 공마다 휘두른 때(ms, 지켜보면 null. 서버가 판을 다시 돌린다), 판 끝에 받은 코인({ status, earned })
 };
 
 // 좌타/우타, 타이밍 보정(ms), 팀·닉네임, 랭킹에서 이 브라우저를 구별하는 ID, 진동. 아래는 저장소를 못 읽을 때의 기본값이다
