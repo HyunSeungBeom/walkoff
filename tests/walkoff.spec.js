@@ -817,8 +817,8 @@ test.describe('화면', () => {
     expect(await page.evaluate(() => walkoff.news.scroll)).toBe(120);
     await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 5000, cancelable: true })));
     expect(await page.evaluate(() => walkoff.news.scroll === walkoff.news.max)).toBe(true);
-    const box = await page.locator('canvas').boundingBox();   // 끌어 내리면 다시 위로
-    await page.mouse.move(box.x + 180, box.y + 150); await page.mouse.down(); await page.mouse.move(box.x + 180, box.y + 600, { steps: 6 }); await page.mouse.up();
+    const box = await page.locator('canvas').boundingBox();   // 끌어 내리면 다시 위로(맨 위에서 더 끌어도 0). 넘길 길이는 글꼴과 소식 수에 따라 450px를 넘을 수 있어 세 번 끈다(CI 우분투 글꼴에서 608px)
+    for (let i = 0; i < 3; i++) { await page.mouse.move(box.x + 180, box.y + 150); await page.mouse.down(); await page.mouse.move(box.x + 180, box.y + 600, { steps: 6 }); await page.mouse.up(); }
     expect(await page.evaluate(() => ({ scroll: walkoff.news.scroll, state: walkoff.game.state }))).toEqual({ scroll: 0, state: 'news' });
     await page.reload(); await page.waitForFunction(() => !!window.walkoff);
     expect(await page.evaluate(() => walkoff.newsUnread())).toBe(false);   // 읽은 기록은 남는다
