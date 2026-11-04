@@ -6092,10 +6092,96 @@ function drawTitle(time) {
   text(line, cx, cy + (m ? 196 : 250), { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
   const s = 40, pad = m ? 8 : 14;
   addButton({ x: view.w - pad - s, y: pad, w: s, h: s }, '메뉴', 'menuIcon', () => { game.state = 'menu'; });
+  if (newsUnread()) redDot(view.w - pad - 7, pad + 8, 5);   // 안 읽은 새 소식
   if (loggedIn() && wallet.coins != null) {   // 메뉴 옆 코인. 누르면 상점
     const r = drawCoinPill(view.w - pad - s - 8, pad + s / 2, wallet.coins, 'right');
     ui.buttons.push({ r, label: '코인', onTap: () => openShop('shop') });
   }
+}
+
+// ===== 새 소식(2026-11-04 사용자 결정, 문구는 인프라 세션이 쓰고 사용자가 확인) =====
+// 메뉴(≡)의 '새 소식'에 화면이 바뀐 업데이트를 날짜별 불릿으로 최근 NEWS_MAX개만 둔다. 안 읽은 소식이 있으면 시작 화면 ≡ 버튼과 메뉴 항목에
+// 빨간 점(시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
+// 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
+const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
+  { id: '2026-11-04', label: '11/4', items: [
+    '끝내기 상황도 코인을 받아요(로그인하면). 친 공마다 10구 도전과 같은 점수, 이기면 보너스 10~30코인',
+    '끝내기 상황 주루 플레이: 단타 때 2루 주자 홈 승부, 뜬공 태그업, 병살',
+  ] },
+  { id: '2026-11-03c', label: '11/3 저녁', items: [
+    '공이 날아가는 동안 화면을 누르면 바로 결과가 나와요',
+    '안타를 치면 함성·HIT·결과가 한 번에 나와요',
+    '공이 날아가는 동안 전광판에 타구 속도·각도·비거리',
+    '연속 안타 보너스를 올렸어요: 2연속 +300, 3연속 +500, 4연속부터 +800',
+    '뛰는 폼을 새로 만들었어요. 단타 뒤 1루로 돌아오고, 아웃되면 더그아웃으로, 홈런 때는 손을 들고 돌아요',
+    '상점 배트 미리 보기에서 타격 효과가 계속 보여요',
+  ] },
+  { id: '2026-11-03b', label: '11/3 오후', items: [
+    '상점에 고가 아이템 12종(광선 배트·왕관 헬멧·금장 유니폼·로켓 부츠·용 꼬리·천둥 타격음 등)',
+    '효과 배트로 치면 불꽃·얼음·번개가 터져요',
+    '당겨 친 홈런, 밀어 친 홈런이 나와요',
+    '가운데 전광판이 투수판으로 바뀌었어요: 상대 투수의 최고 구속·주무기·직전 공',
+  ] },
+  { id: '2026-11-03a', label: '11/3', items: [
+    '3루타(800점)와 연속 안타 보너스가 생겼어요',
+    '홈런·큰 뜬공은 카메라가 공을 따라가요',
+    '체인지업·포크·커브도 잘 맞히면 홈런이 나와요',
+    '랭킹에서 사람을 누르면 입은 모습을 볼 수 있어요',
+    '수비·주루가 실전처럼 움직여요',
+  ] },
+];
+const NEWS_MAX = 5;
+const hasPlayed = () => store.get('best', 0) > 0 || !!store.get('stats', null) || !!store.get('scnStats', null);
+function initNews() {
+  if (NEWS.length && !store.get('newsSeen', null) && !hasPlayed()) store.set('newsSeen', NEWS[0].id);
+}
+const newsUnread = () => NEWS.length > 0 && hasPlayed() && String(store.get('newsSeen', '')) < NEWS[0].id;
+function openNews() {
+  game.state = 'news';
+  news.scroll = 0;
+  if (NEWS.length) store.set('newsSeen', NEWS[0].id);
+}
+const redDot = (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = '#ff4d4f'; ctx.fill(); };
+// 폭 w(px)에 맞춰 띄어쓰기 자리에서 줄을 나눈다(지금 ctx.font 기준)
+function wrapWords(str, w) {
+  const lines = [''];
+  for (const word of str.split(' ')) { const cur = lines[lines.length - 1], next = cur ? `${cur} ${word}` : word; if (cur && ctx.measureText(next).width > w) lines.push(word); else lines[lines.length - 1] = next; }
+  return lines;
+}
+// 소식이 화면보다 길면 휠·끌어 올리기로 넘긴다(game.newsScroll px). 위아래 끝을 잘라 그리고 오른쪽에 위치 막대를 둔다
+const news = { scroll: 0, max: 0, drag: null };
+function drawNews() {
+  dim(0.88);
+  const m = view.mobile, cx = view.w / 2, w = m ? view.w - 44 : 520, x0 = cx - w / 2, size = m ? 14 : 16, lh = m ? 21 : 24, bottom = view.h - (m ? 110 : 120);
+  const top = view.h * (m ? 0.09 : 0.11);
+  text('새 소식', cx, top, { size: m ? 22 : 28, weight: 800 });
+  const y0 = top + (m ? 42 : 54), clipTop = y0 - size - 4;
+  let y = y0 - news.scroll;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, clipTop, view.w, bottom - clipTop); ctx.clip();
+  for (const n of NEWS.slice(0, NEWS_MAX)) {
+    text(n.label, x0, y, { size: size + 1, weight: 800, color: '#f2c94c', align: 'left' });
+    y += lh + 4;
+    for (const it of n.items) {
+      ctx.font = font(size, 500);
+      wrapWords(it, w - 18).forEach((ln, i) => {
+        if (i === 0) text('·', x0 + 2, y, { size, weight: 800, color: 'rgba(255,255,255,0.75)', align: 'left' });
+        text(ln, x0 + 16, y, { size, weight: 500, color: 'rgba(255,255,255,0.88)', align: 'left' });
+        y += lh;
+      });
+    }
+    y += m ? 14 : 18;
+  }
+  ctx.restore();
+  const contentH = y + news.scroll - y0, room = bottom - clipTop;
+  news.max = Math.max(0, contentH - room + lh);
+  news.scroll = clamp(news.scroll, 0, news.max);
+  if (news.max > 0) {   // 위치 막대
+    const barH = Math.max(30, room * room / (room + news.max)), barY = clipTop + (room - barH) * (news.scroll / news.max);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(x0 + w + 8, clipTop, 3, room);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.fillRect(x0 + w + 8, barY, 3, barH);
+  }
+  addButton({ x: cx - 80, y: view.h - (m ? 96 : 104), w: 160, h: 46 }, '메뉴로', 'primary', () => { game.state = 'menu'; });
 }
 
 function drawMenu() {
@@ -6105,6 +6191,7 @@ function drawMenu() {
   text('메뉴', cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 36 : 50;
   const items = [
+    ['새 소식', openNews, newsUnread()],
     ['끝내기 상황', () => startGame('scenario')],
     ['연습', () => startGame('practice')],
     [`타이밍 보정 ${fmtMs(settings.offset)}`, startCalib],
@@ -6115,7 +6202,13 @@ function drawMenu() {
     [loggedIn() ? '내 계정' : '카카오 로그인', openAccount],
   ];
   if (canVibrate) items.push([settings.vibrate ? '진동 켜짐' : '진동 꺼짐', toggleVibrate]);
-  for (const [label, fn] of items) { addButton({ x: cx - bw / 2, y, w: bw, h: bh }, label, 'secondary', fn); y += bh + (m ? 10 : 12); }
+  // 낮은 화면(360×640)에서도 닫기·안내까지 들어가게 항목 간격을 남는 높이로 줄인다(새 소식이 들어와 항목이 10개가 됐다)
+  const step = Math.min(bh + (m ? 10 : 12), (view.h - y - (m ? 92 : 104)) / items.length), h = Math.max(32, Math.min(bh, step - 6));
+  for (const [label, fn, dot] of items) {
+    addButton({ x: cx - bw / 2, y, w: bw, h }, label, 'secondary', fn);
+    if (dot) redDot(cx + bw / 2 - 20, y + h / 2, 5);
+    y += step;
+  }
   addButton({ x: cx - 70, y: y + 2, w: 140, h: 36 }, '닫기', 'link', goTitle);
   text('판 수만 익명으로 세고, 이름·계정은 보내지 않아요', cx, y + 58, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.45)' });   // 이용 통계(track) 안내
 }
@@ -6407,6 +6500,7 @@ function primaryAction(eventTime, x, y) {
   else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime);
   else if (game.state === 'calib') calibTap(eventTime);
   else if (game.state === 'records' && x == null) goTitle();
+  else if (game.state === 'news' && x == null) game.state = 'menu';
   else if (game.state === 'ranking' && x == null) closeRanking();
   else if (canSkip()) skipToBeat();   // 건너뛰게 한 탭은 다음 공으로 넘어가지 않는다
   else if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) next();
@@ -6415,7 +6509,15 @@ function primaryAction(eventTime, x, y) {
   }
 }
 
-canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); primaryAction(e.timeStamp, e.clientX, e.clientY); });
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
+  primaryAction(e.timeStamp, e.clientX, e.clientY);
+});
+// 새 소식 넘기기: 끌어 올리기와 휠
+canvas.addEventListener('pointermove', (e) => { if (game.state === 'news' && news.drag) news.scroll = clamp(news.drag.s - (e.clientY - news.drag.y), 0, news.max); });
+addEventListener('pointerup', () => { news.drag = null; });
+canvas.addEventListener('wheel', (e) => { if (game.state !== 'news') return; e.preventDefault(); news.scroll = clamp(news.scroll + e.deltaY, 0, news.max); }, { passive: false });
 window.addEventListener('keydown', (e) => {
   if (e.target === noInput) {   // 등번호를 입력하는 중에도 게임 키를 쓰지 않는다. 엔터는 달기
     if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ui.buttons.find((b) => b.label === '달기')?.onTap(); }
@@ -6435,7 +6537,7 @@ window.addEventListener('keydown', (e) => {
   } else if (e.code === 'KeyR' && game.state === 'result') startReplay();
   else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && (game.state === 'title' || game.state === 'over')) setBats(e.code === 'ArrowLeft' ? 'L' : 'R');
   else if (e.code === 'Escape' && game.state !== 'title') goTitle();
-  else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'calib'].includes(game.state)) {
+  else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'news', 'calib'].includes(game.state)) {
     if (/^Digit[1-6]$/.test(e.code)) setPractice({ type: PRACTICE_TYPES[Number(e.code.slice(5)) - 1] });
     else if (e.code === 'KeyS') setPractice({ slow: !game.practice.slow });
     else if (e.code === 'KeyL') setPractice({ throws: game.practice.throws === 'L' ? 'R' : 'L' });
@@ -6506,6 +6608,7 @@ function render(time) {
   if (game.state === 'title') { drawTitle(time); drawToast(); return; }
   if (game.state === 'calib') { drawCalib(); drawToast(); return; }
   if (game.state === 'records') { drawRecords(); drawToast(); return; }
+  if (game.state === 'news') { drawNews(); drawToast(); return; }
   if (game.state === 'onboard') { drawOnboard(); drawToast(); return; }
   if (game.state === 'ranking') { drawRanking(); drawToast(); return; }
   if (game.state === 'account') { drawAccount(); drawToast(); return; }
@@ -6546,6 +6649,7 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+initNews();
 resize();
 readLoginReturn();
 if (!settings.team) openOnboard('start');   // 처음 온 사람은 열자마자 팀 고르기
@@ -6554,5 +6658,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };

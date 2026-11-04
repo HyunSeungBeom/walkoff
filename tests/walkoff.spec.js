@@ -780,6 +780,36 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('새 소식: 처음 온 사람은 점이 없고, 쳐 본 사람은 ≡에 빨간 점이 떴다가 읽으면 사라지며, 더 새 소식이 오면 다시 뜬다', async ({ page }) => {
+    const errors = await open(page);   // 처음 온 사람(이 기기에 친 기록이 없음)
+    expect(await page.evaluate(() => ({ unread: walkoff.newsUnread(), seen: localStorage.getItem('walkoff.newsSeen') === walkoff.NEWS[0].id }))).toEqual({ unread: false, seen: true });
+    // 쳐 본 사람이 처음 이 기능을 만나면(읽은 기록 없음) 첫 소식부터 점이 뜬다
+    await page.evaluate(() => { localStorage.removeItem('walkoff.newsSeen'); localStorage.setItem('walkoff.best', '1500'); });
+    await reloadUntil(page, () => walkoff.newsUnread());
+    await page.evaluate(() => { walkoff.game.state = 'menu'; });
+    await expect.poll(() => page.evaluate(() => walkoff.ui.buttons.map((b) => b.label)[0])).toBe('새 소식');
+    await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '새 소식').onTap());
+    const n = await page.evaluate(() => walkoff.NEWS[0]), texts = await drawnTexts(page);
+    expect(texts).toContain('새 소식');
+    expect(texts).toContain(n.label);
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, unread: walkoff.newsUnread() }))).toEqual({ state: 'news', unread: false });
+    // 작은 폰(360×640)에서는 소식이 화면보다 길어 휠·끌어 올리기로 넘긴다(끝까지만)
+    await page.setViewportSize({ width: 360, height: 640 });
+    await expect.poll(() => page.evaluate(() => walkoff.news.max)).toBeGreaterThan(100);
+    await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 120, cancelable: true })));
+    expect(await page.evaluate(() => walkoff.news.scroll)).toBe(120);
+    await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 5000, cancelable: true })));
+    expect(await page.evaluate(() => walkoff.news.scroll === walkoff.news.max)).toBe(true);
+    const box = await page.locator('canvas').boundingBox();   // 끌어 내리면 다시 위로
+    await page.mouse.move(box.x + 180, box.y + 150); await page.mouse.down(); await page.mouse.move(box.x + 180, box.y + 600, { steps: 6 }); await page.mouse.up();
+    expect(await page.evaluate(() => ({ scroll: walkoff.news.scroll, state: walkoff.game.state }))).toEqual({ scroll: 0, state: 'news' });
+    await page.reload(); await page.waitForFunction(() => !!window.walkoff);
+    expect(await page.evaluate(() => walkoff.newsUnread())).toBe(false);   // 읽은 기록은 남는다
+    await page.evaluate(() => walkoff.NEWS.unshift({ id: '2099-01-01', label: '1/1', items: ['더 새 소식'] }));   // 다음 업데이트
+    expect(await page.evaluate(() => walkoff.newsUnread())).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
   test('못 보낸 판은 서버 시드로 친 판만, 가장 높은 판 하나만 남겨 둔다(이틀 지난 판과 서버 시드가 없는 판은 버린다)', async ({ page }) => {
     const errors = await open(page);
     const keep = (body) => page.evaluate((b) => { walkoff.keepPending(b); return walkoff.store.get('pending', null)?.score ?? null; }, body);
