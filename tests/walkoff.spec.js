@@ -1798,6 +1798,44 @@ test.describe('수비', () => {
     expect(errors).toEqual([]);
   });
 
+  test('끝내기 주루 플레이: 홈 승부·태그업·병살은 그림의 공과 미끄러지는 주자가 판정(core)이 정한 때에 베이스에 닿고, 정해지기 전에는 상황판·알림이 그대로다', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const w = walkoff, g = w.game, near = (q, b, d) => Math.hypot(q.x - b[0], q.z - b[1]) < d;
+      const hit = (k, sd, i, dt) => {
+        w.paused = true; w.startGame('scenario'); w.useScenario(k);
+        const p = w.makeSequence(sd, w.pitcherHand(sd) === 'L')[i]; g.seq[0] = p;
+        for (let n = 0; n < 3000 && g.state !== 'result'; n++) { if (g.state === 'pitch' && g.swingAt == null && w.ballTime() + 1 / 60 >= p.T + dt / 1000) w.swing(g.clockAt + Math.max(0, p.T + dt / 1000 - w.ballTime()) * 1000); g.clockAt += 1000 / 60; w.update(1 / 60); }
+        return g.outcome;
+      };
+      const out = {};
+      // 단타 홈 승부(1아웃 2루): 외야수 송구가 홈(포수)에 닿는 때·주자가 홈에 미끄러져 닿는 때가 판정과 같고, 아웃은 정해질 때까지 전광판·알림에 안 보인다
+      const a = hit(1, 1, 2, -40), hp = a.scnPlay.home, pa = w.fieldPlay(a), ra = w.scenarioRuns(a)[0];
+      g.resultT = g.revealAt + 1;   // 결과 글자는 이미 떴다(안타는 떨어질 때). 아웃은 홈에서 정해질 때 보인다
+      const before = (() => { g.flightT = hp.runner - 0.3; return { o: w.boardView().o }; })(), after = (() => { g.flightT = Math.max(hp.arrive + 0.2, hp.runner) + 0.05; return { o: w.boardView().o }; })();
+      out.home = { safe: hp.safe, receiver: pa.ev.receiver, ballHome: near(pa.ball(hp.arrive + 0.02), [-0.9, 1.0], 1.2), early: !near(pa.ball(hp.arrive - 0.3), [-0.9, 1.0], 1.2), runner: Math.abs(ra.legs[0].end - hp.runner), before, after, event: g.scnEvent };
+      // 얕은 안타(내야수가 주움): 2루 주자는 3루에서 멈추고 포수는 나오지 않는다
+      const b = hit(1, 1, 0, -90), rb = w.scenarioRuns(b)[0], endB = rb.legs[0].route.at(-1);
+      out.hold = { hold: !!b.scnPlay.home.hold, at3: Math.hypot(endB[0] - w.BASE3[0], endB[1] - w.BASE3[1]) < 1, catcher: '포수' in w.fieldPlay(b).acts, bases: g.scn.bases };
+      // 태그업(1아웃 2루, 외야 뜬공): 3루로 던진 공은 주자가 미끄러져 닿은 뒤에 3루에 닿는다
+      const c = hit(1, 1, 0, 25), tg = c.scnPlay.tag, pc = w.fieldPlay(c), rc = w.scenarioRuns(c)[0];
+      out.tag = { go: tg.go, ball3: near(pc.ball(tg.arrive + 0.02), w.BASE3, 1.5), runner: Math.abs(rc.legs.at(-1).end - tg.runner), first: tg.runner < tg.arrive, bases: g.scn.bases };
+      // 병살(0아웃 1루, 3루수 땅볼): 공이 판정한 때에 2루, 다음에 1루에 닿고 1루 주자는 그때 2루에 미끄러져 들어간다
+      const d = hit(3, 1, 3, -65), dp = d.scnPlay.dp, pd = w.fieldPlay(d), rd = w.scenarioRuns(d)[0];
+      out.dp = { out1: dp.out1, ball2: near(pd.ball(dp.atSecond + 0.02), w.BASE2, 1.5), ball1: near(pd.ball(dp.atFirst + 0.02), w.BASE1, 1.5), runner: Math.abs(rd.legs[0].end - (dp.runner2)), outs: g.scn.outs, event: g.scnEvent };
+      w.paused = false;
+      return out;
+    });
+    expect(r.home).toMatchObject({ safe: false, receiver: '포수', ballHome: true, early: true, before: { o: 1 }, after: { o: 2 }, event: '홈에서 아웃 · 2아웃' });
+    expect(r.home.runner).toBeLessThan(0.02);   // 그림의 미끄러지기가 판정의 주자 도착과 같다(같은 1/120초 계산)
+    expect(r.hold).toEqual({ hold: true, at3: true, catcher: false, bases: [true, false, true] });
+    expect(r.tag).toMatchObject({ go: true, ball3: true, first: true, bases: [false, false, true] });
+    expect(r.tag.runner).toBeLessThan(0.02);
+    expect(r.dp).toMatchObject({ out1: true, ball2: true, ball1: true, outs: 2, event: '병살 · 2아웃' });
+    expect(r.dp.runner).toBeLessThan(0.02);
+    expect(errors).toEqual([]);
+  });
+
   test('끝내기 상황: 누상 주자가 리드해 서 있다가 결과대로 뛰고, 끝내기 승리는 이긴 점수가 홈을 밟으면 버튼 없이 끝 화면이 된다', async ({ page }) => {
     const errors = await open(page);
     await page.evaluate(() => walkoff.startGame('scenario'));

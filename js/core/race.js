@@ -145,3 +145,30 @@ export function computeRace(r, bats) {
   const margin = Math.round((runner - pick.arrive) * 1000) / 1000;   // 양수면 송구가 먼저(아웃). ms로 반올림해 기기마다 같게
   return { pos, how: pick.how, charge: !!pick.charge, field: { t: pick.t, at: pick.at }, release: { t: pick.release }, arrive: margin < -0.6 ? null : { t: pick.arrive, to: pick.to }, runner, margin, safe: margin <= 0 };
 }
+
+// 지나는 점들을 부드러운 곡선(캣멀-롬)으로 이어 촘촘한 꺾은선으로 만든다(모서리에서 방향이 갑자기 꺾이지 않게)
+export function smoothRoute(pts) {
+  const out = [pts[0]];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)], n = Math.max(2, Math.ceil(Math.hypot(p1[0] - p2[0], p1[1] - p2[1]) / 0.5));
+    for (let k = 1; k <= n; k++) {
+      const u = k / n, u2 = u * u, u3 = u2 * u;
+      out.push([0, 1].map((c) => 0.5 * (2 * p1[c] + (-p0[c] + p2[c]) * u + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * u2 + (-p0[c] + 3 * p1[c] - 3 * p2[c] + p3[c]) * u3)));
+    }
+  }
+  return out;
+}
+
+// 주자가 길이 total m인 길을 서 있다가 출발해 끝에서 멈추는(brake m/s²로 줄여 미끄러져 들어가는) 데 걸리는 초.
+// 그림의 뛰기 표(main.js runTrack)와 같은 1/120초 계산이라 끝내기 주루 판정과 그림의 도착이 같다
+export function runArrive(total, top, tau, brake) {
+  const dt = 1 / 120;
+  let s = 0, v = 0, braking = false;
+  for (let i = 0, t = 0; i < 120 * 60; i++, t += dt) {
+    if (!braking && s + v * v / (2 * brake) >= total) braking = true;
+    v = braking ? Math.max(0, v - brake * dt) : top * (1 - Math.exp(-t / tau));
+    s = Math.min(total, s + v * dt);
+    if (braking && v === 0 && i > 0) return t + dt;
+  }
+  return Infinity;
+}

@@ -89,12 +89,15 @@ export function basesLabel(bases) {
 export const scenarioLabel = (s) => `9회말 ${s.outs ? `${s.outs}아웃` : '무사'} ${basesLabel(s.bases)} · ${s.away - s.home}점 차`;
 
 // 공 하나를 반영한 결과(core/scenario.js의 applyScenario)를 화면에 띄울 한 줄로. 볼·스트라이크만 늘면 빈 줄이다
-const PLAY_TEXT = { 'k-looking': '루킹 삼진', 'k-swinging': '헛스윙 삼진', 'sac-fly': '희생플라이' };
+const PLAY_TEXT = { 'k-looking': '루킹 삼진', 'k-swinging': '헛스윙 삼진', 'sac-fly': '희생플라이', 'tag-up': '태그업 진루', 'hold': '3루에서 멈춤' };
+const OUT_PLAY = { dp: '병살', fc: '야수 선택', 'out-home': '홈에서 아웃' };   // 아웃이 나는 주루 플레이(2026-11-04)
 export function scenarioMessage(s, { runs, pa, play }) {
-  const msg = play === 'walk' ? (runs ? '밀어내기 볼넷' : '볼넷') : play === 'out' ? `${s.outs}아웃` : PLAY_TEXT[play] ?? '';
+  const msg = play === 'walk' ? (runs ? '밀어내기 볼넷' : '볼넷') : play === 'out' ? `${s.outs}아웃` : OUT_PLAY[play] ? `${OUT_PLAY[play]} · ${s.outs}아웃` : PLAY_TEXT[play] ?? '';
   if (s.home > s.away) return `끝내기! ${s.home}-${s.away} 승리`;
-  if (s.outs >= 3) return s.home === s.away ? '3아웃 · 동점으로 끝' : '3아웃 · 경기 끝';
+  if (s.outs >= 3) return `${OUT_PLAY[play] ? `${OUT_PLAY[play]} · ` : ''}${s.home === s.away ? '3아웃 · 동점으로 끝' : '3아웃 · 경기 끝'}`;
   if (runs) return `${msg ? `${msg} · ` : ''}${runs}점! ${s.home === s.away ? '동점' : `${s.away - s.home}점 차`}`;
-  if (pa === 'G') return `출루 · ${basesLabel(s.bases)}`;
+  if (play === 'fc') return `${msg} · ${basesLabel(s.bases)}`;
+  if (OUT_PLAY[play]) return msg;
+  if (pa === 'G') return `${play === 'hold' ? '3루에서 멈춤' : '출루'} · ${basesLabel(s.bases)}`;
   return msg;
 }
