@@ -8,9 +8,9 @@ import {
   computeRace, DIVE_GLOVE, diveShort, FIELD_REACT, FIELD_SPEED, GRASS_DECEL, groundPath, interceptGround, PCOVER, PCOVER_LEN, PLAY_EX, reachGround,
   RUN_REACH, RUN_TO_1B, SET_REACH, smoothRoute, sprintDist, sprintTime, TOSS_STEP,
 } from './core/race.js';
-import { FAIR_MS, FOUL_MS, hrExtra, hrLiftK, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
+import { FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, HOME_PLATE, HOME_THROW, leadAt, makeScenario as makeScenarioIn, RUN_JUMP, SCENARIOS, RUN_TAU, RUNNER_ROUTES, scenarioPitch, scenarioPoints, SLIDE_BRAKE as BASE_SLIDE, TAG_TIME } from './core/scenario.js';
-import { carryOf, catchTime, flightDuration, flightPos, interceptRoll, rollPath, THROW_OUT } from './core/flight.js';
+import { carryOf, catchTime, flightDuration, flightPos, hrExtra, hrLiftK, interceptRoll, rollPath, THROW_OUT } from './core/flight.js';
 import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
 import { labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, zoneOffText } from './view/text.js';
 import { game, settings } from './game/state.js';

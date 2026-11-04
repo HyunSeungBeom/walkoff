@@ -2,9 +2,12 @@
 // core로 옮겼다. 그림(main.js fieldPlay)과 끝내기 주루 판정이 같은 값을 쓴다. 무작위·화면 값 없이 타구(r)와 수비 자리만 쓴다
 import { clamp, DEG, lerp } from './math.js';
 import { FAIR_SPRAY, fenceDist, fieldHome, INFIELDERS, OUTFIELDERS } from './field.js';
-import { hrExtra, hrLiftK } from './judge.js';
 import { FIELD_REACT, FIELD_SPEED, GRASS_DECEL, groundPath, sprintDist } from './race.js';
 
+// 홈런은 정점을 지나 내려올 때 덜 떨어져 끝에서 쭉 뻗는다(2026-11-03 사용자 '홈런이 마지막에 쭉쭉 뻗어 가는 느낌'). 타구 속도 159 → 180km/h에 따라
+// k 0 → 1, 내려오는 시간은 1/√(1 − 0.4k)배(최대 1.29배)이고 그동안 4 + 16k m 더 가서 관중석 깊이 꽂힌다. 홈런이 되는지(dist ≥ 담장)와 점수는 그대로다
+export const hrLiftK = (ev) => clamp((ev - 159) / 21, 0, 1);
+export const hrExtra = (ev) => 4 + 16 * hrLiftK(ev);
 export const THROW_OUT = 35, CATCH_Y = 1.9;   // 외야수 송구 빠르기(m/s), 뜬공을 잡는 높이(머리 위 글러브, 자세 catchHigh)
 const flatDist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const byPos = (pos) => [...INFIELDERS, ...OUTFIELDERS].find((f) => f.pos === pos);

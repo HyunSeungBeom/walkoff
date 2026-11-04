@@ -1,7 +1,8 @@
 // 판정 규칙(js/core)과 화면 글(js/view/text.js)을 브라우저 없이 본다(2026-11-03 코드 나누기 2단계). 실행: node --test 'tests/core/*.test.mjs'
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { judgeSwing, judgeTake, PERFECT_MS } from '../../js/core/judge.js';
+import { airCatcher, judgeSwing, judgeTake, PERFECT_MS } from '../../js/core/judge.js';
+import { OUTFIELDERS } from '../../js/core/field.js';
 import { makeSequence, pitcherHand, zoneMiss, zoneOff } from '../../js/core/pitches.js';
 import { makeScenario, applyScenario } from '../../js/core/scenario.js';
 import { labelSwing, labelTake, zoneOffText, scenarioMessage, scenarioLabel } from '../../js/view/text.js';
@@ -70,4 +71,15 @@ test('끝내기 상황: 역전하는 순간 끝내기 승리, 3아웃이면 끝,
     for (let k = 0; k < 400 && !sc.end; k++) applyScenario(sc, { kind: pool[Math.floor(rnd() * pool.length)], type: 'ground' });
     assert.ok(sc.outs <= 3 && ['win', 'tie', 'lose'].includes(sc.end), `${g}: ${JSON.stringify(sc)}`);
   }
+});
+
+test('외야 판정은 수비수가 닿는지로 정한다(2026-11-04 사용자 결정 \'판정도 실제처럼\'): 외야수가 잡은 뜬 타구는 닿는 공이고, 45m 넘게 떨어진 외야 뜬 안타(홈런 빼고)는 아무도 못 닿는다', () => {
+  let caught = 0, hits = 0;
+  for (const { p, dt, bats } of grid()) {
+    const r = judgeSwing(p, dt, bats);
+    if (r.type !== 'fly' && r.type !== 'line') continue;
+    if (r.kind === 'out' && OUTFIELDERS.includes(r.fielder)) { caught++; assert.ok(airCatcher(r), `${r.type} ${r.dist}m ${r.spray}도: 외야수가 잡았으면 닿는 공`); }
+    else if (r.hit && r.kind !== 'hr' && r.dist >= 45) { hits++; assert.equal(airCatcher(r), null, `${r.kind} ${r.dist}m ${r.spray}도: 안타면 아무도 못 닿는다`); }
+  }
+  assert.ok(caught > 1000 && hits > 1000, `${caught} ${hits}`);
 });

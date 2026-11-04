@@ -2,10 +2,11 @@
 // 타구 속도·발사각·방향·비거리, 잡은 수비수(fielder)·빠져나간 곳(gap)·담장(wall)·정타라 수비 사이로(split)·1루 경주(race)·내야 안타(infield).
 // 결과 이름('좌중간 2루타')과 이유 문장은 view/text.js가 붙인다(2026-11-03 코드 나누기 2단계)
 import { clamp, lerp } from './math.js';
-import { fenceDist, INFIELDERS, nearest, OUTFIELDERS } from './field.js';
+import { fenceDist, fieldHome, INFIELDERS, nearest, OUTFIELDERS } from './field.js';
+import { airReach, catchTime, flightPos, reactOf, speedOf } from './flight.js';
 import { PITCHES, REACH_M, zoneMiss } from './pitches.js';
 import { POINTS } from './score.js';
-import { computeRace, groundPath } from './race.js';
+import { computeRace, groundPath, sprintDist } from './race.js';
 
 export const FAIR_MS = 90;      // 타이밍 차이가 이 안이면 앞으로 가는 타구
 export const FOUL_MS = 140;     // 이 안이면 파울, 넘으면 헛스윙
@@ -74,13 +75,27 @@ export function judgeSwing(p, dt, bats = 'R') {
 export const between = (list) => list.slice(1).map((f, i) => (list[i].a + f.a) / 2);
 export const GAPS = { ground: between(INFIELDERS.slice(0, 4)), air: between(OUTFIELDERS) };
 export function throughGap(r) {
-  const gaps = r.type === 'ground' ? GAPS.ground : GAPS.air;
-  r.spray = gaps.reduce((best, g) => (Math.abs(g - r.spray) < Math.abs(best - r.spray) ? g : best));
+  if (r.type !== 'ground') {
+    const gap = GAPS.air.reduce((best, g) => (Math.abs(g - r.spray) < Math.abs(best - r.spray) ? g : best));
+    const from = gap, tries = Array.from({ length: 87 }, (_, i) => i - 43).sort((a, b) => Math.abs(a - from) - Math.abs(b - from));
+    for (const a of tries) { if (r.dist >= fenceDist(a) || !airCatcher({ ...r, spray: a })) { r.spray = a; break; } }   // 담장을 넘는 방향(홈런)도 못 잡는 곳이다
+  } else r.spray = GAPS.ground.reduce((best, g) => (Math.abs(g - r.spray) < Math.abs(best - r.spray) ? g : best));
   Object.assign(r, { dist: carry(r.ev, r.la), fielder: undefined, gap: undefined, wall: undefined, split: true });
   classify(r);
 }
 
 // 앞으로 간 타구를 타구 속도(ev)·발사각(la)·방향(spray)·비거리(dist)와 수비 위치로 나눈다. 이름은 view/text.js(resultName)
+// 외야로 뜬 공을 잡을 수 있는 외야수(그림과 같은 빠르기·반응). 판정 비거리 그대로, 다이빙 1m까지. 못 잡으면 null
+export const DIVE_REACH = 1.0;
+export function airCatcher(r) {
+  const probe = { ...r, kind: 'probe', carry: r.dist }, tc = catchTime(probe), q = flightPos(probe, tc);
+  let best = null;
+  for (const f of OUTFIELDERS) {
+    const h = fieldHome(f), [top, tau] = speedOf(f), short = Math.hypot(h[0] - q.x, h[1] - q.z) - airReach(q.y) - sprintDist(tc - reactOf(f), top, tau);
+    if (short <= DIVE_REACH && (!best || short < best.short)) best = { f, short };
+  }
+  return best;
+}
 export function classify(r) {
   const s = r.spray, ev = r.ev, la = r.la;
   const single = () => { r.kind = 'single'; r.hit = true; };
@@ -104,18 +119,18 @@ export function classify(r) {
     const fi = nearest(infield4, s), fo = nearest(OUTFIELDERS, s);
     if (r.dist < 28) { if (Math.abs(fi.a - s) <= 7) outBy(fi); else single(); }
     else if (r.dist >= fenceDist(s)) homeRun();
-    else if (Math.abs(fo.a - s) <= 7 && r.dist > 55 && r.dist < 98) outBy(fo);
+    else if (r.dist >= 45 && (r.catcher = airCatcher(r))) outBy(r.catcher.f);
     else if (r.dist >= 82) double();
     else single();
   } else if (la < 50) {
     r.type = 'fly';
     const fence = fenceDist(s), fo = nearest(OUTFIELDERS, s);
     if (r.dist >= fence) homeRun();
-    else if (r.dist >= fence - 6) { if (Math.abs(fo.a - s) > 12) triple(); else double(); r.wall = true; }
     else if (r.dist < 38) outBy(nearest(infield4, s));
-    else if (r.dist < 58) single();                                // 내야와 외야 사이에 떨어진다
-    else if (Math.abs(fo.a - s) > 10 && r.dist >= 80) double();    // 외야수 사이를 가른다
-    else outBy(fo);
+    else if (r.dist >= 45 && (r.catcher = airCatcher(r))) outBy(r.catcher.f);
+    else if (r.dist >= fence - 6) { if (Math.abs(fo.a - s) > 12) triple(); else double(); r.wall = true; }
+    else if (r.dist >= 80) double();    // 외야수 사이를 가른다
+    else single();
   } else {
     r.type = 'pop';
     outBy(nearest(infield4, s));
@@ -124,10 +139,6 @@ export function classify(r) {
   r.points = POINTS[r.kind] || 0;
 }
 
-// 홈런은 정점을 지나 내려올 때 덜 떨어져 끝에서 쭉 뻗는다(2026-11-03 사용자 '홈런이 마지막에 쭉쭉 뻗어 가는 느낌'). 타구 속도 159 → 180km/h에 따라
-// k 0 → 1, 내려오는 시간은 1/√(1 − 0.4k)배(최대 1.29배)이고 그동안 4 + 16k m 더 가서 관중석 깊이 꽂힌다. 홈런이 되는지(dist ≥ 담장)와 점수는 그대로다
-export const hrLiftK = (ev) => clamp((ev - 159) / 21, 0, 1);
-export const hrExtra = (ev) => 4 + 16 * hrLiftK(ev);
 
 // 공을 그냥 보냈을 때: 존 안이면 루킹 스트라이크, 밖이면 볼(선구안 보너스)
 export function judgeTake(p) {

@@ -34,7 +34,7 @@ test('코인: 점수의 1/100, 이기면 상황별 보너스를 더한다(지거
     if (g.end === 'win') won++; else if (g.points >= 100) lost++;
   }
   assert.ok(won > 50 && lost > 10, `${won} ${lost}`);
-  const seed = Array.from({ length: 500 }, (_, i) => i + 1).find((s) => playScenario(s, 'R', perfectBatter).k === 4);   // 2아웃 주자 없음
+  const seed = Array.from({ length: 500 }, (_, i) => i + 1).find((s) => { const g = playScenario(s, 'R', perfectBatter); return g.k === 4 && g.end === 'win'; });   // 2아웃 주자 없음에서 이기는 판(정타 단타도 2루 주자가 홈에서 잡힐 수 있다)
   const g = playScenario(seed, 'R', perfectBatter);
   assert.equal(g.end, 'win');
   assert.equal(checkScenario({ token: 't-1', bats: 'R', moves: g.moves }, NOW, PID, ticket(seed)).value.bonus, 30);

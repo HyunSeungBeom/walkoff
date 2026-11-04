@@ -4,7 +4,7 @@
 import { clamp, DEG } from './math.js';
 import { BASE1, FAIR_SPRAY, fieldHome, MOUND } from './field.js';
 
-export const FIELD_SPEED = { in: [7, 0.46], out: [8.5, 0.6], p: [6.5, 0.45] }, FIELD_REACT = { in: 0.22, out: 0.3, p: 0.4 };
+export const FIELD_SPEED = { in: [7, 0.46], out: [8.2, 0.6], p: [6.5, 0.45] }, FIELD_REACT = { in: 0.22, out: 0.45, p: 0.4 };
 // 다이빙(그림 FTRACK.dive와 같은 식): 잡기 DIVE_LEAD초 전까지 공 쪽으로 달려가 그 자리에서 박차고 날아, 엉덩이 앞 DIVE_GLOVE m의 글러브가 공에 닿는다.
 // 엉덩이가 나는 거리는 그때 빠르기로 DIVE_LEAD초 + 박차는 DIVE_PUSH m(서서 날면 1m, 전력으로 달려오면 3.3m). 전에는 '다이빙하면 2.4m 더'로 쳐서
 // 거의 서 있던 수비수가 몸을 날린 자리에서 공까지 5m를 날아야 했다

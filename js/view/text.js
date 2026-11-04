@@ -1,7 +1,8 @@
 // 화면 글: 판정 결과 이름('좌중간 2루타')과 이유 문장, 존 밖 문구, 조사, 구종 이름·색, 끝내기 상황 글.
 // 판정 규칙(core)은 결과 코드만 돌려주고 글은 여기서 붙인다. 문구를 바꿔도 서버와 같이 쓰는 규칙 파일은 그대로다(2026-11-03 코드 나누기 2단계)
 import { REACH_M, zoneMiss, zoneOff } from '../core/pitches.js';
-import { hrExtra, PERFECT_MS } from '../core/judge.js';
+import { PERFECT_MS } from '../core/judge.js';
+import { hrExtra } from '../core/flight.js';
 
 export const PITCH_NAMES = { fastball: '직구', slider: '슬라이더', curve: '커브', change: '체인지업', fork: '포크' };
 export const PITCH_COLORS = { fastball: '#ffffff', slider: '#7fd1ff', curve: '#c49bff', change: '#8ef0a8', fork: '#ffb86b' };
