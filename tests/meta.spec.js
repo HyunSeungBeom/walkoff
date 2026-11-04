@@ -36,7 +36,7 @@ test.describe('배포 파일', () => {
 
   test('게임이 받아 쓰는 파일(미리보기 그림, 관중 함성 녹음)을 배포 단계가 함께 올린다', () => {
     const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8'), main = fs.readFileSync(path.join(ROOT, 'js', 'main.js'), 'utf8');
-    const crowd = main.match(/CROWD_URL = '([^']+)'/)?.[1] ?? '';
+    const crowd = fs.readFileSync(path.join(ROOT, 'js', 'infra', 'sound.js'), 'utf8').match(/CROWD_URL = '([^']+)'/)?.[1] ?? '';   // 소리는 infra/sound.js
     expect(crowd).toBe('crowd.mp3');
     const copied = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8').match(/cp (.+) _site\//)?.[1].split(/\s+/);
     for (const f of ['index.html', 'og.png', crowd]) {

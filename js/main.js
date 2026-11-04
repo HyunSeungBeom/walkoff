@@ -1,5 +1,5 @@
-// walkoff 게임: 화면, 소리, 수비·주루 그림, 진행, 입력, 랭킹·상점. 판정 규칙은 js/core/, 화면 글은 js/view/text.js, 판 상태는 js/game/state.js에서
-// 가져온다(2026-11-03 코드 나누기 2단계. 나머지도 차례로 나눈다)
+// walkoff 게임: 화면, 수비·주루 그림, 진행, 입력, 랭킹·상점. 판정 규칙은 js/core/, 화면 글은 js/view/text.js, 판 상태는 js/game/state.js,
+// 바깥 연결(저장소·랭킹 서버·로그인·시드·소리·공유·통계·진동)은 js/infra/에서 가져온다(2026-11-03 코드 나누기 2단계, 2026-11-04 3단계. 나머지도 차례로 나눈다)
 import { clamp, DEG, easeOut, lerp, mulberry32, pickWeighted, polar } from './core/math.js';
 import { BALL_R, BASE1, BASE2, BASE3, FAIR_SPRAY, fenceDist, INFIELDERS, MOUND, OUTFIELDERS, RELEASE, ZONE } from './core/field.js';
 import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, zoneMiss } from './core/pitches.js';
@@ -14,6 +14,14 @@ import { carryOf, catchTime, flightDuration, flightPos, hrExtra, hrLiftK, interc
 import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
 import { labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, zoneOffText } from './view/text.js';
 import { game, settings } from './game/state.js';
+import { api, auth, fetchRanking, loggedIn, postScenario, postScore, RANKING_API } from './infra/api.js';
+import { goKakaoLogin, readLoginReturn } from './infra/auth.js';
+import { onSeedExpired, prefetchSeed, SEED_WAIT_MS, seedTicket, takeSeedTicket, urlSeed } from './infra/seeds.js';
+import { canShareFiles, canShareSheet, copyText, pngFile, shareSheet } from './infra/share.js';
+import { Sound } from './infra/sound.js';
+import { track } from './infra/stats.js';
+import { ensurePlayerId, store } from './infra/store.js';
+import { canVibrate, vibrate } from './infra/vibrate.js';
 // 규칙은 게임 상태를 모르니 여기서 이어 준다. 판정 결과의 이름·이유 글은 view/text.js가 붙인다
 const judgeSwing = (p, dt, bats) => labelSwing(judgeSwingIn(p, dt, bats), p);
 const judgeTake = (p, bats = settings.bats) => labelTake(judgeTakeIn(p), p, bats);
@@ -21,224 +29,6 @@ const hrStreakBefore = (i) => hrStreakIn(game.results, i);
 const hitStreakBefore = (i) => hitStreakIn(game.results, i);
 const hardMatchup = (p) => hardMatchupIn(p, settings.bats);
 const zoneOff = (p, bats = settings.bats) => zoneOffText(p, bats);
-
-// ===== 소리: 파일 없이 Web Audio로 합성 =====
-const Sound = (() => {
-  let ac = null, master = null, noiseBuf = null;
-  function init() {
-    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    ac = new AC();
-    master = ac.createGain(); master.gain.value = 0.7; master.connect(ac.destination);
-    noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
-    const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    loadCrowd();
-  }
-  function env(g, t0, attack, dur, peak) {
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(peak, t0 + attack);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  }
-  function noise({ dur = 0.1, type = 'bandpass', freq = 2000, freqTo, q = 1, peak = 0.5, attack = 0.002, delay = 0 }) {
-    if (!ac) return;
-    const t0 = ac.currentTime + delay;
-    const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
-    const f = ac.createBiquadFilter(); f.type = type; f.Q.value = q; f.frequency.setValueAtTime(freq, t0);
-    if (freqTo) f.frequency.exponentialRampToValueAtTime(freqTo, t0 + dur);
-    const g = ac.createGain(); env(g, t0, attack, dur, peak);
-    src.connect(f).connect(g).connect(master);
-    src.start(t0, Math.random()); src.stop(t0 + dur + 0.05);
-  }
-  function tone({ freq = 440, freqTo, dur = 0.1, type = 'sine', peak = 0.3, attack = 0.002, delay = 0 }) {
-    if (!ac) return;
-    const t0 = ac.currentTime + delay;
-    const o = ac.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t0);
-    if (freqTo) o.frequency.exponentialRampToValueAtTime(freqTo, t0 + dur);
-    const g = ac.createGain(); env(g, t0, attack, dur, peak);
-    o.connect(g).connect(master); o.start(t0); o.stop(t0 + dur + 0.05);
-  }
-  // 8비트 음: 옛 게임기처럼 사각파를 한 크기로 내다가 끝에서만 빨리 줄인다(env는 처음부터 줄어든다)
-  const CHIP_GAIN = 0.1;
-  function chip(freq, delay, dur, peak) {
-    if (!ac) return;
-    const t0 = ac.currentTime + delay, o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'square'; o.frequency.setValueAtTime(freq, t0);
-    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.003); g.gain.setValueAtTime(peak, t0 + dur * 0.45);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g).connect(master); o.start(t0); o.stop(t0 + dur + 0.02);
-  }
-  // 천둥 '콰광'(2026-11-03 고가 타격음): 번쩍 찢어지는 밝은 잡음과 지지직 갈라지는 소리(콰) → 거센 폭음(광) → 1.3초쯤 우르릉 굴러가며 줄어든다.
-  // 낮은 우르릉은 폰 스피커에서 거의 안 들려서 가운데 대역(250~650Hz) 울림도 함께 굴린다. 크기는 폭탄 '쾅'보다 크지 않게 맞췄다
-  const RUMBLE = 0.3;
-  function thunder(power) {
-    if (!ac) return;
-    noise({ dur: 0.04, type: 'highpass', freq: 2400, peak: 0.4 + 0.12 * power });
-    for (const [d, f, p] of [[0.012, 3800, 0.2], [0.03, 2300, 0.24], [0.052, 3200, 0.18], [0.08, 1800, 0.15], [0.115, 2700, 0.1], [0.16, 2100, 0.07]]) noise({ dur: 0.03, freq: f, q: 1.2, peak: p, delay: d });
-    noise({ dur: 0.45, type: 'lowpass', freq: 2800, freqTo: 240, peak: 0.5 + 0.15 * power, attack: 0.005, delay: 0.02 });
-    noise({ dur: 0.4, freq: 650, freqTo: 380, q: 1, peak: 0.25, attack: 0.01, delay: 0.03 });
-    // 우르릉: 잡음 하나를 낮은 대역과 가운데 대역으로 걸러 커졌다 작아지기를 되풀이하며 줄인다(noise의 env는 처음부터 빨리 줄어 0.1초 만에 사라졌다)
-    const t0 = ac.currentTime, src = ac.createBufferSource(), lp = ac.createBiquadFilter(), bp = ac.createBiquadFilter(), mid = ac.createGain(), g = ac.createGain();
-    src.buffer = noiseBuf; src.loop = true;
-    lp.type = 'lowpass'; lp.frequency.setValueAtTime(700, t0 + 0.1); lp.frequency.exponentialRampToValueAtTime(140, t0 + 1.4);
-    bp.type = 'bandpass'; bp.Q.value = 1.1; bp.frequency.setValueAtTime(480, t0 + 0.1); bp.frequency.exponentialRampToValueAtTime(260, t0 + 1.4); mid.gain.value = 1.6;
-    g.gain.setValueAtTime(0.0001, t0 + 0.08); g.gain.exponentialRampToValueAtTime(RUMBLE, t0 + 0.2);
-    for (const [t, k] of [[0.3, 0.6], [0.42, 0.85], [0.55, 0.45], [0.7, 0.6], [0.86, 0.3], [1.0, 0.38], [1.15, 0.14]]) g.gain.linearRampToValueAtTime(RUMBLE * k, t0 + t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.4);
-    src.connect(lp).connect(g); src.connect(bp).connect(mid).connect(g); g.connect(master);
-    src.start(t0 + 0.08, Math.random()); src.stop(t0 + 1.45);
-    for (let i = 0; i < 5; i++) noise({ dur: 0.04, freq: 700 + Math.random() * 900, q: 1.5, peak: 0.04 + Math.random() * 0.04, delay: 0.25 + Math.random() * 0.7 });   // 멀리서 지지직
-    tone({ freq: 64, freqTo: 34, dur: 1.3, peak: 0.16 + 0.06 * power, attack: 0.03 });   // 좋은 스피커에서만 들리는 낮은 울림
-  }
-  // 관중 함성(2026-10-30 '홈런 함성' 요청). 합성으로 세 번 만들어 들려 드렸지만 사람 소리처럼 들리지 않아서, 사용자 결정으로
-  // 실제 경기장 함성 녹음(crowd.mp3, CC0)을 튼다. 소리를 처음 켤 때 한 번 받아 두고, 못 받으면(오프라인, file://) 아래 합성 함성으로 대신한다.
-  // 녹음은 사용자가 후보 넷(메이저리그 홈런, 한국 야구장, 축구장 반응, 박수 섞인 환호) 가운데 고른 축구장 관중 반응이다:
-  // freesound.org/s/829453 (itmightgetloud, FC St. Pauli 밀러른토어 경기장, CC0 1.0)의 7~13초를 잘라 앞뒤를 흐리게 하고 크기를 맞춰 mono 96kbps로 줄였다.
-  // 크기는 사용자가 "너무 커서 놀랄 것 같다"고 해서 가장 큰 50ms 크기 0.06쯤(나무 '딱'의 절반)으로 맞췄다. level 1 안타(앞 1.8초), 2 홈런, 3 끝내기
-  const CROWD_URL = 'crowd.mp3', CROWD_GAIN = 0.37;
-  let crowdBuf = null;
-  function loadCrowd() {
-    fetch(CROWD_URL).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
-      .then((b) => new Promise((ok, no) => ac.decodeAudioData(b, ok, no)))   // 옛 사파리는 콜백 방식만 된다
-      .then((buf) => { crowdBuf = buf; })
-      .catch(() => { /* 합성 함성으로 대신한다 */ });
-  }
-  function roarRecording(level) {
-    const t0 = ac.currentTime, src = ac.createBufferSource(), g = ac.createGain();
-    src.buffer = crowdBuf; src.playbackRate.value = 0.96 + Math.random() * 0.08;   // 칠 때마다 조금씩 다르게
-    const len = crowdBuf.duration / src.playbackRate.value, dur = level === 1 ? Math.min(1.8, len) : len, peak = CROWD_GAIN * [0, 0.5, 1, 1.2][level];
-    g.gain.setValueAtTime(peak, t0); g.gain.setValueAtTime(peak, t0 + dur - 0.6); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    src.connect(g).connect(master); src.start(t0); src.stop(t0 + dur + 0.05);
-  }
-  // 합성 함성(녹음을 못 받았을 때). 높이가 다른 목소리 수십 개(톱니파)와 숨소리·웅성임(잡음)을 모음 울림(포먼트) 셋으로 거르는데,
-  // 울림이 '우'에서 '아'로 열려 '와'가 되고 끝에 조금 닫힌다. 경기장 울림(잔향)을 입히고 휘파람과 박수를 흩뿌린다
-  const ROAR = { voice: 0.035, breath: 0.5, gain: 1.7 };
-  function swell(param, t0, peak, attack, dur) {
-    param.setValueAtTime(0.0001, t0);
-    param.exponentialRampToValueAtTime(peak, t0 + attack);
-    param.linearRampToValueAtTime(peak * 0.7, t0 + dur * 0.6);
-    param.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  }
-  let hall = null;
-  function stadium() {   // 경기장 울림: 1.8초 동안 사그라드는 잡음을 잔향으로 쓴다(처음 부를 때 한 번 만든다)
-    if (hall) return hall;
-    const len = Math.floor(ac.sampleRate * 1.8), ir = ac.createBuffer(2, len, ac.sampleRate);
-    for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); }
-    hall = ac.createConvolver(); hall.buffer = ir;
-    const wet = ac.createGain(); wet.gain.value = 0.3;
-    hall.connect(wet).connect(master);
-    return hall;
-  }
-  function roar(level = 2) {
-    if (!ac) return;
-    if (crowdBuf) { roarRecording(level); return; }
-    const t0 = ac.currentTime, dur = [0, 2, 4, 4.8][level], k = [0, 0.45, 1, 1.15][level], end = t0 + dur;
-    const bus = ac.createGain(), out = ac.createGain();
-    swell(out.gain, t0, k * ROAR.gain, 0.35, dur);
-    out.connect(master); out.connect(stadium());
-    for (const [f, q, g, from] of [[800, 4, 1, 350], [1200, 5, 0.6, 750], [2600, 6, 0.25, 2200]]) {   // 모음 울림: '우'→'아'로 열린다
-      const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = q;
-      bp.frequency.setValueAtTime(from, t0); bp.frequency.exponentialRampToValueAtTime(f, t0 + 0.3);
-      bp.frequency.setValueAtTime(f, t0 + dur * 0.7); bp.frequency.exponentialRampToValueAtTime(f * 0.8, end);
-      const gn = ac.createGain(); gn.gain.value = g;
-      bus.connect(bp).connect(gn).connect(out);
-    }
-    const shakes = [4.6, 5.4, 6.3].map((hz) => {   // 목소리 떨림(30센트). 목소리마다 만들지 않고 셋을 나눠 쓴다
-      const lfo = ac.createOscillator(), depth = ac.createGain();
-      lfo.frequency.value = hz; depth.gain.value = 30; lfo.connect(depth); lfo.start(t0); lfo.stop(end + 0.1);
-      return depth;
-    });
-    for (let i = 0, n = [0, 14, 30, 36][level]; i < n; i++) {
-      const o = ac.createOscillator(), g = ac.createGain(), base = 110 + Math.random() * 240, s = t0 + Math.random() * 0.25, e = end - Math.random() * dur * 0.2;
-      o.type = 'sawtooth';
-      o.frequency.setValueAtTime(base * 0.85, s);
-      o.frequency.exponentialRampToValueAtTime(base * (1.15 + Math.random() * 0.2), s + 0.3);   // '와' 하고 올라간다
-      o.frequency.exponentialRampToValueAtTime(base * (1.02 + Math.random() * 0.1), e - 0.4);
-      o.frequency.exponentialRampToValueAtTime(base * 0.8, e);   // 끝에 '아~' 하고 내려온다
-      shakes[i % 3].connect(o.detune);
-      g.gain.setValueAtTime(0.0001, s); g.gain.exponentialRampToValueAtTime(ROAR.voice, s + 0.15);
-      for (let t = s + 0.5; t < e - 0.5; t += 0.4 + Math.random() * 0.3) g.gain.linearRampToValueAtTime(ROAR.voice * (0.5 + Math.random() * 0.5), t);   // 저마다 커졌다 작아진다
-      g.gain.exponentialRampToValueAtTime(0.0001, e);
-      o.connect(g).connect(bus); o.start(s); o.stop(e + 0.05);
-    }
-    const src = ac.createBufferSource(), ng = ac.createGain();   // 숨소리·웅성임
-    src.buffer = noiseBuf; src.loop = true; ng.gain.value = ROAR.breath;
-    src.connect(ng).connect(bus); src.start(t0, Math.random()); src.stop(end + 0.05);
-    for (let i = 0; i < [0, 0, 3, 5][level]; i++) {   // 휘파람: 올라가는 '휘익', 반쯤은 내려오는 소리가 이어진다
-      const d = 0.4 + Math.random() * 1.4, f0 = 1700 + Math.random() * 700;
-      tone({ freq: f0, freqTo: f0 * 1.35, dur: 0.22, peak: 0.07, attack: 0.03, delay: d });
-      if (Math.random() < 0.5) tone({ freq: f0 * 1.3, freqTo: f0 * 0.85, dur: 0.35, peak: 0.06, attack: 0.03, delay: d + 0.26 });
-    }
-    for (let i = 0; i < [0, 20, 50, 80][level]; i++) {   // 박수(한 번에 소리 마디를 수백 개 만들면 느린 폰에서 끊길 수 있어 이 정도로 둔다)
-      noise({ dur: 0.025, freq: 1100 + Math.random() * 1600, q: 1.2, peak: (0.06 + Math.random() * 0.1) * k, delay: 0.25 + Math.random() * dur * 0.75 });
-    }
-  }
-  return {
-    init,
-    crack(power, style = 'sound-wood') {   // 딱. power 0~1. style은 상점의 타격음
-      if (style === 'sound-metal') {   // 알루미늄 '깡': 높은 음이 길게 울린다
-        noise({ dur: 0.04, freq: 4200, q: 1.4, peak: 0.45 + 0.3 * power });
-        tone({ freq: 2350, freqTo: 2050, dur: 0.45 + 0.25 * power, type: 'triangle', peak: 0.22 + 0.15 * power });
-        tone({ freq: 3480, freqTo: 3300, dur: 0.3, peak: 0.1 });
-        return;
-      }
-      if (style === 'sound-toy') {   // 장난감 '뿅'
-        tone({ freq: 420, freqTo: 1500, dur: 0.16, type: 'square', peak: 0.16 });
-        tone({ freq: 840, freqTo: 3000, dur: 0.12, peak: 0.08, delay: 0.02 });
-        return;
-      }
-      if (style === 'sound-bomb') {   // 폭탄 '쾅': 터지는 소리 + 낮게 울리는 폭음 + 흩어지는 파편. 폰 스피커는 낮은 소리를 거의 못 내서 가운데 대역 울림을 더한다
-        noise({ dur: 0.05, freq: 3200, q: 0.7, peak: 0.35 + 0.15 * power });
-        noise({ dur: 1.1, type: 'lowpass', freq: 1600, freqTo: 110, peak: 0.6 + 0.2 * power, attack: 0.004 });
-        noise({ dur: 0.6, freq: 550, q: 0.8, peak: 0.35, attack: 0.004 });
-        tone({ freq: 95, freqTo: 30, dur: 0.75, peak: 0.45 + 0.15 * power });
-        for (let i = 0; i < 7; i++) noise({ dur: 0.03, freq: 1500 + Math.random() * 2500, q: 2, peak: 0.05 + Math.random() * 0.07, delay: 0.1 + Math.random() * 0.45 });
-        return;
-      }
-      if (style === 'sound-laser') {   // 레이저 '퓽': 높은 음이 빠르게 떨어진다
-        tone({ freq: 1900, freqTo: 170, dur: 0.28, type: 'sawtooth', peak: 0.32 });
-        tone({ freq: 2500, freqTo: 230, dur: 0.22, type: 'square', peak: 0.12, delay: 0.015 });
-        return;
-      }
-      if (style === 'sound-bell') {   // 종 '댕': 서로 어긋난 배음이 길게 울린다
-        noise({ dur: 0.03, freq: 5200, q: 1, peak: 0.15 });
-        tone({ freq: 523, dur: 1.5, peak: 0.26 });
-        tone({ freq: 1306, dur: 1.0, peak: 0.13 });
-        tone({ freq: 2210, dur: 0.6, peak: 0.08 });
-        tone({ freq: 3140, dur: 0.3, peak: 0.05 });
-        return;
-      }
-      if (style === 'sound-drum') {   // 북 '둥'. 낮은 울림은 폰에서 잘 안 들려서 가죽 울림(330Hz)과 채 소리를 함께 낸다
-        tone({ freq: 165, freqTo: 55, dur: 0.45, peak: 0.55 + 0.2 * power });
-        tone({ freq: 330, freqTo: 150, dur: 0.25, type: 'triangle', peak: 0.3 });
-        noise({ dur: 0.08, type: 'lowpass', freq: 900, peak: 0.3 });
-        noise({ dur: 0.02, freq: 1800, q: 1.2, peak: 0.2 });
-        return;
-      }
-      if (style === 'sound-thunder') { thunder(power); return; }
-      if (style === 'sound-8bit') {   // 8비트 '띠링': 옛 게임기 동전 소리(사각파 B5 → E6). 세게 칠수록 한 음씩 높게(온음 하나까지)
-        const k = Math.pow(2, Math.round(power * 2) / 12);
-        chip(988 * k, 0, 0.065, CHIP_GAIN);
-        chip(1319 * k, 0.065, 0.24, CHIP_GAIN);
-        return;
-      }
-      noise({ dur: 0.07 + 0.05 * power, freq: 2600, q: 0.9, peak: 0.5 + 0.5 * power });
-      tone({ freq: 1500, freqTo: 700, dur: 0.05, type: 'triangle', peak: 0.25 + 0.2 * power });
-      tone({ freq: 180, freqTo: 70, dur: 0.14, peak: 0.25 + 0.45 * power });
-    },
-    foul() { noise({ dur: 0.05, freq: 1400, q: 1.5, peak: 0.35 }); tone({ freq: 600, freqTo: 400, dur: 0.04, type: 'triangle', peak: 0.12 }); },
-    whoosh() { noise({ dur: 0.22, freq: 300, freqTo: 1600, q: 1.2, peak: 0.22, attack: 0.05 }); },
-    mitt() { noise({ dur: 0.08, type: 'lowpass', freq: 700, peak: 0.6 }); tone({ freq: 120, freqTo: 80, dur: 0.09, peak: 0.35 }); },
-    release() { noise({ dur: 0.15, type: 'highpass', freq: 2500, peak: 0.05, attack: 0.03 }); },
-    roar,
-    crowdReady: () => crowdBuf != null,
-
-    ding() { tone({ freq: 880, dur: 0.12, peak: 0.15 }); tone({ freq: 1320, dur: 0.18, peak: 0.12, delay: 0.08 }); },
-    tick() { tone({ freq: 1400, dur: 0.035, type: 'square', peak: 0.06 }); },
-    groan() { noise({ dur: 0.6, type: 'lowpass', freq: 500, peak: 0.12, attack: 0.15 }); },
-  };
-})();
 
 // ===== 화면과 원근 =====
 // 카메라는 홈플레이트 뒤 3.2m, 눈높이 1.4m에서 투수 쪽을 본다. 멀수록 f / 거리만큼 작게 그린다
@@ -4320,39 +4110,9 @@ function rowRects(cx, y, totalW, h, n, gap = 10) {
   return Array.from({ length: n }, (_, i) => ({ x: cx - totalW / 2 + i * (w + gap), y, w, h }));
 }
 
-// ===== 저장소 =====
-// 이 브라우저에만 남는다. 사생활 보호 모드처럼 저장소를 못 쓰면 기본값으로 돈다
-const store = {
-  get(key, fallback) {
-    try {
-      const v = localStorage.getItem('walkoff.' + key);
-      if (v == null) return fallback;
-      try { return JSON.parse(v); } catch { return v; }
-    } catch { return fallback; }
-  },
-  set(key, value) {
-    try { localStorage.setItem('walkoff.' + key, typeof value === 'string' ? value : JSON.stringify(value)); } catch { /* 저장 못 해도 지금 판은 된다 */ }
-  },
-  keys(prefix) {
-    try { return Object.keys(localStorage).filter((k) => k.startsWith('walkoff.' + prefix)).map((k) => k.slice('walkoff.'.length)); } catch { return []; }
-  },
-  remove(key) {
-    try { localStorage.removeItem('walkoff.' + key); } catch { /* 저장소를 못 쓰면 지울 것도 없다 */ }
-  },
-};
-
-// 랭킹에서 이 브라우저를 구별하는 무작위 ID. 이름이나 기기 정보는 담지 않는다
-function ensurePlayerId() {
-  const saved = String(store.get('playerId', ''));
-  if (/^[a-z0-9-]{8,40}$/.test(saved)) return saved;
-  const id = globalThis.crypto?.randomUUID?.() ?? `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  store.set('playerId', id);
-  return id;
-}
-const defaultNick = () => `타자${Math.floor(1000 + Math.random() * 9000)}`;
-
 // ===== 설정: 좌타/우타 =====
-// 이 브라우저에 남긴 설정을 넣는다(객체와 기본값은 game/state.js)
+// 이 브라우저에 남긴 설정을 넣는다(객체와 기본값은 game/state.js, 저장소와 랭킹 ID는 infra/store.js)
+const defaultNick = () => `타자${Math.floor(1000 + Math.random() * 9000)}`;
 Object.assign(settings, {
   bats: store.get('bats', 'R') === 'L' ? 'L' : 'R',
   offset: clamp(Number(store.get('offset', 0)) || 0, -150, 250),   // 타이밍 보정(ms). 판정할 때 이만큼 뺀다
@@ -4369,12 +4129,9 @@ function saveTeamAndNick(team, nick) {
 const batSide = () => (settings.bats === 'L' ? -1 : 1);
 
 // ===== 진동 =====
-// 안드로이드 브라우저(카톡 안 브라우저 포함)만 된다(navigator.vibrate). 아이폰은 웹 진동을 지원하지 않고, 숨긴 스위치로 진동을 내던
-// 우회 방법도 iOS 26.5에서 막혀서 넣지 않았다(2026-10-29). 아이폰에는 메뉴의 진동 항목도 보이지 않는다
-const canVibrate = typeof navigator.vibrate === 'function' && navigator.maxTouchPoints > 0;   // 데스크톱 크롬에도 함수는 있지만 울릴 게 없다
+// 진동을 내는 일은 infra/vibrate.js(안드로이드만 된다). 메뉴에서 끈 사람은 울리지 않는다
 function buzz(pattern) {
-  if (!canVibrate || !settings.vibrate) return;
-  try { navigator.vibrate(pattern); } catch { /* 진동을 못 해도 경기는 그대로 */ }
+  if (settings.vibrate) vibrate(pattern);
 }
 function toggleVibrate() {
   settings.vibrate = !settings.vibrate;
@@ -4540,11 +4297,11 @@ function drawShareCard(s, mode) {
 // 그림 공유를 쓰는 곳(모바일 공유 창)에서만 만든다
 function prepareShareCard() {
   game.shareCard = null;
-  if (!view.mobile || !navigator.canShare || !game.summary || !['challenge', 'scenario'].includes(game.mode)) return;
+  if (!view.mobile || !canShareFiles() || !game.summary || !['challenge', 'scenario'].includes(game.mode)) return;
   const card = { file: null };
   game.shareCard = card;
   try {
-    drawShareCard(game.summary, game.mode).toBlob((blob) => { if (blob) card.file = new File([blob], 'walkoff.png', { type: 'image/png' }); }, 'image/png');
+    pngFile(drawShareCard(game.summary, game.mode), 'walkoff.png', (file) => { card.file = file; });
   } catch { /* 그림을 못 만들면 글만 보낸다 */ }
 }
 
@@ -4552,19 +4309,11 @@ function prepareShareCard() {
 async function shareResult() {
   if (game.sharing) return;   // 공유 창이 떠 있는 동안 또 누르면 무시한다(안드로이드 크롬은 InvalidStateError를 낸다)
   const text = shareText(game.summary, game.mode);
-  if (navigator.share && view.mobile) {
-    const file = game.shareCard?.file, data = file && navigator.canShare?.({ files: [file], text }) ? { files: [file], text } : { text };
+  if (canShareSheet() && view.mobile) {   // 공유 창을 보냈거나 닫았으면 끝, 공유 창이 안 되면 복사한다
     game.sharing = true;
-    try { await navigator.share(data); return; } catch (e) { if (e && e.name === 'AbortError') return; } finally { game.sharing = false; }
+    try { if (await shareSheet(text, game.shareCard?.file)) return; } finally { game.sharing = false; }
   }
-  try { await navigator.clipboard.writeText(text); toast('복사했어요. 단톡방에 붙여 넣으세요'); return; } catch { /* 아래 방법으로 한 번 더 */ }
-  const ta = document.createElement('textarea');
-  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-  document.body.appendChild(ta); ta.select();
-  let ok = false;
-  try { ok = document.execCommand('copy'); } catch { ok = false; }
-  ta.remove();
-  toast(ok ? '복사했어요. 단톡방에 붙여 넣으세요' : '복사하지 못했어요');
+  toast(await copyText(text) ? '복사했어요. 단톡방에 붙여 넣으세요' : '복사하지 못했어요');
 }
 
 function toast(msg) { game.toast = { text: msg, until: performance.now() + 2200 }; }
@@ -4600,7 +4349,7 @@ function finishScenario() {
   const ss = store.get('scnStats', { plays: 0, wins: 0 });
   store.set('scnStats', { plays: ss.plays + 1, wins: ss.wins + (s.end === 'win' ? 1 : 0) });
   prepareShareCard();
-  track('end');
+  track('end', game.mode);
 }
 
 // 상단: 점수, 볼·스트라이크·아웃 불(실제 전광판처럼 초록·노랑·빨강), 주자 마름모
@@ -4812,15 +4561,7 @@ function drawOnboard() {
 
 // ===== 주간 랭킹 =====
 // 서버는 worker/(Cloudflare Workers + D1). 10구 도전 점수로 이번 주 최고 기록을 모아 한국 시간 월요일 0시에 새로 시작하는
-// 주간 순위를 매긴다. 주소 뒤에 ?api=주소를 붙이면 이 컴퓨터에서 띄운 서버(worker의 wrangler dev)를 쓴다.
-// ?api=는 이 컴퓨터 주소(http의 localhost·127.0.0.1, 서버 allowedReturn과 같다)만 받는다. 아무 주소나 받으면 로그인한 사람이 남이 만든 링크를 열었을 때
-// 로그인 표가 그 주소로 간다(2026-11-02 보안 점검). 테스트는 실제 서버 주소를 가로채 가짜로 답한다
-function localApi(raw) {
-  let u;
-  try { u = new URL(raw); } catch { return ''; }
-  return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1') ? u.origin : '';
-}
-const RANKING_API = localApi(new URLSearchParams(location.search).get('api')) || 'https://walkoff-api.walkoff-api.workers.dev';
+// 주간 순위를 매긴다. 서버 주소·로그인 표·요청은 infra/api.js
 const addDay = (day, n) => new Date(Date.parse(`${day}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
 // worker/src/rules.js의 weekStart와 같은 규칙이다(테스트로 맞춰 본다)
 function weekStartOf(day) {
@@ -4831,32 +4572,6 @@ const fmtMD = (day) => `${Number(day.slice(5, 7))}월 ${Number(day.slice(8, 10))
 function untilNextWeek(week) {
   const ms = Date.parse(`${addDay(week, 7)}T00:00:00+09:00`) - Date.now();
   return ms > 864e5 ? `새 주까지 ${Math.ceil(ms / 864e5)}일` : `새 주까지 ${Math.max(1, Math.ceil(ms / 3600e3))}시간`;
-}
-
-// ===== 이용 통계 =====
-// 하루에 몇 판, 몇 명이 하는지만 센다(2026-10-29 사용자 결정, 서버는 worker/src/stats.js). 기기에 저장한 무작위 번호,
-// 모드, 시작·끝, 터치 기기인지만 보내고 랭킹 ID·닉네임·카카오 계정과는 잇지 않는다. 실제 사이트에서 사람이 친 판만 센다:
-// 자동 브라우저(테스트, navigator.webdriver)와 이 컴퓨터에서 연 게임은 빼고, ?api=로 서버를 바꿔 열면 그 서버로 보낸다.
-// 결과는 worker 폴더에서 npm run stats
-const STATS_ON = !navigator.webdriver && (location.hostname === 'hyunseungbeom.github.io' || new URLSearchParams(location.search).has('api'));
-function ensureDeviceId() {
-  const saved = String(store.get('device', ''));
-  if (/^[a-z0-9-]{8,40}$/.test(saved)) return saved;
-  const id = globalThis.crypto?.randomUUID?.() ?? `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  store.set('device', id);
-  return id;
-}
-function track(type) {
-  if (!STATS_ON) return;
-  try {
-    const body = JSON.stringify({ device: ensureDeviceId(), mode: game.mode, type, mobile: matchMedia('(pointer: coarse)').matches });
-    navigator.sendBeacon(`${RANKING_API}/events`, body);
-  } catch { /* 통계를 못 보내도 게임은 그대로 */ }
-}
-
-async function postScore(body) {
-  const res = await api('/scores', { method: 'POST', body });
-  return { status: res.status, data: await res.json().catch(() => ({})) };
 }
 
 // 10구 도전이 끝나면 점수를 보낸다. 주간 랭킹은 이번 주 최고 기록이라(2026-10-29 사용자 결정) 칠 때마다 보내고,
@@ -4907,10 +4622,6 @@ async function submitScore(s, mode) {
 // 끝내기 상황 코인(2026-11-04 사용자 결정 '이기면 코인, 서버 검증'): 로그인하고 서버 시드로 친 판이 끝나면 공마다 휘두른 때(moves)를 보낸다.
 // 서버가 같은 core로 판을 다시 돌려 점수의 1/100 + 이기면 상황별 보너스를 준다(응답 earned는 이번에 받은 코인, coins는 지갑 합계).
 // 네트워크·서버 오류면 이 브라우저에 남겨 두고 다음에 열 때 다시 보낸다(서버 표는 사흘 간다). 서버가 거절한 판(400)은 버린다
-async function postScenario(body) {
-  const res = await api('/scenario', { method: 'POST', body });
-  return { status: res.status, data: await res.json().catch(() => ({})) };
-}
 async function submitScenario() {
   if (!loggedIn() || !game.ticket) return;
   const body = { token: game.ticket.token, bats: settings.bats, moves: game.moves };
@@ -4943,19 +4654,13 @@ async function resendPending() {
   if (d?.accepted) toast('기록을 랭킹에 올렸어요');
 }
 
-async function fetchRanking() {
-  const res = await fetch(`${RANKING_API}/rankings?player=${encodeURIComponent(settings.playerId)}`);
-  if (!res.ok) throw new Error(`ranking ${res.status}`);
-  return res.json();
-}
-
 function openRanking(back) {
   Object.assign(game, { state: 'ranking', rankBack: back, rankView: null });
   loadRanking();
 }
 async function loadRanking() {
   game.ranking = { status: 'loading' };
-  try { game.ranking = { status: 'ok', data: await fetchRanking() }; } catch { game.ranking = { status: 'error' }; }
+  try { game.ranking = { status: 'ok', data: await fetchRanking(settings.playerId) }; } catch { game.ranking = { status: 'error' }; }
 }
 function closeRanking() {
   if (game.rankView) { game.rankView = null; return; }   // 사람 모습을 보고 있으면 목록으로
@@ -5086,71 +4791,15 @@ function drawRanking() {
 }
 
 // ===== 카카오 로그인 =====
-// 로그인한 사람만 주간 랭킹에 오른다(2026-10-28 사용자 결정). 카카오와 주고받는 일은 랭킹 서버가 하고,
-// 게임은 서버가 준 로그인 표만 이 브라우저에 둔다. 카카오 회원번호나 카카오 토큰은 게임에 오지 않는다
-const auth = { token: String(store.get('session', '')) || null, fresh: false };
-const loggedIn = () => !!auth.token;
+// 로그인한 사람만 주간 랭킹에 오른다(2026-10-28 사용자 결정). 카카오 로그인 화면으로 가고 돌아오는 일은 infra/auth.js,
+// 로그인 표와 서버 요청은 infra/api.js, 10구 도전 시드는 infra/seeds.js
+function startKakaoLogin() { goKakaoLogin(settings.playerId); }
 
-function api(path, { method = 'GET', body } = {}) {
-  const headers = {};
-  if (body) headers['content-type'] = 'application/json';
-  if (auth.token) headers.authorization = `Bearer ${auth.token}`;
-  return fetch(`${RANKING_API}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
-}
-
-// ===== 10구 도전 시드 =====
-// 랭킹에 올라가는 10구 도전은 서버가 판마다 내준 시드로 친다(2026-10-30, worker/src/seeds.js). 게임이 시드를 정하던 때는
-// 볼이 많이 나오는 시드를 골라 보내거나 같은 공 순서를 미리 익혀 칠 수 있었다. 서버는 점수를 받을 때 자기가 낸 시드인지,
-// 한 번만 쓰였는지, 그 판을 칠 시간이 지났는지를 본다.
-// 시작할 때 기다리지 않게 다음 판 시드를 미리 하나 받아 둔다. 로그인 안 했거나 주소에 ?seed=를 붙였으면 받지 않는다
-const SEED_KEEP_MS = 6 * 3600e3;   // 받아 둔 시드가 이보다 오래됐으면 버리고 새로 받는다(서버는 받은 뒤 사흘까지 받는다)
-const SEED_WAIT_MS = 3000;         // 받는 중에 시작하면 이만큼까지 기다린다. 그래도 못 받으면 랭킹 없이 친다
-const seedTicket = { ready: null, loading: null };   // ready: { token, seed, at }
-function prefetchSeed() {
-  if (!loggedIn() || urlSeed() != null) return null;
-  if (seedTicket.ready && Date.now() - seedTicket.ready.at > SEED_KEEP_MS) seedTicket.ready = null;
-  if (seedTicket.ready || seedTicket.loading) return seedTicket.loading;
-  const by = auth.token;
-  seedTicket.loading = (async () => {
-    try {
-      const res = await api('/seeds', { method: 'POST' });
-      if (res.status === 401) { if (auth.token === by) logout('expired'); return; }
-      const d = await res.json().catch(() => ({}));
-      if (auth.token === by && res.ok && typeof d.token === 'string' && Number.isInteger(d.seed) && d.seed > 0) seedTicket.ready = { token: d.token, seed: d.seed, at: Date.now() };
-    } catch { /* 이번에 못 받으면 시작할 때 다시 받는다 */ }
-    finally { seedTicket.loading = null; }
-  })();
-  return seedTicket.loading;
-}
-// 받아 둔 시드를 이번 판에 쓰고, 다음 판 것을 받기 시작한다
-function takeSeedTicket() {
-  const t = seedTicket.ready;
-  seedTicket.ready = null;
-  prefetchSeed();
-  return t;
-}
-
-// 카카오 로그인 화면으로 간다. 확인값을 이 브라우저에 적어 두고, 돌아왔을 때 같은 값인지 본다
-function startKakaoLogin() {
-  const n = `n${Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')}`;
-  store.set('loginNonce', n);
-  // 저장소에 쓴 확인값이 브라우저에 넘어갈 틈을 주고 떠난다. 바로 떠나면 값이 넘어가기 전에 페이지가 닫힐 수 있다(CI 테스트에서 봤다)
-  const url = `${RANKING_API}/auth/kakao/start?${new URLSearchParams({ n, pid: settings.playerId, return: location.href.split('#')[0] })}`;
-  setTimeout(() => { location.href = url; }, 50);
-}
-
-// 카카오 로그인에서 돌아오면 주소 뒤에 #login=표&n=확인값(실패하면 #login_error=까닭&n=확인값)이 붙는다.
-// 이 브라우저가 보낸 확인값과 같을 때만 받고, 표가 주소째 공유되지 않게 주소에서 바로 지운다
-function readLoginReturn() {
-  if (!/(^#|&)(login|login_error)=/.test(location.hash)) return;
-  const q = new URLSearchParams(location.hash.slice(1)), sent = store.get('loginNonce', null);
-  try { history.replaceState(null, '', location.href.split('#')[0]); } catch { location.hash = ''; }
-  store.remove('loginNonce');
-  if (!sent || q.get('n') !== sent) return;
-  if (q.get('login')) {
-    Object.assign(auth, { token: q.get('login'), fresh: true });
-    store.set('session', auth.token);
-  } else toast(q.get('login_error') === 'canceled' ? '카카오 로그인을 취소했어요' : '카카오 로그인을 하지 못했어요. 잠시 뒤 다시 해 주세요');
+// 카카오 로그인에서 돌아왔으면 로그인 표를 받고(infra/auth.js), 못 했으면 알린다
+function loginReturned() {
+  const back = readLoginReturn();
+  if (back === 'canceled') toast('카카오 로그인을 취소했어요');
+  else if (back === 'failed') toast('카카오 로그인을 하지 못했어요. 잠시 뒤 다시 해 주세요');
 }
 
 // 로그인 표로 계정을 확인하고 팀·닉네임을 맞춘다. 다른 기기에서 쓰던 계정이면 그 팀·닉네임으로 이어 가고,
@@ -5203,6 +4852,7 @@ function logout(reason) {
   resetWallet();   // 코인과 꾸미기는 계정에 남는다. 이 브라우저는 기본 모습으로
   toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
 }
+onSeedExpired(() => logout('expired'));   // 시드를 받다가 로그인이 풀렸을 때(infra/seeds.js)
 
 // 랭킹 기록 지우기: 서버의 점수와 계정을 지우고, 이 브라우저는 새 ID로 시작한다
 async function deleteAccount() {
@@ -6258,11 +5908,7 @@ function drawGameOver() {
 // ===== 게임 진행 =====
 // 판 상태(game)는 game/state.js. title → windup(투수 와인드업) → pitch(공이 날아옴) → result → 다음 공 … → over
 
-// 주소 끝 ?seed=숫자. 같은 공 순서를 다시 칠 때 쓴다(랭킹에는 안 올라간다)
-function urlSeed() {
-  const s = Number(new URLSearchParams(location.search).get('seed'));
-  return Number.isFinite(s) && s > 0 ? s : null;
-}
+// 주소 끝 ?seed=숫자(infra/seeds.js의 urlSeed)가 있으면 그 시드, 없으면 지금 시각으로
 const seedFromUrl = () => urlSeed() ?? (Date.now() % 2147483647);
 
 // mode: 'challenge'(10구 도전, 매번 다른 공) | 'scenario'(끝내기 상황) | 'practice'(연습)
@@ -6303,7 +5949,7 @@ function startGame(mode, waited = false) {
     game.seq.push(nextPracticePitch());
   } else game.seq = makeSequence(game.seed, game.throws === 'L');
   startPitch();
-  track('start');
+  track('start', game.mode);
 }
 
 function startPitch() {
@@ -6418,7 +6064,7 @@ function recordGame() {
     if (game.newBest) store.set('best', game.score);
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
-  track('end');
+  track('end', game.mode);
 }
 
 function finishGame() {
@@ -6653,7 +6299,7 @@ function frame(now) {
 
 initNews();
 resize();
-readLoginReturn();
+loginReturned();
 if (!settings.team) openOnboard('start');   // 처음 온 사람은 열자마자 팀 고르기
 requestAnimationFrame(frame);
 syncAccount();

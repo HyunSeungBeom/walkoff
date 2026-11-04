@@ -25,7 +25,8 @@ const SAMPLE_RANKING = {
 // account: 로그인한 계정에 이미 있는 팀·닉네임(다른 기기에서 쓰던 계정을 흉내 낸다).
 // scoreReply: 'best'(보낸 점수가 이번 주 최고 기록) | 'lower'(이번 주에 더 높은 기록이 있다). 테스트 중에 바꿀 수 있게 요청 때 읽는다.
 // seed: /seeds가 내주는 10구 도전 시드(기본 42). 표는 요청마다 새로 만들어 돌려주는 배열의 tickets에 쌓는다(받은 시각 at).
-// seedFail: /seeds가 서버 오류로 답한다. seedDelay: /seeds가 이만큼(ms) 늦게 답한다. scoreFail: /scores가 서버 오류로 답한다.
+// seedFail: /seeds가 서버 오류로 답한다. seedExpired: /seeds만 로그인이 풀린 것처럼 401로 답한다(계정 확인 /me는 된다).
+// seedDelay: /seeds가 이만큼(ms) 늦게 답한다. scoreFail: /scores가 서버 오류로 답한다.
 // /scores는 실제 서버처럼 10구 도전에 표가 없거나 모르는 표, 이미 쓴 표면 거절한다.
 // 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다
 async function mockApi(page, opts = {}) {
@@ -59,6 +60,7 @@ async function mockApi(page, opts = {}) {
     }
     if (url.pathname === '/seeds') {
       if (opts.seedFail) return reply({ ok: false, error: 'server_error' }, 500);
+      if (opts.seedExpired) return reply({ ok: false, error: 'login_required' }, 401);
       const t = { token: `00000000-0000-4000-8000-${String(tickets.length + 1).padStart(12, '0')}`, seed: opts.seed ?? 42 };
       tickets.push({ ...t, at: Date.now(), used: false });
       return new Promise((done) => setTimeout(done, opts.seedDelay ?? 0)).then(() => reply({ ok: true, ...t }));
@@ -644,10 +646,23 @@ test.describe('화면', () => {
     expect(await page.evaluate(() => ({ token: walkoff.auth.token, toast: walkoff.game.toast?.text, nonce: localStorage.getItem('walkoff.loginNonce') })))
       .toEqual({ token: null, toast: '카카오 로그인을 취소했어요', nonce: null });
     await page.evaluate(() => localStorage.setItem('walkoff.loginNonce', 'nabc12345678'));
+    await loginReturn(page, '?seed=42', 'nabc12345678', { error: 'server_error' });   // 취소가 아닌 실패
+    expect(await page.evaluate(() => ({ token: walkoff.auth.token, toast: walkoff.game.toast?.text, nonce: localStorage.getItem('walkoff.loginNonce') })))
+      .toEqual({ token: null, toast: '카카오 로그인을 하지 못했어요. 잠시 뒤 다시 해 주세요', nonce: null });
+    await page.evaluate(() => localStorage.setItem('walkoff.loginNonce', 'nabc12345678'));
     await loginReturn(page, '?seed=42', 'nother1234567', { stored: 'nabc12345678' });   // 다른 사람이 만든 로그인 주소
     expect(await page.evaluate(() => ({ token: walkoff.auth.token, session: localStorage.getItem('walkoff.session'), hash: location.hash })))
       .toEqual({ token: null, session: null, hash: '' });
     expect(errors.calls.filter((c) => c.path === '/me')).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('다음 판 시드를 받다가 로그인이 풀린 것을 알면(서버 401) 로그아웃하고 알린다', async ({ page }) => {
+    const errors = await open(page, '', { login: true, api: { seedExpired: true } });
+    await expect.poll(() => page.evaluate(() => walkoff.game.toast?.text)).toBe('로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요');
+    expect(await page.evaluate(() => ({ loggedIn: walkoff.loggedIn(), session: localStorage.getItem('walkoff.session'), ready: walkoff.seedTicket.ready })))
+      .toEqual({ loggedIn: false, session: null, ready: null });
+    expect(seedCalls(errors).length).toBe(1);
     expect(errors).toEqual([]);
   });
 
