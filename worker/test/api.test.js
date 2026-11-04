@@ -7,6 +7,7 @@ import { DEFAULTS } from '../src/shop.js';
 import { makeSequence, pitcherHand, zoneMiss } from '../../js/core/pitches.js';
 import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
 import { memoryD1 } from './d1.js';
+import { perfectBatter, playScenario, randomBatter, whiffBatter } from './scenario-play.js';
 
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
 const N = 'nonce-0123456789';
@@ -204,6 +205,44 @@ test('코인: 판마다 점수의 1/100, 20초 안에 또 보내면 주지 않�
   await wait20s();
   assert.deepEqual(await send({ score: 4000 }).then((r) => [r.earned, r.coins, r.accepted]), [40, 70, false]);   // 같은 4,000점이라 그날 기록은 그대로
   assert.equal((await me(token)).coins, 70);
+});
+
+test('끝내기 상황 코인: 서버가 표의 시드로 판을 다시 돌려 점수의 1/100 + 이기면 보너스. 표 하나에 한 번, 코인은 10구와 같이 20초 간격', async () => {
+  assert.equal((await call('POST', '/scenario', { body: { token: NO_TICKET.token, bats: 'R', moves: [0] } })).status, 401);
+  const token = (await login('c1', 'p-device-0001')).hash.login, other = (await login('c3')).hash.login;
+  const post = async (body, as = token) => { const r = await call('POST', '/scenario', { token: as, body }); const j = await r.json(); return r.status === 200 ? j : [r.status, j.error]; };
+  const ticketWith = async (seed) => { const t = await seeded(token); await env.DB.prepare('UPDATE seed_tokens SET seed = ? WHERE id = ?').bind(seed, t.token).run(); return t.token; };
+  const wait20s = () => env.DB.prepare('UPDATE accounts SET coin_at = 0').run();
+  // 2아웃 주자 없음(이기면 30코인)에서 존 안 공만 정타로 쳐 이긴 판
+  const seed = Array.from({ length: 500 }, (_, i) => i + 1).find((s) => { const g = playScenario(s, 'R', perfectBatter); return g.k === 4 && g.end === 'win'; });
+  const win = playScenario(seed, 'R', perfectBatter), got = Math.floor(win.points / 100) + 30;
+  const t1 = await ticketWith(seed);
+  assert.deepEqual(await post({ token: t1, bats: 'R', moves: win.moves }), { ok: true, end: 'win', points: win.points, earned: got, bonus: 30, coins: got });
+  assert.equal((await me(token)).coins, got);
+  assert.deepEqual(await post({ token: t1, bats: 'R', moves: win.moves }), [400, 'seed_used']);   // 같은 표로 또
+  assert.deepEqual(env.DB.rows('SELECT used_at IS NOT NULL AS used FROM seed_tokens WHERE id = ?', t1), [{ used: 1 }]);
+  const again = await post({ token: await ticketWith(seed), bats: 'R', moves: win.moves });   // 20초 안에 또 이긴 판: 받지만 코인은 0
+  assert.deepEqual([again.end, again.earned, again.bonus, again.coins], ['win', 0, 0, got]);
+  await wait20s();
+  const k = playScenario(seed, 'R', whiffBatter);   // 늘 헛스윙으로 진 판: 점수가 없어 코인도 없다
+  assert.deepEqual(await post({ token: await ticketWith(seed), bats: 'R', moves: k.moves }), { ok: true, end: 'lose', points: 0, earned: 0, bonus: 0, coins: got });
+  const lostSeed = Array.from({ length: 500 }, (_, i) => i + 1).find((s) => { const g = playScenario(s, 'L', randomBatter(s)); return g.end === 'lose' && g.points >= 300; });
+  const lost = playScenario(lostSeed, 'L', randomBatter(lostSeed));   // 져도 친 점수만큼은 받는다
+  assert.deepEqual(await post({ token: await ticketWith(lostSeed), bats: 'L', moves: lost.moves }), { ok: true, end: 'lose', points: lost.points, earned: Math.floor(lost.points / 100), bonus: 0, coins: got + Math.floor(lost.points / 100) });
+
+  const t2 = await ticketWith(seed);
+  for (const moves of [undefined, [], [1.5], ['0'], [6000]]) assert.deepEqual(await post({ token: t2, bats: 'R', moves }), [400, 'bad_moves']);
+  assert.deepEqual(await post({ token: t2, bats: 'X', moves: win.moves }), [400, 'bad_moves']);
+  assert.deepEqual(await post({ bats: 'R', moves: win.moves }), [400, 'seed_required']);
+  assert.deepEqual(await post({ token: crypto.randomUUID(), bats: 'R', moves: win.moves }), [400, 'bad_seed']);
+  assert.deepEqual(await post({ token: t2, bats: 'R', moves: win.moves }, other), [400, 'bad_seed']);   // 남이 받은 표
+  assert.deepEqual(await post({ token: t2, bats: 'R', moves: [...win.moves, null] }), [400, 'replay_mismatch']);   // 끝난 뒤에 공이 더 있다
+  assert.deepEqual(await post({ token: t2, bats: 'R', moves: win.moves.slice(0, -1) }), [400, 'replay_mismatch']);   // 안 끝난 판
+  const fresh = (await (await call('POST', '/seeds', { token })).json()).token;
+  assert.deepEqual(await post({ token: fresh, bats: 'R', moves: win.moves }), [400, 'too_fast']);   // 받자마자 낸 판
+  await env.DB.prepare('UPDATE seed_tokens SET issued_at = ? WHERE id = ?').bind(Date.now() - SEED_TTL_MS - 1000, t2).run();
+  assert.deepEqual(await post({ token: t2, bats: 'R', moves: win.moves }), [400, 'seed_expired']);
+  assert.equal((await me(token)).coins, got + Math.floor(lost.points / 100));   // 거절한 판은 코인이 그대로
 });
 
 test('랭킹: 목록의 사람마다 입은 물건(look)을 같이 보내고, 계정 ID는 보내지 않는다', async () => {

@@ -26,5 +26,16 @@ export const findSeed = (db, token) => (typeof token === 'string' && /^[0-9a-f-]
   ? db.prepare('SELECT id, player_id, seed, issued_at, used_at FROM seed_tokens WHERE id = ?').bind(token).first()
   : null);
 
+// 한 판과 함께 온 표를 쓸 수 있는지(10구 도전 점수 rules.js, 끝내기 코인 scenario.js). 쓸 수 있으면 null, 아니면 오류 이름.
+// pitches는 그 판의 공 수다. 표를 받고 나서 그 판을 칠 시간이 지나야 받는다
+export function ticketError(token, ticket, playerId, nowMs, pitches) {
+  if (!token) return 'seed_required';
+  if (!ticket || ticket.player_id !== playerId) return 'bad_seed';   // 없는 표이거나 남의 표
+  if (ticket.used_at != null) return 'seed_used';
+  if (nowMs - ticket.issued_at > SEED_TTL_MS) return 'seed_expired';
+  if (nowMs - ticket.issued_at < pitches * MIN_PITCH_MS) return 'too_fast';
+  return null;
+}
+
 // 점수를 남길 때 같은 묶음(batch)에서 표를 쓴 것으로 적는다. 점수가 못 들어가면 표도 그대로 남는다
 export const useSeed = (db, ticket, now) => db.prepare('UPDATE seed_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL').bind(now, ticket.id);

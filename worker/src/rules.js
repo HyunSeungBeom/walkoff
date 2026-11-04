@@ -3,7 +3,7 @@
 import { makeSequence, pitcherHand, dailySeed } from '../../js/core/pitches.js';
 import { maxScoreFor } from '../../js/core/score.js';
 import { TEAM_IDS } from '../../js/core/catalog.js';
-import { SEED_TTL_MS, MIN_PITCH_MS } from './seeds.js';
+import { ticketError } from './seeds.js';
 export { TEAM_IDS, maxScoreFor };   // 서버 테스트와 게임 테스트가 여기서 가져간다
 const DAY_MS = 864e5;
 export const DAILY_LAST_DAY = '2026-10-30';   // 오늘의 10구가 없어진 날. 그날까지 친 판만 받는다
@@ -25,12 +25,8 @@ function seedsFor(b, day, ticket, playerId, pitches, nowMs) {
   const mode = b.mode ?? 'daily';
   if (mode === 'daily') return day > DAILY_LAST_DAY ? { error: 'mode_removed' } : { seeds: [dailySeed(day), dailySeed(addDays(day, -1))] };
   if (mode !== 'challenge') return { error: 'bad_mode' };
-  if (!b.token) return { error: 'seed_required' };
-  if (!ticket || ticket.player_id !== playerId) return { error: 'bad_seed' };   // 없는 표이거나 남의 표
-  if (ticket.used_at != null) return { error: 'seed_used' };
-  if (nowMs - ticket.issued_at > SEED_TTL_MS) return { error: 'seed_expired' };
-  if (nowMs - ticket.issued_at < pitches * MIN_PITCH_MS) return { error: 'too_fast' };   // 표를 받고 나서 그 판을 칠 시간도 지나지 않았다
-  return { seeds: [ticket.seed] };
+  const error = ticketError(b.token, ticket, playerId, nowMs, pitches);
+  return error ? { error } : { seeds: [ticket.seed] };
 }
 const seqOf = (seed) => makeSequence(seed, pitcherHand(seed) === 'L');
 

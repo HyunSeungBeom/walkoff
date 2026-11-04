@@ -1,11 +1,13 @@
 // walkoff 랭킹 서버(Cloudflare Workers + D1). 10구 도전 점수를 받아 이번 주(한국 시간 월~일) 최고 기록으로 개인·팀 순위를 돌려준다.
 // 점수는 카카오로 로그인한 사람만 낼 수 있고(2026-10-28 사용자 결정), 서버가 판마다 내준 시드로 친 판만 받는다(2026-10-30, seeds.js).
-// 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다)
+// 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다).
+// 끝내기 상황은 랭킹 없이 코인만 준다(2026-11-04, scenario.js: 서버가 같은 시드로 판을 다시 돌려 확인한다)
 import { kstDay, weekStart, addDays, validateSubmission, validateProfile, aggregate } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
 import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
 import { validateEvent, recordEvent } from './stats.js';
 import { issueSeed, findSeed, useSeed } from './seeds.js';
+import { checkScenario } from './scenario.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -103,10 +105,9 @@ async function account(request, env, now) {
 // 게임에 돌려주는 지갑: 코인, 산 물건, 착용(look)
 const wallet = (a) => { const owned = ownedOf(a.owned); return { coins: a.coins, owned, look: lookOf(a.equipped, owned) }; };
 
-// 판마다 코인을 준다(점수의 1/100). 20초 안에 또 오면 주지 않는다.
+// 판마다 코인을 준다(10구 도전은 점수의 1/100, 끝내기 상황은 scenario.js). 20초 안에 또 오면 주지 않는다(두 모드를 같이 센다).
 // 조건을 UPDATE 안에 넣어서 같은 판을 두 번 보내도(네트워크 오류 뒤 다시 보내기 등) 한 번만 준다
-async function earnCoins(db, playerId, score, now) {
-  const earned = coinsFor(score);
+async function giveCoins(db, playerId, earned, now) {
   if (earned <= 0) return 0;
   const r = await db.prepare('UPDATE accounts SET coins = coins + ?, coin_at = ? WHERE player_id = ? AND coin_at <= ?').bind(earned, now, playerId, now - COIN_GAP_MS).run();
   return r.meta.changes > 0 ? earned : 0;
@@ -132,7 +133,7 @@ export default {
         return new Response(null, { status: 204, headers: HEADERS });
       }
 
-      const acct = ['/seeds', '/scores', '/me', '/shop/buy', '/shop/equip'].includes(url.pathname) ? await account(request, env, now) : null;
+      const acct = ['/seeds', '/scores', '/scenario', '/me', '/shop/buy', '/shop/equip'].includes(url.pathname) ? await account(request, env, now) : null;
       // 10구 도전 한 판의 시드와 일회용 표(seeds.js). 게임은 기다리지 않고 시작하려고 다음 판 표를 미리 받아 둔다
       if (url.pathname === '/seeds' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
@@ -157,9 +158,23 @@ export default {
           env.DB.prepare('UPDATE accounts SET nick = ?, team = ? WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
           ...(ticket ? [useSeed(env.DB, ticket, now)] : []),
         ]);
-        const earned = await earnCoins(env.DB, s.playerId, s.score, now);
+        const earned = await giveCoins(env.DB, s.playerId, coinsFor(s.score), now);
         const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId), accountById(env.DB, s.playerId)]);
         return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, coins: after.coins, earned });
+      }
+      // 끝내기 상황 한 판의 코인(scenario.js). 표는 10구 도전과 같은 /seeds 표이고, 서버가 그 시드로 판을 다시 돌려 끝·점수를 낸다.
+      // 표를 먼저 쓴 것으로 적고 적은 요청만 코인을 준다(같은 표로 동시에 와도 한 번). 랭킹에는 올리지 않는다
+      if (url.pathname === '/scenario' && method === 'POST') {
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        const body = await request.json().catch(() => null), ticket = await findSeed(env.DB, body?.token);
+        const checked = checkScenario(body, now, acct.player_id, ticket);
+        if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
+        const { end, points, bonus, coins } = checked.value;
+        const used = await useSeed(env.DB, ticket, now).run();
+        if (!used.meta.changes) return json({ ok: false, error: 'seed_used' }, 400);
+        const earned = await giveCoins(env.DB, acct.player_id, coins, now);
+        const after = await accountById(env.DB, acct.player_id);
+        return json({ ok: true, end, points, earned, bonus: earned ? bonus : 0, coins: after.coins });
       }
       if (url.pathname === '/me') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
