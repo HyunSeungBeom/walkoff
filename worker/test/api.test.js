@@ -247,13 +247,13 @@ test('끝내기 상황 코인: 서버가 표의 시드로 판을 다시 돌려 �
 
 test('랭킹: 목록의 사람마다 입은 물건(look)을 같이 보내고, 계정 ID는 보내지 않는다', async () => {
   const a = (await login('c1', 'p-device-0001')).hash.login, b = (await login('c3', 'p-device-0002')).hash.login;
+  const day = kstDay(Date.now());   // 로그인 없이 올리던 때의 예전 기록(계정이 없다). 주간 요약(board.js)보다 먼저 있던 줄이다
+  await env.DB.prepare('INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)').bind('p-legacy-0001', day, weekStart(day), '다온', 'kt', 3000, 'G').run();
   await call('POST', '/scores', { token: a, body: score(await seeded(a), { nick: '가람', score: 5000 }) });
   await call('POST', '/scores', { token: b, body: score(await seeded(b), { nick: '나래', score: 4000 }) });
   // 가람은 곰 헬멧·불꽃 배트·등번호 7을 사서 입었고, 사지 않은 금색 신발도 입은 것으로 적혀 있다(산 물건만 입은 것으로 본다)
   await env.DB.prepare('UPDATE accounts SET owned = ?, equipped = ? WHERE player_id = ?')
     .bind(JSON.stringify(['helmet-bear', 'bat-fire', 'number-on']), JSON.stringify({ helmet: 'helmet-bear', bat: 'bat-fire', number: 'number-on', no: 7, shoe: 'shoe-gold' }), 'p-device-0001').run();
-  const day = kstDay(Date.now());   // 로그인 없이 올리던 때의 예전 기록(계정이 없다)
-  await env.DB.prepare('INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)').bind('p-legacy-0001', day, weekStart(day), '다온', 'kt', 3000, 'G').run();
   const text = await (await call('GET', '/rankings?player=p-device-0002')).text(), ranking = JSON.parse(text);
   assert.deepEqual(ranking.players.map((p) => [p.nick, p.look]), [
     ['가람', { ...DEFAULTS, helmet: 'helmet-bear', bat: 'bat-fire', number: 'number-on', no: 7 }],

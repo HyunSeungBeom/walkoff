@@ -68,12 +68,10 @@ function rankBy(list, key) {
   return list;
 }
 
-// 한 주의 기록으로 순위를 매긴다(2026-10-29 사용자 결정: 합계가 아니라 이번 주 최고 기록).
-// 사람 점수는 그 주 최고 기록이고 그 기록을 낸 날의 팀으로 간다. 팀 점수는 팀원 최고 기록의 합이다.
-// 이름은 가장 최근 기록을 따른다. 밖으로 내보내는 목록에는 사람 ID를 넣지 않는다.
-// withIds면 목록과 같은 순서의 사람 ID(ids)를 따로 붙인다. 서버가 입은 물건을 찾을 때만 쓰고 응답에서는 뺀다
-export function aggregate(rows, playerId, { withIds = false } = {}) {
-  const byPlayer = new Map(), byTeam = new Map();
+// 한 주의 기록(사람·날짜마다 한 줄, 넣은 순서)을 사람마다 한 줄로: 그 주 최고 기록과 그 기록을 낸 날의 팀(같은 점수면 먼저 넣은 줄),
+// 친 날 수, 가장 최근 날과 그날 닉네임. 주마다 모아 두는 board.js가 SQL로 같은 값을 계산한다
+export function summarize(rows) {
+  const byPlayer = new Map();
   for (const r of rows) {
     const p = byPlayer.get(r.player_id) ?? { id: r.player_id, best: -1, days: 0, last: '' };
     p.days += 1;
@@ -81,7 +79,16 @@ export function aggregate(rows, playerId, { withIds = false } = {}) {
     if (r.day >= p.last) Object.assign(p, { last: r.day, nick: r.nick });
     byPlayer.set(r.player_id, p);
   }
-  const players = rankBy([...byPlayer.values()], 'best');
+  return [...byPlayer.values()];
+}
+
+// 사람마다 한 줄(summarize)로 순위를 매긴다(2026-10-29 사용자 결정: 합계가 아니라 이번 주 최고 기록).
+// 사람 점수는 그 주 최고 기록이고 그 기록을 낸 날의 팀으로 간다. 팀 점수는 팀원 최고 기록의 합이다.
+// 이름은 가장 최근 기록을 따른다. 밖으로 내보내는 목록에는 사람 ID를 넣지 않는다. 같은 점수는 목록 순서대로 늘어선다.
+// withIds면 목록과 같은 순서의 사람 ID(ids)를 따로 붙인다. 서버가 입은 물건을 찾을 때만 쓰고 응답에서는 뺀다
+export function rankSummary(list, playerId, { withIds = false } = {}) {
+  const byTeam = new Map();
+  const players = rankBy(list.map((p) => ({ ...p })), 'best');
   for (const p of players) {
     const t = byTeam.get(p.team) ?? { team: p.team, total: 0, players: 0 };
     t.total += p.best; t.players += 1;
@@ -100,3 +107,6 @@ export function aggregate(rows, playerId, { withIds = false } = {}) {
   if (withIds) out.ids = top.map((p) => p.id);
   return out;
 }
+
+// 한 주의 기록으로 바로 순위를 매긴다(서버는 board.js의 주별 요약으로 rankSummary를 부른다. 테스트가 둘이 같은지 본다)
+export const aggregate = (rows, playerId, opts) => rankSummary(summarize(rows), playerId, opts);

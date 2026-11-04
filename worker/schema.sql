@@ -52,3 +52,10 @@ CREATE TABLE IF NOT EXISTS seed_tokens (
   used_at INTEGER                                -- 점수를 받은 시각(ms). 아직 안 썼으면 NULL
 );
 CREATE INDEX IF NOT EXISTS seed_tokens_player ON seed_tokens (player_id, issued_at);
+
+-- 주마다 사람별 요약(2026-11-04, src/board.js). daily_scores로 언제든 다시 만들 수 있다. 이미 있던 DB에는 migrations/0005_weekly_boards.sql로 더했다
+CREATE TABLE IF NOT EXISTS weekly_boards (
+  week TEXT PRIMARY KEY,                         -- 그 주 월요일(한국 시간)
+  players TEXT NOT NULL,                         -- JSON { 사람 ID: [최고 기록, 그 기록을 낸 날의 팀, 친 날 수, 가장 최근 날, 그날 닉네임] }
+  built_at INTEGER NOT NULL                      -- daily_scores로 다시 만든 시각(ms). BOARD_TTL_MS가 지나면 다시 만든다
+);

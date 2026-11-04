@@ -2,12 +2,13 @@
 // 점수는 카카오로 로그인한 사람만 낼 수 있고(2026-10-28 사용자 결정), 서버가 판마다 내준 시드로 친 판만 받는다(2026-10-30, seeds.js).
 // 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다).
 // 끝내기 상황은 랭킹 없이 코인만 준다(2026-11-04, scenario.js: 서버가 같은 시드로 판을 다시 돌려 확인한다)
-import { kstDay, weekStart, addDays, validateSubmission, validateProfile, aggregate } from './rules.js';
+import { kstDay, weekStart, addDays, validateSubmission, validateProfile, rankSummary } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
 import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
 import { validateEvent, recordEvent } from './stats.js';
 import { issueSeed, findSeed, useSeed } from './seeds.js';
 import { checkScenario } from './scenario.js';
+import { readBoard, saveDaily, updateBoard, renameInBoards, removeFromBoards } from './board.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -18,11 +19,6 @@ const HEADERS = {
 };
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: HEADERS });
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
-
-async function weekRows(db, week) {
-  const { results } = await db.prepare('SELECT player_id, day, nick, team, score FROM daily_scores WHERE week = ?').bind(week).all();
-  return results;
-}
 
 // 합계 방식이던 예전 게임(fa4649a까지)은 사람 점수를 total로 읽는다. 열어 둔 탭까지 다 바뀔 때까지 같은 값을 total로도 보낸다
 const withTotal = (p) => (p ? { ...p, total: p.best } : null);
@@ -35,15 +31,16 @@ async function looksOf(db, ids) {
   return new Map(results.map((a) => [a.player_id, lookOf(a.equipped, ownedOf(a.owned))]));
 }
 
-// 이번 주 순위와 지난주 1등(사람, 팀). looks면 이번 주 목록에 입은 물건(look)을 붙인다(/rankings만. /scores는 내 순위만 쓴다)
-async function rankings(db, week, playerId, { looks = false } = {}) {
-  const [rows, lastRows] = await Promise.all([weekRows(db, week), weekRows(db, addDays(week, -7))]);
-  const { ids, ...now } = aggregate(rows, playerId, { withIds: looks }), last = aggregate(lastRows, null);   // ids는 응답에 넣지 않는다
-  const lookById = looks ? await looksOf(db, ids) : null;
+// 이번 주 순위와 지난주 1등(사람, 팀). 주마다 모아 둔 요약(board.js)으로 매긴다.
+// looks면 이번 주 목록에 입은 물건(look)을 붙이고(/rankings만), lastWeek가 아니면 지난주는 읽지 않는다(/scores는 내 순위만 쓴다)
+async function rankings(db, week, playerId, now, { looks = false, lastWeek = true } = {}) {
+  const [list, lastList] = await Promise.all([readBoard(db, week, now), lastWeek ? readBoard(db, addDays(week, -7), now) : null]);
+  const { ids, ...cur } = rankSummary(list, playerId, { withIds: looks });   // ids는 응답에 넣지 않는다
+  const lookById = looks ? await looksOf(db, ids) : null, last = lastList && rankSummary(lastList, null);
   return {
-    week, nextWeek: addDays(week, 7), ...now,
-    players: now.players.map((p, i) => (lookById ? { ...withTotal(p), look: lookById.get(ids[i]) ?? null } : withTotal(p))), me: withTotal(now.me),
-    lastWeek: { player: withTotal(last.players[0]), team: last.teams[0] ?? null },
+    week, nextWeek: addDays(week, 7), ...cur,
+    players: cur.players.map((p, i) => (lookById ? { ...withTotal(p), look: lookById.get(ids[i]) ?? null } : withTotal(p))), me: withTotal(cur.me),
+    ...(last ? { lastWeek: { player: withTotal(last.players[0]), team: last.teams[0] ?? null } } : {}),
   };
 }
 
@@ -121,7 +118,7 @@ export default {
       if (url.pathname === '/rankings' && method === 'GET') {
         const asked = url.searchParams.get('week') ?? '';
         const week = /^\d{4}-\d{2}-\d{2}$/.test(asked) ? weekStart(asked) : weekStart(kstDay(now));
-        return json(await rankings(env.DB, week, url.searchParams.get('player'), { looks: true }));
+        return json(await rankings(env.DB, week, url.searchParams.get('player'), now, { looks: true }));
       }
       if (url.pathname === '/auth/kakao/start' && method === 'GET') return await loginStart(url, env, now);
       if (url.pathname === '/auth/kakao/callback' && method === 'GET') return await loginCallback(url, env, now);
@@ -147,19 +144,17 @@ export default {
         const checked = validateSubmission(body, now, acct.player_id, ticket);
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const s = checked.value;
-        // 같은 사람·같은 날은 그날 가장 높은 판만 남긴다(주간 순위는 이번 주 최고 기록). accepted는 그날 기록이 새로 생기거나 올랐다는 뜻.
+        // 같은 사람·같은 날은 그날 가장 높은 판만 남기고(saveDaily), 그 주 요약의 내 몫을 다시 계산한다(updateBoard). accepted는 그날 기록이 새로 생기거나 올랐다는 뜻.
         // 계정에는 마지막으로 쓴 닉네임·팀을 적어 둔다. 10구 도전의 표는 같은 묶음에서 쓴 것으로 적는다(점수가 못 들어가면 표도 남는다).
         // 같은 표로 동시에 두 번 보내면 둘 다 들어갈 수 있지만, 같은 공 순서라 그날 가장 높은 점수 하나만 남고 코인은 20초 간격으로 한 번이다
         const [res] = await env.DB.batch([
-          env.DB.prepare(`INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (player_id, day) DO UPDATE SET score = excluded.score, lights = excluded.lights, nick = excluded.nick, team = excluded.team
-            WHERE excluded.score > daily_scores.score`)
-            .bind(s.playerId, s.day, s.week, s.nick, s.team, s.score, s.lights),
+          saveDaily(env.DB, s),
+          updateBoard(env.DB, s.week, s.playerId),
           env.DB.prepare('UPDATE accounts SET nick = ?, team = ? WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
           ...(ticket ? [useSeed(env.DB, ticket, now)] : []),
         ]);
         const earned = await giveCoins(env.DB, s.playerId, coinsFor(s.score), now);
-        const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId), accountById(env.DB, s.playerId)]);
+        const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId, now, { lastWeek: false }), accountById(env.DB, s.playerId)]);
         return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, coins: after.coins, earned });
       }
       // 끝내기 상황 한 판의 코인(scenario.js). 표는 10구 도전과 같은 /seeds 표이고, 서버가 그 시드로 판을 다시 돌려 끝·점수를 낸다.
@@ -186,12 +181,14 @@ export default {
           await env.DB.batch([
             env.DB.prepare('UPDATE accounts SET nick = ?, team = ? WHERE player_id = ?').bind(nick, team, acct.player_id),
             env.DB.prepare('UPDATE daily_scores SET nick = ? WHERE player_id = ?').bind(nick, acct.player_id),
+            renameInBoards(env.DB, acct.player_id, nick),
           ]);
           return json({ ok: true });
         }
         if (method === 'DELETE') {   // 기록 지우기: 점수와 계정을 모두 지운다
           await env.DB.batch([
             env.DB.prepare('DELETE FROM daily_scores WHERE player_id = ?').bind(acct.player_id),
+            removeFromBoards(env.DB, acct.player_id),
             env.DB.prepare('DELETE FROM seed_tokens WHERE player_id = ?').bind(acct.player_id),
             env.DB.prepare('DELETE FROM accounts WHERE player_id = ?').bind(acct.player_id),
           ]);
