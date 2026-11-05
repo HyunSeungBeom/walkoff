@@ -8,7 +8,7 @@ import {
   computeRace, DIVE_GLOVE, diveShort, FIELD_REACT, FIELD_SPEED, GRASS_DECEL, groundPath, interceptGround, PCOVER, PCOVER_LEN, PLAY_EX, reachGround,
   RUN_REACH, RUN_TO_1B, SET_REACH, smoothRoute, sprintDist, sprintTime, TOSS_STEP,
 } from './core/race.js';
-import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
+import { FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, HOME_PLATE, HOME_THROW, leadAt, makeScenario as makeScenarioIn, RUN_JUMP, SCENARIOS, RUN_TAU, RUNNER_ROUTES, scenarioPitch, scenarioPoints, SLIDE_BRAKE as BASE_SLIDE, TAG_TIME } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos, hrExtra, hrLiftK, interceptRoll, rollPath, THROW_OUT } from './core/flight.js';
 import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
@@ -4657,6 +4657,14 @@ function weekStartOf(day) {
   const dow = new Date(`${day}T00:00:00Z`).getUTCDay();   // 0 일요일 … 6 토요일
   return addDay(day, -((dow + 6) % 7));
 }
+// 이번 주 최고 기록(메뉴 칩, 2026-11-05 사용자 결정 '이번 주와 역대 둘 다'. 메뉴 '최고'가 이번 주 랭킹의 내 기록과 달라 보였다).
+// 이 기기에 주(한국 시간 월요일)마다 { week, best }. 로그인했으면 점수를 보내고 받은 서버의 이번 주 최고(다른 기기 포함, 랭킹과 같은 숫자),
+// 아니면 이 기기에서 이번 주에 끝낸 10구 판의 최고(?seed= 판·조준 판은 빼고). 주가 바뀌면 없는 것으로 본다
+function weekBest() { const w = store.get('weekBest', null); return w?.week === weekStartOf(today()) && w.best > 0 ? w.best : null; }
+function setWeekBest(week, best, keepMax = true) {
+  const cur = store.get('weekBest', null);
+  store.set('weekBest', { week, best: keepMax && cur?.week === week ? Math.max(cur.best, best) : best });
+}
 const fmtMD = (day) => `${Number(day.slice(5, 7))}월 ${Number(day.slice(8, 10))}일`;
 function untilNextWeek(week) {
   const ms = Date.parse(`${addDay(week, 7)}T00:00:00+09:00`) - Date.now();
@@ -4704,6 +4712,7 @@ async function submitScore(s, mode) {
   if (status > 0 && status < 500 && store.get('pending', null)?.token === body.token) store.remove('pending');
   if (status === 200 && data.ok) {
     setWallet({ coins: data.coins });
+    if (Number.isInteger(data.me?.best)) setWeekBest(weekStartOf(s.date), data.me.best, false);   // 메뉴 '이번 주'를 랭킹과 같은 숫자로
     game.rankInfo = { status: 'ok', me: data.me, myTeam: data.myTeam, newBest: data.accepted && data.me?.best === s.score, earned: data.earned ?? 0 };
   } else game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error };
 }
@@ -5844,10 +5853,13 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
-  { id: '2026-11-05b', label: '11/5 오후', items: [
+  { id: '2026-11-05c', label: '11/5 오후', items: [   // 2026-11-05c: 조준 타격(실험) 줄을 맨 위에 더하며 id를 올려 이미 읽은 사람에게도 다시 NEW가 뜬다
+    "메뉴에 '조준 타격(실험)'이 생겼어요. 내 배트로 공이 들어올 자리를 겨눠 쳐요",
+    'PC는 마우스로 겨누고 클릭, 폰은 누른 채 끌어서 겨누고 떼면 쳐요. 공이 배트에 닿을 때 치면 잘 맞아요',
+    '조준 타격은 실험이라 랭킹·코인에 안 올라가요. 해 보고 어땠는지 알려 주세요',
     "시작 화면의 '≡ 메뉴' 단추가 잘 보이게 바뀌었어요. 새 소식이 있으면 NEW가 떠요",
-    '메뉴를 새로 꾸몄어요. 맨 위에 내 팀과 최고 기록이 보이고, 놀기·기록·내 것·설정으로 묶었어요',
-    'PC에서는 메뉴가 두 칸으로 넓게 보여요',
+    '메뉴를 새로 꾸몄어요. 맨 위에 내 팀과 이번 주·역대 최고가 보이고, 놀기·기록·내 것·설정으로 묶었어요',
+    'PC에서는 메뉴가 두 칸으로 넓게 보이고, 작은 폰에서는 메뉴를 끌어서 넘겨요',
   ] },
   { id: '2026-11-05a', label: '11/5', items: [
     '홈런·큰 뜬공은 공이 떨어지면 결과와 점수가 한 번에 나와요',
@@ -5947,7 +5959,8 @@ function drawNews() {
 // 메뉴를 한 번도 안 연 사람에게는 단추 아래 말풍선을 띄운다(walkoff.menuSeen. 새 소식 점처럼 처음 온 사람은 빼고 쳐 본 사람만).
 // 메뉴는 내 정보 카드(팀 배지·닉네임·칩·닫기) + 새 소식 띠 + 놀기·기록·내 것·설정 묶음(금색 선 아이콘·이름·오른쪽 값)이고 PC는 780px 두 칸,
 // 폰은 한 칸이다. 낮은 화면은 줄을 줄이고(MENU_SIZE.compact), 그래도 넘치면 끌어 넘긴다(그때는 줄을 뗄 때 누른다). 이모지는 쓰지 않는다
-const menu = { scroll: 0, max: 0, drag: null };
+const menu = { scroll: 0, max: 0, drag: null, fade: { top: false, bottom: false } };
+const MENU_FADE = 40;   // 넘칠 때 흐리게 하는 가장자리 높이(px)
 function openMenu() {
   game.state = 'menu'; menu.scroll = 0;
   if (!store.get('menuSeen', false)) store.set('menuSeen', 1);   // 말풍선은 메뉴를 한 번 열면 다시 안 띄운다
@@ -6015,12 +6028,12 @@ function drawMenuBubble(b) {
   text(str, x + w / 2, y + h / 2 + 0.5, { size, weight: 700, color: '#141414' });
   return { x, y, w, h };
 }
-// 크기(시안 mock.html). 낮은 화면은 compact를 덮어쓴다. minRow는 줄을 줄여도 지킬 높이(그보다 낮아야 들어가면 끌어 넘긴다)
+// 크기(시안 mock.html). 낮은 화면은 compact를 덮어쓴다. minRow는 줄을 줄여도 지킬 높이(그보다 낮아야 들어가면 끌어 넘긴다, 폰은 늘 44px)
 const MENU_SIZE = {
   pc: { w: 780, top: 64, bottom: 24, side: 16, colGap: 14, headPad: 14, headPadX: 16, badge: 52, badgeFont: 18, nick: 20, chip: 12, newsGap: 10, newsH: 40, newsFont: 14,
     h3Top: 14, h3Bottom: 6, h3Font: 12, row: 54, gap: 6, rowPad: 14, icon: 34, label: 16, value: 13, foot: 28, footFont: 12, minRow: 40 },
   mo: { w: Infinity, top: 12, bottom: 12, side: 12, colGap: 0, headPad: 10, headPadX: 12, badge: 44, badgeFont: 16, nick: 17, chip: 11, newsGap: 8, newsH: 34, newsFont: 13,
-    h3Top: 9, h3Bottom: 5, h3Font: 11, row: 44, gap: 5, rowPad: 12, icon: 30, label: 15, value: 12, foot: 24, footFont: 11, minRow: 38 },
+    h3Top: 9, h3Bottom: 5, h3Font: 11, row: 44, gap: 5, rowPad: 12, icon: 30, label: 15, value: 12, foot: 24, footFont: 11, minRow: 44 },
   compact: { top: 8, bottom: 8, headPad: 8, badge: 40, badgeFont: 15, nick: 16, newsGap: 6, newsH: 30, h3Top: 6, h3Bottom: 3, gap: 4, foot: 20, minRow: 34 },
 };
 // 메뉴 자리: 묶음을 PC는 두 칸(놀기·기록 | 내 것·설정), 폰은 한 칸에 놓고 줄 높이를 남는 높이에 맞춘다. max는 넘쳐서 끌어 넘길 길이
@@ -6029,6 +6042,7 @@ function menuLayout(groups) {
   const heads = Math.max(...cols.map((c) => c.length)), rows = Math.max(...cols.map((c) => c.reduce((n, g) => n + g[1].length, 0)));
   const size = (compact) => {
     const c = { ...MENU_SIZE[m ? 'mo' : 'pc'], ...(compact ? MENU_SIZE.compact : {}) };
+    if (m) c.minRow = c.row;   // 폰은 줄을 44px 아래로 줄이지 않는다(카드·제목 여백만 줄이고 넘치면 끌어 넘긴다, 2026-11-05 사용자 결정)
     if (!m && !compact) c.top = clamp(view.h * 0.07, 12, c.top);
     const fixed = c.top + c.headPad * 2 + c.badge + c.newsGap + c.newsH + heads * (c.h3Top + c.h3Font + c.h3Bottom) + c.foot + c.bottom;
     return { c, fixed, rowH: clamp((view.h - fixed) / rows - c.gap, c.minRow, c.row) };
@@ -6073,7 +6087,7 @@ function drawMenu() {
   const groups = [
     ['놀기', [['scn', '끝내기 상황', '9회말 역전 승부', () => startGame('scenario')], ['practice', '연습', '구종 골라 치기', () => startGame('practice')],
       ['aim', '조준 타격', '공을 겨눠 치기', () => startGame('challenge', false, { aim: true }), '조준 타격(실험)', '실험']]],
-    ['기록', [['rec', '기록', best > 0 ? `최고 ${best.toLocaleString()}` : '아직 없음', () => { game.state = 'records'; }], ['rank', '이번 주 랭킹', '내 순위 보기', () => openRanking('title')]]],
+    ['기록', [['rec', '기록', best > 0 ? `역대 최고 ${best.toLocaleString()}` : '아직 없음', () => { game.state = 'records'; }], ['rank', '이번 주 랭킹', '내 순위 보기', () => openRanking('title')]]],
     ['내 것', [['team', '팀·닉네임', `${t ? t.short : '팀 없음'} · ${settings.nick || '-'}`, () => openOnboard('menu')],
       ['shop', '상점 · 내 물건', coins != null ? `코인 ${coins.toLocaleString()}` : '물건 구경', () => openShop('shop')],
       loggedIn() ? ['me', '내 계정', '카카오 로그인됨', openAccount] : ['me', '카카오 로그인', '랭킹에 이름 올리기', openAccount]]],
@@ -6092,15 +6106,21 @@ function drawMenu() {
   ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx, by + c.badge - 4, c.badge, 4); ctx.restore();   // 배지 아래쪽 그늘
   text(t ? t.short : '?', bx + c.badge / 2, by + c.badge / 2 + 1, { size: c.badgeFont, weight: 900 });
   const tx = bx + c.badge + (m ? 11 : 14), soft = 'rgba(255,255,255,0.85)', chips = [];
-  if (best > 0) chips.push([['최고 ', soft], [best.toLocaleString(), gold]]);
+  const wb = weekBest();   // 이번 주(랭킹과 같은 숫자)와 역대(이 기기) 최고를 둘 다
+  if (wb != null) chips.push([['이번 주 ', soft], [wb.toLocaleString(), gold]]);
+  if (best > 0) chips.push([['역대 ', soft], [best.toLocaleString(), gold]]);
   if (streak >= 2) chips.push([[String(streak), gold], ['일 연속', soft]]);
   if (coins != null) chips.push([['코인 ', soft], [coins.toLocaleString(), gold]]);
   ctx.font = font(c.nick, 800);
   text(fitText(settings.nick || '-', close.x - 10 - tx), tx, chips.length ? by + c.badge * 0.3 : by + c.badge / 2, { size: c.nick, weight: 800, align: 'left' });
+  ctx.font = font(c.chip, 700);
+  const chipW = (parts) => parts.reduce((s, [str]) => s + ctx.measureText(str).width, 0) + (c.chip > 11 ? 18 : 14) + 6;
+  const si = chips.findIndex((x) => x[1][0] === '일 연속');
+  if (si >= 0 && chips.reduce((s, x) => s + chipW(x), tx) > close.x - 2) chips.splice(si, 1);   // 한 줄을 넘치면 연속 기록 칩부터 뺀다
   let chipX = tx;
   for (const parts of chips) {   // 닫기 단추 앞까지만
     ctx.font = font(c.chip, 700);
-    if (chipX + parts.reduce((s, [str]) => s + ctx.measureText(str).width, 0) + 18 > close.x - 8) break;
+    if (chipX + chipW(parts) > close.x - 2) break;
     chipX += drawMenuChip(chipX, by + c.badge * 0.75, parts, c.chip) + 6;
   }
   ctx.beginPath(); ctx.arc(close.x + xs / 2, close.y + xs / 2, xs / 2, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fill();
@@ -6138,6 +6158,14 @@ function drawMenu() {
     bottom = Math.max(bottom, cy);
   });
   text('판 수만 익명으로 세고, 이름·계정은 보내지 않아요', view.w / 2, bottom + c.foot / 2, { size: c.footFont, weight: 500, color: 'rgba(255,255,255,0.42)' });   // 이용 통계(track) 안내
+  // 넘치면 아래에 더 있을 때 아래 가장자리를, 위로 넘겼을 때 위 가장자리를 흐리게 한다(끝까지 넘기면 사라진다)
+  menu.fade = { top: menu.max > 0 && menu.scroll > 0.5, bottom: menu.max > 0 && menu.scroll < menu.max - 0.5 };
+  for (const [on, y0, y1] of [[menu.fade.top, 0, MENU_FADE], [menu.fade.bottom, view.h, view.h - MENU_FADE]]) {
+    if (!on) continue;
+    const fg = ctx.createLinearGradient(0, y0, 0, y1);
+    fg.addColorStop(0, 'rgba(4,9,18,0.95)'); fg.addColorStop(1, 'rgba(4,9,18,0)');
+    ctx.fillStyle = fg; ctx.fillRect(0, Math.min(y0, y1), view.w, MENU_FADE);
+  }
   if (menu.max > 0) {   // 넘치면 오른쪽에 위치 막대
     const barH = Math.max(30, view.h * view.h / (view.h + menu.max)), barY = (view.h - barH) * (menu.scroll / menu.max);
     ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(view.w - 5, 0, 3, view.h);
@@ -6221,6 +6249,7 @@ function startGame(mode, waited = false, opts = {}) {
   game.opponent = pickOpponent(game.seed);
   game.rankInfo = null;
   game.skipHint = takeSkipHint();
+  game.aimHint = aim && takeAimHint();
   if (mode === 'scenario') {
     game.rnd = mulberry32(game.seed);
     game.scn = makeScenario(game.rnd);
@@ -6254,7 +6283,17 @@ const ballTime = () => game.t - WINDUP;
 // PC는 마우스로 겨누고 클릭(스페이스바는 마지막 마우스 자리, 움직인 적이 없으면 존 가운데)으로, 폰은 누르면 손가락 AIM_LIFT px 위에 커서가 뜨고
 // 끌어 맞춘 뒤 떼는 순간 친다(손가락 하나만, 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공). 과녁은 가로로 긴 타원(m, 판정은 core AIM).
 // 랭킹·서버 시드·연속 기록·최고 기록·코인·공유에는 넣지 않고 이 기기 조준 최고 기록(walkoff.aimBest)만 남긴다. 통계는 모드 'aim'으로 센다
-const AIM_RADIUS = { mouse: { x: 0.10, y: 0.06 }, touch: { x: 0.10, y: 0.06 } };   // 마우스·터치를 따로 맞출 수 있게 나눠 둔다(처음엔 같다)
+const AIM_RADIUS = { mouse: { x: 0.10, y: 0.06 }, touch: { x: 0.10, y: 0.06 } };   // 과녁(m): 배트 축을 따라 x, 축에 수직으로 y. 마우스·터치를 따로 맞출 수 있게 나눠 둔다(처음엔 같다)
+// 배트 커서(2026-11-05 사용자가 쳐 보고 '원 말고 배트 모양으로'. 그린 공은 쳐야 할 때보다 0.1초쯤 먼저 네모에 닿아서 네모를 신호로 치면 늦었다):
+// 내 배트를 칠 자리 깊이(홈플레이트 앞면)에 수평에서 tilt도 들어 비스듬히 그리고, 맞는 자리(끝에서 tip m)가 커서다. 손잡이는 타자 손 쪽(우타 왼쪽, 좌타 거울)
+const AIM_BAT = { tilt: 15, knob: BAT_LEN - 0.16, tip: 0.16 }, AIM_ZONE_ALPHA = 0.45;   // 조준 판의 존(네모)은 흐리게(볼·스트라이크는 보일 만큼)
+// 배트 축(맞는 자리 → 손잡이, m 단위 벡터, 위가 +)과 축에 수직인 위쪽
+function aimAxes() { const sd = batSide(), t = AIM_BAT.tilt * DEG; return { d: { x: -sd * Math.cos(t), y: Math.sin(t) }, n: { x: sd * Math.sin(t), y: Math.cos(t) } }; }
+// 배트 커서의 손잡이 끝·배트 끝(화면 px, drawBat의 a·b). at은 맞는 자리, s는 그 깊이에서 1m가 몇 px인지
+function aimBatPoints(at) {
+  const z = project(0, 0.8, 0), s = z ? z.s : 0, { d } = aimAxes();
+  return { knob: { x: at.x + d.x * AIM_BAT.knob * s, y: at.y - d.y * AIM_BAT.knob * s, s }, tip: { x: at.x - d.x * AIM_BAT.tip * s, y: at.y + d.y * AIM_BAT.tip * s, s }, s };
+}
 const AIM_LIFT = 80;
 const aimPointer = { x: 0, y: 0, moved: false, touch: null };   // 마우스가 있는 자리, 누르고 있는 손가락 { id, x, y }
 // 지금 커서 자리(화면 px)와 과녁 종류(touch면 터치 과녁)
@@ -6264,35 +6303,35 @@ function aimCursor() {
   const c = project(0, (ZONE.top + ZONE.bottom) / 2, 0);
   return { x: c.x, y: c.y, kind: 'mouse' };
 }
-// 커서와 공이 지나는 자리(홈플레이트 앞면의 p.tx·p.ty, 지금 화면 밀기 그대로)의 차이를 그 깊이의 m로 바꿔 과녁 반지름으로 나눈다.
-// x·y는 판정에 넘길 과녁 비율(오른쪽·위가 +), dx·dy는 m, wx·wy는 겨눈 자리(다시 보기·결과 화면에 그린다)
+// 커서(배트 맞는 자리)와 공이 지나는 자리(홈플레이트 앞면의 p.tx·p.ty, 지금 화면 밀기 그대로)의 차이를 그 깊이의 m로 바꿔, 배트 축을 따라 R.x·
+// 축에 수직으로 R.y인 기운 타원으로 나눈다. x·y는 판정에 넘길 과녁 비율(y는 축에 수직인 위쪽 +, 발사각에 쓴다), dx·dy는 화면 쪽 m(오른쪽·위 +, 이유 글),
+// wx·wy는 겨눈 자리(다시 보기·결과 화면에 그린다)
 function aimFrom(at, p) {
   const c = project(p.tx, p.ty, 0), R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'];
-  const dx = (at.x - c.x) / c.s, dy = (c.y - at.y) / c.s;
-  return { x: dx / R.x, y: dy / R.y, dx, dy, wx: p.tx + dx, wy: p.ty + dy, kind: at.kind };
+  const dx = (at.x - c.x) / c.s, dy = (c.y - at.y) / c.s, { d, n } = aimAxes();
+  return { x: (dx * d.x + dy * d.y) / R.x, y: (dx * n.x + dy * n.y) / R.y, dx, dy, wx: p.tx + dx, wy: p.ty + dy, kind: at.kind };
 }
 
-// 과녁: 가로로 긴 타원(AIM_RADIUS, 홈플레이트 앞면 깊이로 잰 px)과 가운데 sweet(정타가 나는 곳), 가운데 점. at은 화면 px
-function drawAimCursor(at, alpha = 1) {
-  const z = project(0, 0.8, 0);
-  if (!z) return;
-  const R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'], rx = R.x * z.s, ry = R.y * z.s;
+// 배트 커서: 내 배트(상점 배트 모양 그대로)와 맞는 자리(at, 화면 px)의 작은 고리
+function drawAimBat(at, alpha = 1) {
+  const { knob, tip, s } = aimBatPoints(at);
+  if (!s) return;
+  const C = batterColors();
   ctx.save(); ctx.globalAlpha = alpha;
-  ctx.beginPath(); ctx.ellipse(at.x, at.y, rx * AIM.sweet, ry * AIM.sweet, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(127,227,255,0.22)'; ctx.fill();
-  ctx.beginPath(); ctx.ellipse(at.x, at.y, rx, ry, 0, 0, Math.PI * 2); ctx.strokeStyle = '#7fe3ff'; ctx.lineWidth = 2; ctx.stroke();
-  ctx.beginPath(); ctx.arc(at.x, at.y, 2.5, 0, Math.PI * 2); ctx.fillStyle = '#7fe3ff'; ctx.fill();
+  drawBat(knob, tip, 0.034 * s, 0.068 * s, s, (n) => C[n], fxOf(currentLook().bat), true);
+  ctx.beginPath(); ctx.arc(at.x, at.y, Math.max(3, 0.02 * s), 0, Math.PI * 2); ctx.strokeStyle = '#7fe3ff'; ctx.lineWidth = 2; ctx.stroke();
   ctx.restore();
 }
-// 조준 판: 투구 중에는 커서(PC는 마우스 자리, 폰은 누르고 있을 때만), 결과·다시 보기에서는 겨눈 자리와 공이 지난 자리를 점선으로 잇는다
+// 조준 판: 투구 중에는 배트 커서(PC는 마우스 자리, 폰은 누르고 있을 때만), 결과·다시 보기에서는 겨눈 배트와 공이 지난 자리를 점선으로 잇는다
 const finePointer = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
 function drawAimLayer(p) {
   if (camMoved() || !p) return;
-  if (game.state === 'windup' || game.state === 'pitch') { if (aimPointer.touch || finePointer) drawAimCursor(aimCursor()); return; }
+  if (game.state === 'windup' || game.state === 'pitch') { if (aimPointer.touch || finePointer) drawAimBat(aimCursor()); return; }
   const a = game.aims[game.i], at = a && game.state === 'result' ? project(a.wx, a.wy, 0) : null, c = at && project(p.tx, p.ty, 0);
   if (!c) return;
   ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(at.x, at.y); ctx.lineTo(c.x, c.y); ctx.stroke(); ctx.restore();
-  drawAimCursor({ x: at.x, y: at.y, kind: a.kind }, 0.85);
+  drawAimBat({ x: at.x, y: at.y, kind: a.kind }, 0.8);
   ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(3, BALL_R * c.s), 0, Math.PI * 2); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke();   // 공이 지난 자리
 }
 
@@ -6406,6 +6445,7 @@ function recordGame() {
     game.summary.newBest = game.newBest;   // 공유 글에 '새 최고 기록'을 붙인다
     game.best = Math.max(best, game.score);
     if (game.newBest) store.set('best', game.score);
+    if (!loggedIn() && !game.fixedSeed) setWeekBest(weekStartOf(game.summary.date), game.score);   // 로그인했으면 서버 답으로(submitScore)
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
   track('end', game.aim ? 'aim' : game.mode);
@@ -6479,12 +6519,14 @@ function skipToBeat() {
 // 이 기기에서 처음 세 판만 공이 날아가는 동안 '탭하면 바로 결과'를 작게 띄운다(2026-11-03 사용자 결정 '처음 몇 번만 작게').
 // 판을 시작할 때 센다(walkoff.skipHint, 보여 준 판 수). 저장소를 못 쓰면 띄우지 않는다(매번 처음이 되므로)
 const SKIP_HINT_GAMES = 3;
-function takeSkipHint() {
-  const n = Number(store.get('skipHint', 0)) || 0;
+function takeSkipHint(key = 'skipHint') {
+  const n = Number(store.get(key, 0)) || 0;
   if (n >= SKIP_HINT_GAMES) return false;
-  store.set('skipHint', n + 1);
-  return Number(store.get('skipHint', 0)) === n + 1;
+  store.set(key, n + 1);
+  return Number(store.get(key, 0)) === n + 1;
 }
+// 조준 판도 처음 세 판만 '공이 배트에 닿을 때 치세요'를 띄운다(2026-11-05 사용자 결정, walkoff.aimHint). 네모에 닿을 때 치면 늦어서
+const takeAimHint = () => takeSkipHint('aimHint');
 // 버튼 위를 누르면 그 버튼, 아니면 화면마다 정한 기본 동작(시작, 스윙, 다음 공)을 한다
 function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(pointerType). x가 없으면 키
   Sound.init();
@@ -6592,7 +6634,7 @@ function render(time) {
     const fp = fieldPlay(r).ball(game.flightT);   // 친 공 → 글러브에 든 공 → 던진 공. 꼬리는 친 공에만
     if (fp.z > MOUND && !fp.hidden) { if (fp.trail) drawBallTrail(r, game.flightT); drawBall(fp, { glow: fp.trail, scale: 2, spin: fp.trail ? battedSpin(r, game.flightT) : null }); }
   }
-  drawZone(game.state === 'result' ? 0.6 : 0.9);
+  drawZone((game.state === 'result' ? 0.6 : 0.9) * (game.aim ? AIM_ZONE_ALPHA : 1));
   if (game.state === 'result' && game.resultT > game.revealAt) drawTrail(p, game.replay != null ? game.replay / p.T : 1.0);
   if (playing && bt >= 0) {
     const u = (game.replay != null ? game.replay : bt) / p.T;
@@ -6645,6 +6687,9 @@ function render(time) {
   if (game.state === 'over') { drawGameOver(); drawTopBar(); drawToast(); return; }
   drawTopBar();
   const L = hudLayout();
+  if (game.aim && game.aimHint && (game.state === 'windup' || game.state === 'pitch')) {   // 처음 세 판: 존을 가리지 않게 아래쪽, 첫 공 안내 위
+    text(finePointer ? '공이 배트에 닿을 때 치세요 · 클릭' : '공이 배트에 닿을 때 치세요 · 손 떼기', view.w / 2, view.h - L.pad - (game.i === 0 ? 48 : 20), { size: view.mobile ? 15 : 17, weight: 800, color: '#7fe3ff', shadow: true });
+  }
   if (game.i === 0 && game.state !== 'result') {
     text(game.aim ? (finePointer ? '마우스로 겨누고 클릭 · 랭킹에는 안 올라가요' : '끌어서 겨누고 떼면 스윙 · 랭킹에는 안 올라가요') : view.mobile ? '공이 존에 올 때 탭' : '공이 존에 올 때 스페이스바 · 클릭', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 15 : 17, color: 'rgba(255,255,255,0.75)', shadow: true });
   }
@@ -6685,5 +6730,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, weekBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };

@@ -869,7 +869,8 @@ test.describe('화면', () => {
     await tap(page, '메뉴');
     await page.waitForFunction(() => walkoff.game.state === 'menu');
     const texts = await drawnTexts(page);
-    for (const s of ['LG', '테스트', '5,200', '1,250', '새 소식', '놀기', '기록', '내 것', '설정', '9회말 역전 승부', '구종 골라 치기', '최고 5,200', '내 순위 보기', 'LG · 테스트', '코인 1,250', '카카오 로그인됨', '0ms']) expect(texts, s).toContain(s);
+    for (const s of ['LG', '테스트', '역대 ', '5,200', '1,250', '새 소식', '놀기', '기록', '내 것', '설정', '9회말 역전 승부', '구종 골라 치기', '역대 최고 5,200', '내 순위 보기', 'LG · 테스트', '코인 1,250', '카카오 로그인됨', '0ms']) expect(texts, s).toContain(s);
+    expect(texts).not.toContain('이번 주 ');   // 이번 주 기록이 없으면 칩을 감춘다
     expect(texts.some((s) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s))).toBe(false);   // 이모지는 쓰지 않는다
     const go = async (label) => {   // 메뉴를 다시 열고 그 줄을 누른 뒤 간 화면
       await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
@@ -891,6 +892,58 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test("메뉴 칩 '이번 주'는 랭킹과 같은 숫자다: 로그인 안 했으면 이 기기에서 이번 주에 끝낸 10구 최고(?seed= 판·조준 판은 빼고), 로그인했으면 서버가 돌려준 이번 주 최고. 주가 바뀌면 감춘다", async ({ page }) => {
+    const play = (aim = false) => page.evaluate((aim) => {   // 공 하나로 끝나는 판(seed 42 첫 공을 정확히 치면 홈런 1,100점)
+      walkoff.startGame('challenge', false, { aim }); Object.assign(walkoff.game, { left: 1, extra: 99 }); walkoff.game.seq[0] = walkoff.makeSequence(42, false)[0];
+    }, aim);
+    const finish = async () => {
+      await page.waitForFunction(() => walkoff.game.state === 'pitch');
+      await pressAt(page, 0);
+      await page.waitForFunction(() => walkoff.game.state === 'result');
+      await page.evaluate(() => { const g = walkoff.game; g.resultT = Math.max(g.resultT, g.revealAt) + 1; walkoff.tap(g.clockAt); });
+      await page.waitForFunction(() => walkoff.game.state === 'over');
+    };
+    const chips = async () => { await page.evaluate(() => walkoff.openMenu()); await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '새 소식')); return drawnTexts(page); };
+    const errors = await open(page, '');   // ?seed= 없이(무작위 공 순서)
+    await play(); await finish();
+    const score = await page.evaluate(() => walkoff.game.summary.score);
+    expect(score).toBeGreaterThan(0);
+    expect(await page.evaluate(() => walkoff.weekBest())).toBe(score);
+    expect(await chips()).toEqual(expect.arrayContaining(['이번 주 ', score.toLocaleString(), '역대 ']));
+    await play(true); await page.evaluate(() => { walkoff.game.seq[0] = walkoff.makeSequence(42, false)[0]; }); await page.mouse.move(1, 1);
+    await page.evaluate(() => walkoff.store.set('weekBest', { week: walkoff.weekStartOf(walkoff.today()), best: 10 }));
+    await finish();   // 조준 판은 세지 않는다
+    expect(await page.evaluate(() => walkoff.weekBest())).toBe(10);
+    await page.evaluate(() => walkoff.store.set('weekBest', { week: '2026-10-26', best: 9999 }));   // 지난주 기록
+    expect(await page.evaluate(() => walkoff.weekBest())).toBe(null);
+    expect(await chips()).not.toContain('이번 주 ');
+    expect(errors).toEqual([]);
+  });
+
+  test("메뉴 칩 '이번 주': ?seed=로 공 순서를 정한 판은 세지 않는다", async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    expect(await page.evaluate(() => [walkoff.game.fixedSeed, walkoff.game.recorded, walkoff.weekBest()])).toEqual([true, true, null]);
+    expect(errors).toEqual([]);
+  });
+
+  test("메뉴 칩 '이번 주': 로그인했으면 서버가 돌려준 이번 주 최고(다른 기기 포함, 랭킹과 같은 숫자)로 맞춘다", async ({ page }) => {
+    const errors = await open(page, '', { login: true, api: { scoreReply: 'lower' } });   // 서버에는 이 판보다 1,000점 높은 이번 주 기록이 있다
+    await page.waitForFunction(() => walkoff.seedTicket.ready);
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    await expect.poll(() => page.evaluate(() => walkoff.game.rankInfo?.status)).toBe('ok');
+    const r = await page.evaluate(() => ({ score: walkoff.game.summary.score, wb: walkoff.weekBest(), me: walkoff.game.rankInfo.me.best }));
+    expect(r.wb).toBe(r.me);
+    expect(r.wb).toBe(r.score + 1000);
+    expect(errors).toEqual([]);
+  });
+
   test('메뉴 크기: 360×640·390×844·1440×900·1920×1080에서 줄이 화면 안이고 안 겹치며 시작 화면 코인과 메뉴 단추도 안 겹친다. 더 낮으면(360×480) 끌어 넘기고, 끄는 동안에는 줄이 안 눌린다', async ({ page, isMobile }) => {
     test.skip(isMobile, '창 크기를 바꿔 가며 보므로 PC에서만 본다');
     const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 123456 } } });   // 코인 자리가 가장 넓을 때
@@ -908,8 +961,27 @@ test.describe('화면', () => {
       expect(list.filter((b) => b.r.x < 0 || b.r.y < 0 || b.r.x + b.r.w > w || b.r.y + b.r.h > h).map((b) => b.label), `${w}×${h}`).toEqual([]);
       expect(overlaps(list), `${w}×${h}`).toEqual([]);
       expect(await page.evaluate(() => walkoff.menu.max), `${w}×${h}`).toBe(0);   // 넘기지 않아도 다 들어간다
-      expect(list.filter((b) => !['닫기', '새 소식'].includes(b.label)).every((b) => b.r.h >= 34), `${w}×${h}`).toBe(true);
+      expect(list.filter((b) => !['닫기', '새 소식'].includes(b.label)).every((b) => b.r.h >= (w < 640 ? 44 : 34)), `${w}×${h}`).toBe(true);   // 폰은 줄을 44px 아래로 줄이지 않는다
     }
+    // 작은 폰(실제 브라우저 높이): 줄은 44px 그대로 두고 넘치면 끌어 넘긴다. 아래에 더 있으면 아래, 위로 넘겼으면 위 가장자리가 흐리다
+    for (const [w, h] of [[320, 460], [360, 560], [375, 548], [390, 664]]) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
+      await page.waitForFunction((w) => walkoff.view.w === w && walkoff.ui.buttons.some((b) => b.label === '새 소식'), w);
+      await page.waitForTimeout(50);
+      const rows = (await buttons()).filter((b) => !['닫기', '새 소식'].includes(b.label));
+      expect(rows.every((b) => b.r.h >= 44), `${w}×${h}`).toBe(true);
+      const m = await page.evaluate(() => ({ max: walkoff.menu.max, fade: walkoff.menu.fade }));
+      if (m.max === 0) { expect(m.fade, `${w}×${h}`).toEqual({ top: false, bottom: false }); continue; }
+      expect(m.fade, `${w}×${h} 처음`).toEqual({ top: false, bottom: true });
+      await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 5000, cancelable: true })));
+      await page.waitForTimeout(80);
+      const end = await page.evaluate(() => ({ at: walkoff.menu.scroll === walkoff.menu.max, fade: walkoff.menu.fade, last: walkoff.ui.buttons.find((b) => b.label.startsWith('타이밍 보정')).r }));
+      expect(end.at, `${w}×${h}`).toBe(true);
+      expect(end.fade, `${w}×${h} 끝`).toEqual({ top: true, bottom: false });
+      expect(end.last.y + end.last.h, `${w}×${h} 마지막 줄이 화면 안`).toBeLessThanOrEqual(h);
+    }
+    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max > 0])).toEqual([390, false]);   // 390×664는 넘치지 않는다(PC라 진동 줄이 없어 9줄)
     await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 8줄)
     await expect.poll(() => page.evaluate(() => walkoff.menu.max)).toBeGreaterThan(0);
     const box = await page.locator('canvas').boundingBox(), row = (await buttons()).find((b) => b.label === '연습').r;
@@ -2545,6 +2617,59 @@ test.describe('조준 타격(실험)', () => {
     await touch(page, 'pointerup', c.x, c.y + 80);
     expect(await outcome(page)).toMatchObject({ took: true, swingAt: null });
     expect(await page.evaluate(() => walkoff.aimPointer.touch)).toBe(null);
+    expect(errors).toEqual([]);
+  });
+
+  test('배트 커서: 맞는 자리가 겨눈 자리이고 손잡이는 타자 손 쪽(좌타는 거울)이며, 과녁은 배트 축을 따라 rx·수직으로 ry로 잰다. 조준 판은 존이 흐리고, 처음 세 판만 \'공이 배트에 닿을 때 치세요\'를 띄운다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '판정과 그림 계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const errors = await open(page, '?seed=42');
+    const r = await page.evaluate(() => {
+      const w = walkoff, g = w.game; w.paused = true;
+      const toPitch = (aim) => { w.startGame('challenge', false, { aim }); const p = g.seq[g.i]; while (!(g.state === 'pitch' && w.ballTime() + 1 / 60 >= p.T)) { g.clockAt += 1000 / 60; w.update(1 / 60); } return p; };
+      const hit = (dx, dy) => {   // 공이 지날 자리에서 (dx, dy) m(화면 오른쪽·위가 +) 떨어진 곳을 겨누고 정확한 타이밍에 친다
+        const p = toPitch(true), c = w.project(p.tx, p.ty, 0);
+        w.swing(g.clockAt + (p.T - w.ballTime()) * 1000, 'mouse', { x: c.x + dx * c.s, y: c.y - dy * c.s, kind: 'mouse' });
+        return { kind: g.outcome.kind, zone: g.outcome.aimZone, x: g.aims[g.i].x, y: g.aims[g.i].y };
+      };
+      const { d, n } = w.aimAxes(), R = w.AIM_RADIUS.mouse;
+      const along = hit(d.x * 0.97 * R.x, d.y * 0.97 * R.x), across = hit(n.x * 1.1 * R.y, n.y * 1.1 * R.y);
+      const at = { x: 700, y: 500 }, pR = w.aimBatPoints(at);
+      w.setBats('L'); const pL = w.aimBatPoints(at); w.setBats('R');
+      // 존(네모) 선의 밝기: 10구와 조준 판을 한 장면씩 그려 존 테두리(strokeRect)의 투명도를 본다
+      const zoneAlpha = (aim) => {
+        toPitch(aim);
+        const proto = CanvasRenderingContext2D.prototype, sr = proto.strokeRect, seen = [];
+        proto.strokeRect = function (...a) { const m = /rgba\(255, 255, 255, ([\d.]+)\)/.exec(String(this.strokeStyle)); if (m) seen.push(Number(m[1])); return sr.apply(this, a); };
+        try { w.render(g.t); } finally { proto.strokeRect = sr; }
+        return Math.max(...seen);
+      };
+      const zone = { plain: zoneAlpha(false), aim: zoneAlpha(true) };
+      // 처음 세 판만 안내(이미 위에서 판을 몇 번 시작해서 저장소 값을 지우고 센다)
+      localStorage.removeItem('walkoff.aimHint');
+      const shown = [];
+      for (let k = 0; k < 4; k++) {
+        toPitch(true);
+        const proto = CanvasRenderingContext2D.prototype, ft = proto.fillText, texts = [];
+        proto.fillText = function (s, ...a) { texts.push(String(s)); return ft.call(this, s, ...a); };
+        try { w.render(g.t); } finally { proto.fillText = ft; }
+        shown.push(texts.includes('공이 배트에 닿을 때 치세요 · 클릭'));
+      }
+      return { along, across, pR, pL, zone, shown, hintCount: Number(localStorage.getItem('walkoff.aimHint')), batLen: Math.hypot(pR.knob.x - pR.tip.x, pR.knob.y - pR.tip.y) / pR.s };
+    });
+    expect(r.along.kind).not.toBe('whiff');   // 배트 축 위(rx의 0.97배)는 맞는다. 옛 가로 타원이면 과녁 밖이었다
+    expect(r.along.zone).toBe('edge');
+    expect(Math.hypot(r.along.x, r.along.y)).toBeCloseTo(0.97, 2);
+    expect(r.across).toMatchObject({ kind: 'whiff', zone: 'miss' });   // 축에 수직으로 ry를 넘으면 헛스윙
+    expect(r.across.y).toBeCloseTo(1.1, 2);
+    expect(r.batLen).toBeCloseTo(0.86, 2);   // 실제 배트 길이(멀수록 작게: 칠 자리 깊이의 축척)
+    expect(r.pR.knob.x).toBeLessThan(700); expect(r.pR.knob.y).toBeLessThan(r.pR.tip.y);   // 우타: 손잡이는 왼쪽 위
+    expect(r.pL.knob.x).toBeGreaterThan(700); expect(r.pL.knob.y).toBeCloseTo(r.pR.knob.y, 5);   // 좌타는 거울
+    const t = (q) => (700 - q.knob.x) / (q.tip.x - q.knob.x);   // 맞는 자리(at)가 손잡이에서 끝으로 가는 길의 어디쯤인지
+    expect(t(r.pR)).toBeCloseTo((0.86 - 0.16) / 0.86, 2);
+    expect(r.zone.aim).toBeCloseTo(r.zone.plain * 0.45, 2);   // 조준 판의 존은 흐리게
+    expect(r.zone.plain).toBeCloseTo(0.55 * 0.9, 2);          // 10구는 그대로
+    expect(r.shown).toEqual([true, true, true, false]);
+    expect(r.hintCount).toBe(3);
     expect(errors).toEqual([]);
   });
 

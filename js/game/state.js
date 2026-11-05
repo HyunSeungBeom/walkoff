@@ -15,7 +15,7 @@ export const game = {
   opponent: null, onboard: null, ranking: null, rankInfo: null, rankTab: 'players', rankBack: 'title', account: null,   // 상대 팀, 팀 고르기, 랭킹, 내 계정 화면
   ticket: null, fixedSeed: false, waitingSeed: false, recorded: false,   // 이번 판에 쓴 서버 시드, 주소의 ?seed=로 친 판인지, 서버 시드를 기다리는 중인지, 이번 판을 기록했는지
   moves: [], scnCoin: null,   // 끝내기 상황: 공마다 휘두른 때(ms, 지켜보면 null. 서버가 판을 다시 돌린다), 판 끝에 받은 코인({ status, earned })
-  aim: false, aims: [],       // 조준 타격(실험) 판인지, 공마다 겨눈 자리(main.js aimFrom, 지켜보면 비어 있다)
+  aim: false, aims: [], aimHint: false,   // 조준 타격(실험) 판인지, 공마다 겨눈 자리(main.js aimFrom, 지켜보면 비어 있다), 처음 세 판 안내를 띄우는지
 };
 
 // 좌타/우타, 타이밍 보정(ms), 팀·닉네임, 랭킹에서 이 브라우저를 구별하는 ID, 진동. 아래는 저장소를 못 읽을 때의 기본값이다
