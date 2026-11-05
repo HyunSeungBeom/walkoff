@@ -5853,8 +5853,13 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
+  { id: '2026-11-05d', label: '11/5 늦은 오후', items: [
+    "메뉴와 조준 타격 끝 화면에 '의견 보내기'가 생겼어요. 좋았던 점·불편한 점을 남겨 주세요(패들렛으로 열려요)",
+    '조준 타격을 조금 쉽게 했어요. 위아래로 조금 빗나가도 맞아요',
+    '조준 배트가 그림자로 바뀌어 덜 어지러워요. 폰에서는 누른 자리가 손잡이라, 위로 비스듬히 뻗은 배트 굵은 쪽으로 겨눠 쳐요',
+  ] },
   { id: '2026-11-05c', label: '11/5 오후', items: [   // 2026-11-05c: 조준 타격(실험) 줄을 맨 위에 더하며 id를 올려 이미 읽은 사람에게도 다시 NEW가 뜬다
-    "메뉴에 '조준 타격(실험)'이 생겼어요. 내 배트로 공이 들어올 자리를 겨눠 쳐요",
+    "메뉴에 '조준 타격(실험)'이 생겼어요. 배트로 공이 들어올 자리를 겨눠 쳐요",
     'PC는 마우스로 겨누고 클릭, 폰은 누른 채 끌어서 겨누고 떼면 쳐요. 공이 배트에 닿을 때 치면 잘 맞아요',
     '조준 타격은 실험이라 랭킹·코인에 안 올라가요. 해 보고 어땠는지 알려 주세요',
     "시작 화면의 '≡ 메뉴' 단추가 잘 보이게 바뀌었어요. 새 소식이 있으면 NEW가 떠요",
@@ -5957,10 +5962,20 @@ function drawNews() {
 // ===== 메뉴(2026-11-05 사용자 '햄버거 메뉴가 잘 안 보이는 사람도 있다, 가독성 좋게, 꾸며 줬으면' → 오른쪽 세션 시안 A·말풍선) =====
 // 시작 화면 오른쪽 위는 '≡ 메뉴' 알약 단추이고(전에는 배경 없는 흰 줄 셋) 안 읽은 새 소식이 있으면 오른쪽 위에 NEW를 단다.
 // 메뉴를 한 번도 안 연 사람에게는 단추 아래 말풍선을 띄운다(walkoff.menuSeen. 새 소식 점처럼 처음 온 사람은 빼고 쳐 본 사람만).
-// 메뉴는 내 정보 카드(팀 배지·닉네임·칩·닫기) + 새 소식 띠 + 놀기·기록·내 것·설정 묶음(금색 선 아이콘·이름·오른쪽 값)이고 PC는 780px 두 칸,
+// 메뉴는 내 정보 카드(팀 배지·닉네임·칩·닫기) + 새 소식 띠 + 의견 보내기 띠 + 놀기·기록·내 것·설정 묶음(금색 선 아이콘·이름·오른쪽 값)이고 PC는 780px 두 칸,
 // 폰은 한 칸이다. 낮은 화면은 줄을 줄이고(MENU_SIZE.compact), 그래도 넘치면 끌어 넘긴다(그때는 줄을 뗄 때 누른다). 이모지는 쓰지 않는다
 const menu = { scroll: 0, max: 0, drag: null, fade: { top: false, bottom: false } };
 const MENU_FADE = 40;   // 넘칠 때 흐리게 하는 가장자리 높이(px)
+// 의견 보내기(2026-11-05 사용자 '유저 보이스를 넣을 수 있게 링크를 게임 안에 넣자. 출시 전이니 피드백을 받아 더 재밌게 만들자'): 메뉴 '의견 보내기' 줄과
+// 조준 판 끝 화면 링크가 패들렛을 새 탭으로 연다. 바깥 사이트라서 바깥 화살표(MENU_ICONS.out)를 단다. 이런 단추는 ui.buttons에 href를 둔다
+const FEEDBACK_URL = 'https://padlet.com/ghtgrz4s5s/walkoff-s02561vkamvtbvubw2oe';
+// 새 탭이 막히면(새 창을 못 여는 앱 안 브라우저) 이 탭에서 연다. noopener를 주면 막혔는지 알 수 없어서 연 뒤에 opener를 끊는다
+function openOutside(url) {
+  const w = window.open(url, '_blank');
+  if (!w) { location.href = url; return; }
+  try { w.opener = null; } catch { /* 벌써 다른 사이트로 넘어갔으면 못 끊는다 */ }
+}
+const linkAt = (x, y) => ui.buttons.find((b) => b.href && inRect(b.r, x, y));
 function openMenu() {
   game.state = 'menu'; menu.scroll = 0;
   if (!store.get('menuSeen', false)) store.set('menuSeen', 1);   // 말풍선은 메뉴를 한 번 열면 다시 안 띄운다
@@ -5978,6 +5993,8 @@ const MENU_ICONS = Object.fromEntries(Object.entries({
   me: `${circlePath(12, 8, 4)}M4 21a8 8 0 0 1 16 0`,
   calib: `${circlePath(12, 13, 7)}M12 13V9M10 3h4M18 6l1.5-1.5`,
   vib: 'M10 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM4 9v6M20 9v6',
+  voice: 'M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z',
+  out: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',   // 바깥 사이트로 나가는 화살표
   close: 'M6 6l12 12M18 6L6 18',
 }).map(([k, d]) => [k, new Path2D(d)]));
 function menuIcon(name, x, y, size, color = '#f2c94c') {   // (x, y)가 왼쪽 위인 size px 칸에
@@ -6044,7 +6061,7 @@ function menuLayout(groups) {
     const c = { ...MENU_SIZE[m ? 'mo' : 'pc'], ...(compact ? MENU_SIZE.compact : {}) };
     if (m) c.minRow = c.row;   // 폰은 줄을 44px 아래로 줄이지 않는다(카드·제목 여백만 줄이고 넘치면 끌어 넘긴다, 2026-11-05 사용자 결정)
     if (!m && !compact) c.top = clamp(view.h * 0.07, 12, c.top);
-    const fixed = c.top + c.headPad * 2 + c.badge + c.newsGap + c.newsH + heads * (c.h3Top + c.h3Font + c.h3Bottom) + c.foot + c.bottom;
+    const fixed = c.top + c.headPad * 2 + c.badge + 2 * (c.newsGap + c.newsH) + heads * (c.h3Top + c.h3Font + c.h3Bottom) + c.foot + c.bottom;   // 띠 둘(새 소식·의견 보내기)
     return { c, fixed, rowH: clamp((view.h - fixed) / rows - c.gap, c.minRow, c.row) };
   };
   let L = size(false);
@@ -6137,7 +6154,21 @@ function drawMenu() {
   text('›', arrowX, ny, { size: c.newsFont + 6, weight: 700, color: 'rgba(255,255,255,0.5)', align: 'right' });
   if (NEWS.length) { ctx.font = font(c.newsFont, 500); text(fitText(`${NEWS[0].label} · ${NEWS[0].items[0]}`, arrowX - 16 - nx), nx, ny + 0.5, { size: c.newsFont, weight: 500, color: 'rgba(255,255,255,0.7)', align: 'left' }); }
   ui.buttons.push({ r: nr, label: '새 소식', onTap: openNews });
-  y += nr.h;
+  y += nr.h + c.newsGap;
+  // 의견 보내기 띠: 새 소식 띠 바로 아래(2026-11-05 사용자 결정 '의견을 많이 받는 것이 목적이라 위쪽에'. 메뉴 맨 아래 줄은 작은 폰에서 끌어야 보였다).
+  // 말풍선 아이콘·이름·설명, 오른쪽 끝은 바깥 화살표. 누르면 패들렛을 새 탭으로
+  const fr = { x: x0, y, w: W, h: c.newsH }, fy = fr.y + fr.h / 2, fis = c.newsFont + 4, fgr = ctx.createLinearGradient(fr.x, 0, fr.x + fr.w, 0);
+  fgr.addColorStop(0, 'rgba(80,170,255,0.24)'); fgr.addColorStop(1, 'rgba(80,170,255,0.05)');
+  roundRect(fr.x, fr.y, fr.w, fr.h, 12); ctx.fillStyle = fgr; ctx.fill(); ctx.strokeStyle = 'rgba(120,190,255,0.5)'; ctx.stroke();
+  menuIcon('voice', nx0, fy - fis / 2, fis, '#8cc8ff');
+  let fx = nx0 + fis + 8;
+  text('의견 보내기', fx, fy + 0.5, { size: c.newsFont, weight: 800, align: 'left' });
+  fx += ctx.measureText('의견 보내기').width + 10;
+  menuIcon('out', arrowX - fis + 2, fy - fis / 2 + 1, fis - 2, '#8cc8ff');
+  ctx.font = font(c.newsFont, 500);
+  text(fitText('좋았던 점·불편한 점', arrowX - fis - 8 - fx), fx, fy + 0.5, { size: c.newsFont, weight: 500, color: 'rgba(255,255,255,0.7)', align: 'left' });
+  ui.buttons.push({ r: fr, label: '의견 보내기', href: FEEDBACK_URL });
+  y += fr.h;
   // 묶음: 금색 제목과 줄들
   const colW = (W - c.colGap * (L.cols.length - 1)) / L.cols.length;
   let bottom = y;
@@ -6173,6 +6204,16 @@ function drawMenu() {
   }
 }
 
+// 바깥 사이트 링크 한 줄(파란 글자·밑줄 + 바깥 화살표, 가운데 cx). 누르는 자리(높이 30px)를 돌려준다
+function drawOutLink(label, cx, cy, size) {
+  ctx.font = font(size, 700);
+  const tw = ctx.measureText(label).width, is = size + 2, w = tw + 5 + is, x = cx - w / 2, color = '#8cc8ff';
+  text(label, x, cy, { size, weight: 700, color, align: 'left' });
+  ctx.fillStyle = 'rgba(140,200,255,0.45)'; ctx.fillRect(x, cy + size * 0.75, tw, 1);
+  menuIcon('out', x + tw + 5, cy - is / 2 - 1, is, color);
+  return { x: x - 10, y: cy - 15, w: w + 20, h: 30 };
+}
+
 // [좌타 | 우타] 고르기. cy는 버튼 세로 가운데
 function drawBatsToggle(cy) {
   const w = view.mobile ? 84 : 96, h = 38;
@@ -6188,6 +6229,8 @@ function drawGameOver() {
   if (game.mode === 'scenario') { drawScenarioOver(); return; }
   const m = view.mobile, cx = view.w / 2, s = game.summary;
   let y = view.h * 0.19;
+  // 조준 판은 의견 보내기 줄만큼 길어서, 낮은 화면(사파리 375×548)에서는 '처음으로' 밑줄이 아래 주소(drawSiteMark)와 8px 떨어지게 30px까지 당겨 올린다
+  if (game.aim) y -= clamp(y + (m ? 466 : 529) - view.h, 0, 30);
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
   text(game.aim ? '조준 타격(실험)' : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
   y += m ? 54 : 70;
@@ -6203,8 +6246,13 @@ function drawGameOver() {
   text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
   y += m ? 38 : 48;
   const bw = m ? view.w - 48 : 340;
-  if (game.aim) { text('실험판이라 랭킹·코인·연속 기록에는 안 올라가요', cx, y, { size: m ? 13 : 15, weight: 600, color: 'rgba(255,255,255,0.6)' }); y += m ? 30 : 36; }
-  else if (game.mode === 'challenge' && settings.team) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인)
+  if (game.aim) {   // 실험판 안내와 의견 보내기 링크(패들렛, 새 탭)
+    text('실험판이라 랭킹·코인·연속 기록에는 안 올라가요', cx, y, { size: m ? 13 : 15, weight: 600, color: 'rgba(255,255,255,0.6)' });
+    y += m ? 24 : 28;
+    const label = '조준 타격 어땠나요? 의견 보내기';
+    ui.buttons.push({ r: drawOutLink(label, cx, y, m ? 14 : 16), label, href: FEEDBACK_URL });
+    y += m ? 28 : 34;
+  } else if (game.mode === 'challenge' && settings.team) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인)
     const lw = Math.min(view.w - 32, 420);
     addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
     y += m ? 30 : 36;
@@ -6280,25 +6328,34 @@ const ballTime = () => game.t - WINDUP;
 
 // ===== 조준 타격(실험, 2026-11-05 사용자 아이디어·결정, 계획 ~/.claude/plans/piped-bouncing-bird.md) =====
 // 메뉴 '조준 타격(실험)'은 10구 도전과 같은 규칙인데(game.mode 'challenge', game.aim) 타이밍과 함께 공이 지나는 자리를 겨눠야 한다.
-// PC는 마우스로 겨누고 클릭(스페이스바는 마지막 마우스 자리, 움직인 적이 없으면 존 가운데)으로, 폰은 누르면 손가락 AIM_LIFT px 위에 커서가 뜨고
-// 끌어 맞춘 뒤 떼는 순간 친다(손가락 하나만, 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공). 과녁은 가로로 긴 타원(m, 판정은 core AIM).
+// PC는 마우스로 겨누고 클릭(스페이스바는 마지막 마우스 자리, 움직인 적이 없으면 존 가운데)으로, 폰은 누른 자리가 배트 손잡이 끝이고(AIM_GRIP)
+// 끌어 맞춘 뒤 떼는 순간 친다(손가락 하나만, 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공). 과녁은 배트 축을 따라 잰 타원(m, 판정은 core AIM).
 // 랭킹·서버 시드·연속 기록·최고 기록·코인·공유에는 넣지 않고 이 기기 조준 최고 기록(walkoff.aimBest)만 남긴다. 통계는 모드 'aim'으로 센다
-const AIM_RADIUS = { mouse: { x: 0.10, y: 0.06 }, touch: { x: 0.10, y: 0.06 } };   // 과녁(m): 배트 축을 따라 x, 축에 수직으로 y. 마우스·터치를 따로 맞출 수 있게 나눠 둔다(처음엔 같다)
+// 과녁(m): 배트 축을 따라 x, 축에 수직으로 y. 마우스·터치를 따로 맞출 수 있게 나눠 둔다(처음엔 같다).
+// 세로는 2026-11-05 사용자 '아직 너무 어렵다' → 1.5배(0.06 → 0.09)
+const AIM_RADIUS = { mouse: { x: 0.10, y: 0.09 }, touch: { x: 0.10, y: 0.09 } };
 // 배트 커서(2026-11-05 사용자가 쳐 보고 '원 말고 배트 모양으로'. 그린 공은 쳐야 할 때보다 0.1초쯤 먼저 네모에 닿아서 네모를 신호로 치면 늦었다):
-// 내 배트를 칠 자리 깊이(홈플레이트 앞면)에 수평에서 tilt도 들어 비스듬히 그리고, 맞는 자리(끝에서 tip m)가 커서다. 손잡이는 타자 손 쪽(우타 왼쪽, 좌타 거울)
+// 칠 자리 깊이(홈플레이트 앞면)에 그리고, 맞는 자리(끝에서 tip m)가 커서다. PC(마우스)는 실제 크기 배트를 수평에서 tilt도 들어 비스듬히, 손잡이는 타자 손 쪽(우타 왼쪽 위, 좌타 거울)
 const AIM_BAT = { tilt: 15, knob: BAT_LEN - 0.16, tip: 0.16 }, AIM_ZONE_ALPHA = 0.45;   // 조준 판의 존(네모)은 흐리게(볼·스트라이크는 보일 만큼)
-// 배트 축(맞는 자리 → 손잡이, m 단위 벡터, 위가 +)과 축에 수직인 위쪽
-function aimAxes() { const sd = batSide(), t = AIM_BAT.tilt * DEG; return { d: { x: -sd * Math.cos(t), y: Math.sin(t) }, n: { x: sd * Math.sin(t), y: Math.cos(t) } }; }
-// 배트 커서의 손잡이 끝·배트 끝(화면 px, drawBat의 a·b). at은 맞는 자리, s는 그 깊이에서 1m가 몇 px인지
-function aimBatPoints(at) {
-  const z = project(0, 0.8, 0), s = z ? z.s : 0, { d } = aimAxes();
-  return { knob: { x: at.x + d.x * AIM_BAT.knob * s, y: at.y - d.y * AIM_BAT.knob * s, s }, tip: { x: at.x - d.x * AIM_BAT.tip * s, y: at.y + d.y * AIM_BAT.tip * s, s }, s };
+// 폰(2026-11-05 사용자 '누를 때 배트 가운데가 아니라 끝을 잡아야 덜 어색하다'): 누른 자리가 손잡이 끝이고 맞는 자리는 손가락에서 타자 반대쪽 위로 angle도,
+// reach px(우타는 오른쪽 위, 좌타는 왼쪽 위). 실제 크기(폰 180px쯤)면 존 왼쪽 공에서 손가락이 화면 밖으로 나가서 짧게 그린다(360 폭에서도 화면 가장자리와 67px)
+const AIM_GRIP = { reach: 100, angle: 45 };
+// 배트 축(맞는 자리 → 손잡이, m 단위 벡터, 위가 +)과 축에 수직인 위쪽. kind 'touch'면 폰 배트(손잡이가 아래)
+function aimAxes(kind = 'mouse') {
+  const sd = batSide(), t = (kind === 'touch' ? -AIM_GRIP.angle : AIM_BAT.tilt) * DEG;
+  return { d: { x: -sd * Math.cos(t), y: Math.sin(t) }, n: { x: sd * Math.sin(t), y: Math.cos(t) } };
 }
-const AIM_LIFT = 80;
+// 배트 커서의 손잡이 끝·배트 끝(화면 px). at은 맞는 자리(kind가 'touch'면 손잡이 끝이 손가락), s는 그 깊이에서 1m가 몇 px인지
+function aimBatPoints(at) {
+  const z = project(0, 0.8, 0), s = z ? z.s : 0, { d } = aimAxes(at.kind), k = at.kind === 'touch' ? AIM_GRIP.reach : AIM_BAT.knob * s;
+  return { knob: { x: at.x + d.x * k, y: at.y - d.y * k, s }, tip: { x: at.x - d.x * AIM_BAT.tip * s, y: at.y + d.y * AIM_BAT.tip * s, s }, s };
+}
+// 폰: 손가락(손잡이 끝) 자리에서 맞는 자리
+const gripSpot = (x, y) => ({ x: x + batSide() * AIM_GRIP.reach * Math.cos(AIM_GRIP.angle * DEG), y: y - AIM_GRIP.reach * Math.sin(AIM_GRIP.angle * DEG), kind: 'touch' });
 const aimPointer = { x: 0, y: 0, moved: false, touch: null };   // 마우스가 있는 자리, 누르고 있는 손가락 { id, x, y }
 // 지금 커서 자리(화면 px)와 과녁 종류(touch면 터치 과녁)
 function aimCursor() {
-  if (aimPointer.touch) return { x: aimPointer.touch.x, y: aimPointer.touch.y - AIM_LIFT, kind: 'touch' };
+  if (aimPointer.touch) return gripSpot(aimPointer.touch.x, aimPointer.touch.y);
   if (aimPointer.moved) return { x: aimPointer.x, y: aimPointer.y, kind: 'mouse' };
   const c = project(0, (ZONE.top + ZONE.bottom) / 2, 0);
   return { x: c.x, y: c.y, kind: 'mouse' };
@@ -6308,18 +6365,37 @@ function aimCursor() {
 // wx·wy는 겨눈 자리(다시 보기·결과 화면에 그린다)
 function aimFrom(at, p) {
   const c = project(p.tx, p.ty, 0), R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'];
-  const dx = (at.x - c.x) / c.s, dy = (c.y - at.y) / c.s, { d, n } = aimAxes();
+  const dx = (at.x - c.x) / c.s, dy = (c.y - at.y) / c.s, { d, n } = aimAxes(at.kind);
   return { x: (dx * d.x + dy * d.y) / R.x, y: (dx * n.x + dy * n.y) / R.y, dx, dy, wx: p.tx + dx, wy: p.ty + dy, kind: at.kind };
 }
 
-// 배트 커서: 내 배트(상점 배트 모양 그대로)와 맞는 자리(at, 화면 px)의 작은 고리
+// 배트 그림자 모양(손잡이 끝 a → 배트 끝 b, 굵기 wa → wb): 둥근 손잡이 끝, 가는 손잡이가 굵은 쪽으로 굵어지고 끝은 둥글다.
+// 한 바퀴 선 하나라서 반투명으로 칠해도 겹친 데가 진해지지 않는다
+function batShadowPath(a, b, wa, wb) {
+  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1, ux = (b.x - a.x) / len, uy = (b.y - a.y) / len, ang = Math.atan2(uy, ux);
+  // 손잡이 끝에서 배트 끝까지의 비율과 굵기: 0.38까지 손잡이, 0.72까지 부드럽게 굵어진다
+  const prof = [[0, wa], ...Array.from({ length: 7 }, (_, i) => { const k = i / 6; return [0.38 + 0.34 * k, wa + (wb - wa) * k * k * (3 - 2 * k)]; }), [1, wb]];
+  const pt = (u, w, side) => [a.x + ux * len * u - uy * w / 2 * side, a.y + uy * len * u + ux * w / 2 * side];
+  const path = new Path2D();
+  prof.forEach(([u, w], i) => (i ? path.lineTo(...pt(u, w, 1)) : path.moveTo(...pt(u, w, 1))));
+  path.arc(b.x, b.y, wb / 2, ang + Math.PI / 2, ang - Math.PI / 2, true);
+  for (let i = prof.length - 2; i >= 0; i--) path.lineTo(...pt(prof[i][0], prof[i][1], -1));
+  path.arc(a.x, a.y, wa / 2, ang - Math.PI / 2, ang + Math.PI / 2, true);
+  path.closePath();
+  return path;
+}
+// 배트 커서(2026-11-05 사용자 '배트 그림자만 떠야 한다. 다 그려지니 어지럽다'): 한 색 반투명 그림자이고 맞는 자리 둘레(배트 축으로 과녁 rx만큼)만
+// 조금 밝다. 상점 배트 무늬·효과는 쓰지 않는다(PC·폰 같다)
 function drawAimBat(at, alpha = 1) {
   const { knob, tip, s } = aimBatPoints(at);
   if (!s) return;
-  const C = batterColors();
+  const path = batShadowPath(knob, tip, 0.034 * s, 0.068 * s), len = Math.hypot(tip.x - knob.x, tip.y - knob.y) || 1, ux = (tip.x - knob.x) / len, uy = (tip.y - knob.y) / len;
+  const r = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'].x * s, glow = ctx.createLinearGradient(at.x - ux * r, at.y - uy * r, at.x + ux * r, at.y + uy * r);
+  glow.addColorStop(0, 'rgba(255,255,255,0)'); glow.addColorStop(0.5, 'rgba(255,255,255,0.42)'); glow.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.save(); ctx.globalAlpha = alpha;
-  drawBat(knob, tip, 0.034 * s, 0.068 * s, s, (n) => C[n], fxOf(currentLook().bat), true);
-  ctx.beginPath(); ctx.arc(at.x, at.y, Math.max(3, 0.02 * s), 0, Math.PI * 2); ctx.strokeStyle = '#7fe3ff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = 'rgba(225,235,250,0.4)'; ctx.fill(path);
+  ctx.clip(path);
+  ctx.fillStyle = glow; ctx.fillRect(Math.min(knob.x, tip.x) - s, Math.min(knob.y, tip.y) - s, Math.abs(tip.x - knob.x) + 2 * s, Math.abs(tip.y - knob.y) + 2 * s);
   ctx.restore();
 }
 // 조준 판: 투구 중에는 배트 커서(PC는 마우스 자리, 폰은 누르고 있을 때만), 결과·다시 보기에서는 겨눈 배트와 공이 지난 자리를 점선으로 잇는다
@@ -6533,7 +6609,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
   if (game.waitingSeed) return;   // 서버 시드를 받는 중(startGame)
   if (x != null && game.state !== 'pitch' && game.state !== 'windup') {
     const b = ui.buttons.find((btn) => inRect(btn.r, x, y));
-    if (b) { b.onTap(); return; }
+    if (b) { if (b.href) openOutside(b.href); else b.onTap(); return; }
   }
   if (game.state === 'title') startDefault();   // 버튼이 아닌 빈 곳을 누르면 시작
   else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime, x == null ? 'key' : kind, game.aim && x != null ? { x, y, kind: 'mouse' } : null);   // 조준 판의 클릭은 그 자리로
@@ -6548,6 +6624,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
   }
 }
 
+let linkPress = null;   // 바깥 링크를 누른 손가락(pointerId)
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
@@ -6559,6 +6636,8 @@ canvas.addEventListener('pointerdown', (e) => {
     if (!aimPointer.touch) { aimPointer.touch = { id: e.pointerId, x: e.clientX, y: e.clientY }; try { canvas.setPointerCapture(e.pointerId); } catch { /* 이미 뗀 손가락 */ } }
     return;
   }
+  // 바깥 링크(의견 보내기)는 터치·펜이면 뗄 때 연다. 브라우저는 터치를 뗄 때만 사람이 누른 것으로 쳐서 누를 때 연 새 탭은 막는다
+  if (e.pointerType !== 'mouse' && game.state !== 'pitch' && game.state !== 'windup' && linkAt(e.clientX, e.clientY)) { linkPress = e.pointerId; return; }
   primaryAction(e.timeStamp, e.clientX, e.clientY, e.pointerType || 'mouse');
 });
 // 새 소식·메뉴 넘기기: 끌어 올리기와 휠
@@ -6575,13 +6654,21 @@ addEventListener('pointerup', (e) => {
   const d = menu.drag;
   menu.drag = null;
   if (d && !d.moved && game.state === 'menu') primaryAction(d.t, d.x, d.y);
+  if (linkPress != null && e.pointerId === linkPress) {   // 링크 위에서 뗐을 때만 연다
+    linkPress = null;
+    const b = linkAt(e.clientX, e.clientY);
+    if (b) openOutside(b.href);
+  }
   const t = aimPointer.touch;
   if (t && e.pointerId === t.id) {   // 조준 판(폰): 떼는 순간 친다. 와인드업 중이거나 지켜본 공 판정이 났으면 아무 일도 없다
     aimPointer.touch = null;
-    if (game.aim && game.state === 'pitch' && game.swingAt == null) swing(e.timeStamp, 'touch', { x: e.clientX, y: e.clientY - AIM_LIFT, kind: 'touch' });
+    if (game.aim && game.state === 'pitch' && game.swingAt == null) swing(e.timeStamp, 'touch', gripSpot(e.clientX, e.clientY));
   }
 });
-addEventListener('pointercancel', (e) => { if (aimPointer.touch?.id === e.pointerId) aimPointer.touch = null; });
+addEventListener('pointercancel', (e) => {
+  if (aimPointer.touch?.id === e.pointerId) aimPointer.touch = null;
+  if (linkPress === e.pointerId) linkPress = null;
+});
 canvas.addEventListener('wheel', (e) => {
   if (game.state === 'news') { e.preventDefault(); news.scroll = clamp(news.scroll + e.deltaY, 0, news.max); }
   else if (game.state === 'menu' && menu.max > 0) { e.preventDefault(); menu.scroll = clamp(menu.scroll + e.deltaY, 0, menu.max); }
@@ -6730,5 +6817,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, weekBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, AIM_GRIP, aimAxes, aimBatPoints, drawAimBat, weekBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };

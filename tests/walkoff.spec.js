@@ -892,6 +892,55 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('의견 보내기: 메뉴 줄과 조준 판 끝 화면 링크가 패들렛을 새 탭으로 열고(게임 탭은 그대로, 폰은 손가락을 뗄 때), 10구 끝 화면에는 링크가 없다', async ({ page, isMobile }) => {
+    const FEEDBACK = 'https://padlet.com/ghtgrz4s5s/walkoff-s02561vkamvtbvubw2oe';
+    await page.context().route('https://padlet.com/**', (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>padlet</title>' }));   // 실제 패들렛에는 가지 않는다
+    const errors = await open(page);
+    const popups = [];
+    page.on('popup', (p) => popups.push(p));
+    const rect = (label) => page.evaluate((l) => walkoff.ui.buttons.find((b) => b.label === l)?.r, label);
+    const opened = async (act) => {   // act로 연 새 탭의 주소. 게임 탭은 그 화면 그대로다
+      const [popup] = await Promise.all([page.waitForEvent('popup'), act()]);
+      await popup.waitForLoadState();
+      const url = popup.url();
+      await popup.close();
+      popups.length = 0;
+      return url;
+    };
+    const touchEv = (type, x, y) => page.evaluate(({ type, x, y }) => document.querySelector('canvas').dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 9, pointerType: 'touch', clientX: x, clientY: y })), { type, x, y });
+    const openLink = async (label) => {   // PC는 클릭, 폰은 누를 때는 안 열고(브라우저가 터치를 누를 때 연 새 탭은 막는다) 링크 위에서 뗄 때 연다
+      const r = await rect(label);
+      if (!isMobile) return opened(() => tap(page, label));
+      await touchEv('pointerdown', r.x + r.w / 2, r.y + r.h / 2);
+      await page.waitForTimeout(300);
+      await touchEv('pointerup', r.x + r.w / 2, r.y - 60);   // 끌어서 링크 밖에서 떼면 안 연다
+      await page.waitForTimeout(300);
+      expect(popups, label).toEqual([]);
+      return opened(() => page.touchscreen.tap(r.x + r.w / 2, r.y + r.h / 2));
+    };
+    // 메뉴: 새 소식 띠 바로 아래 '의견 보내기' 띠(설명과 바깥 화살표)
+    await page.evaluate(() => walkoff.openMenu());
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '의견 보내기'));
+    expect(await drawnTexts(page)).toContain('좋았던 점·불편한 점');
+    expect(await openLink('의견 보내기')).toBe(FEEDBACK);
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('menu');
+    // 끝 화면: 10구에는 없고 조준 판에만 있다(공 하나로 끝나는 판)
+    const finish = async (aim) => {
+      await page.evaluate((aim) => { walkoff.startGame('challenge', false, { aim }); Object.assign(walkoff.game, { left: 1, extra: 99 }); }, aim);
+      await page.waitForFunction(() => walkoff.game.state === 'pitch');
+      await pressAt(page, 0);
+      await page.waitForFunction(() => walkoff.game.state === 'result');
+      await page.evaluate(() => { const g = walkoff.game; g.resultT = Math.max(g.resultT, g.revealAt) + 1; walkoff.tap(g.clockAt); });
+      await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.ui.buttons.some((b) => b.label === '처음으로'));
+      return page.evaluate(() => walkoff.ui.buttons.filter((b) => b.href).map((b) => [b.label, b.href]));
+    };
+    expect(await finish(false)).toEqual([]);
+    expect(await finish(true)).toEqual([['조준 타격 어땠나요? 의견 보내기', FEEDBACK]]);
+    expect(await openLink('조준 타격 어땠나요? 의견 보내기')).toBe(FEEDBACK);
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.aim])).toEqual(['over', true]);
+    expect(errors).toEqual([]);
+  });
+
   test("메뉴 칩 '이번 주'는 랭킹과 같은 숫자다: 로그인 안 했으면 이 기기에서 이번 주에 끝낸 10구 최고(?seed= 판·조준 판은 빼고), 로그인했으면 서버가 돌려준 이번 주 최고. 주가 바뀌면 감춘다", async ({ page }) => {
     const play = (aim = false) => page.evaluate((aim) => {   // 공 하나로 끝나는 판(seed 42 첫 공을 정확히 치면 홈런 1,100점)
       walkoff.startGame('challenge', false, { aim }); Object.assign(walkoff.game, { left: 1, extra: 99 }); walkoff.game.seq[0] = walkoff.makeSequence(42, false)[0];
@@ -944,7 +993,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('메뉴 크기: 360×640·390×844·1440×900·1920×1080에서 줄이 화면 안이고 안 겹치며 시작 화면 코인과 메뉴 단추도 안 겹친다. 더 낮으면(360×480) 끌어 넘기고, 끄는 동안에는 줄이 안 눌린다', async ({ page, isMobile }) => {
+  test('메뉴 크기: 390×844·1440×900·1920×1080에서 줄이 화면 안이고 안 겹치며 시작 화면 코인과 메뉴 단추도(360×640도) 안 겹친다. 더 낮으면(360×640·360×480) 끌어 넘기고, 끄는 동안에는 줄이 안 눌린다', async ({ page, isMobile }) => {
     test.skip(isMobile, '창 크기를 바꿔 가며 보므로 PC에서만 본다');
     const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 123456 } } });   // 코인 자리가 가장 넓을 때
     await page.waitForFunction(() => walkoff.wallet.coins === 123456);
@@ -955,22 +1004,24 @@ test.describe('화면', () => {
       await page.evaluate(() => walkoff.goTitle());
       await page.waitForFunction((w) => walkoff.view.w === w && walkoff.ui.buttons.some((b) => b.label === '코인'), w);
       expect(overlaps(await buttons()), `시작 화면 ${w}×${h}`).toEqual([]);
+      if (h < 700) continue;   // 360×640 메뉴는 의견 보내기 띠(2026-11-05)가 더해져 조금 넘쳐서 아래에서 끌어 넘겨 본다
       await page.evaluate(() => walkoff.openMenu());
       await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '새 소식'));
       const list = await buttons();
       expect(list.filter((b) => b.r.x < 0 || b.r.y < 0 || b.r.x + b.r.w > w || b.r.y + b.r.h > h).map((b) => b.label), `${w}×${h}`).toEqual([]);
       expect(overlaps(list), `${w}×${h}`).toEqual([]);
       expect(await page.evaluate(() => walkoff.menu.max), `${w}×${h}`).toBe(0);   // 넘기지 않아도 다 들어간다
-      expect(list.filter((b) => !['닫기', '새 소식'].includes(b.label)).every((b) => b.r.h >= (w < 640 ? 44 : 34)), `${w}×${h}`).toBe(true);   // 폰은 줄을 44px 아래로 줄이지 않는다
+      expect(list.filter((b) => !['닫기', '새 소식', '의견 보내기'].includes(b.label)).every((b) => b.r.h >= (w < 640 ? 44 : 34)), `${w}×${h}`).toBe(true);   // 폰은 줄을 44px 아래로 줄이지 않는다
     }
     // 작은 폰(실제 브라우저 높이): 줄은 44px 그대로 두고 넘치면 끌어 넘긴다. 아래에 더 있으면 아래, 위로 넘겼으면 위 가장자리가 흐리다
-    for (const [w, h] of [[320, 460], [360, 560], [375, 548], [390, 664]]) {
+    for (const [w, h] of [[320, 460], [360, 560], [375, 548], [360, 640], [390, 664]]) {
       await page.setViewportSize({ width: w, height: h });
       await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
       await page.waitForFunction((w) => walkoff.view.w === w && walkoff.ui.buttons.some((b) => b.label === '새 소식'), w);
       await page.waitForTimeout(50);
-      const rows = (await buttons()).filter((b) => !['닫기', '새 소식'].includes(b.label));
+      const list = await buttons(), rows = list.filter((b) => !['닫기', '새 소식', '의견 보내기'].includes(b.label)), fb = list.find((b) => b.label === '의견 보내기').r;
       expect(rows.every((b) => b.r.h >= 44), `${w}×${h}`).toBe(true);
+      expect(fb.y >= 0 && fb.y + fb.h <= h - 40, `${w}×${h} 의견 보내기 띠는 끌지 않아도 다 보인다(아래 흐림 위)`).toBe(true);
       const m = await page.evaluate(() => ({ max: walkoff.menu.max, fade: walkoff.menu.fade }));
       if (m.max === 0) { expect(m.fade, `${w}×${h}`).toEqual({ top: false, bottom: false }); continue; }
       expect(m.fade, `${w}×${h} 처음`).toEqual({ top: false, bottom: true });
@@ -981,8 +1032,8 @@ test.describe('화면', () => {
       expect(end.fade, `${w}×${h} 끝`).toEqual({ top: true, bottom: false });
       expect(end.last.y + end.last.h, `${w}×${h} 마지막 줄이 화면 안`).toBeLessThanOrEqual(h);
     }
-    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max > 0])).toEqual([390, false]);   // 390×664는 넘치지 않는다(PC라 진동 줄이 없어 9줄)
-    await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 8줄)
+    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max])).toEqual([390, 12]);   // 390×664(아이폰 사파리)는 의견 보내기 띠를 더해 조금 넘친다(PC라 진동 줄이 없어 9줄)
+    await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 9줄)
     await expect.poll(() => page.evaluate(() => walkoff.menu.max)).toBeGreaterThan(0);
     const box = await page.locator('canvas').boundingBox(), row = (await buttons()).find((b) => b.label === '연습').r;
     await page.mouse.move(box.x + row.x + 40, box.y + row.y + row.h / 2); await page.mouse.down();
@@ -2514,6 +2565,8 @@ test.describe('조준 타격(실험)', () => {
   }), { dt, ev });
   const touch = (page, type, x, y, id = 7) => page.evaluate(({ type, x, y, id }) => document.querySelector('canvas').dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, pointerType: 'touch', clientX: x, clientY: y })), { type, x, y, id });
   const outcome = (page) => page.evaluate(() => { const g = walkoff.game, r = g.outcome; return { state: g.state, kind: r?.kind, took: !!r?.took, zone: r?.aimZone ?? null, miss: !!r?.aimMiss, reason: r?.reason, aim: g.aims[g.i] ?? null, swingAt: g.swingAt }; });
+  // 폰: 누른 자리가 배트 손잡이 끝이고 맞는 자리는 손가락에서 타자 반대쪽 위로 45도, 100px(2026-11-05 사용자 결정). c(맞힐 자리)를 치려면 손가락을 둘 자리
+  const fingerFor = (c, bats = 'R') => ({ x: c.x - (bats === 'L' ? -1 : 1) * 100 * Math.SQRT1_2, y: c.y + 100 * Math.SQRT1_2 });
   const nextPitch = async (page) => {   // 결과를 건너뛰고 다음 공
     await page.evaluate(() => { const g = walkoff.game; g.resultT = Math.max(g.resultT, g.revealAt) + 1; walkoff.tap(g.clockAt); });
     await page.waitForFunction(() => ['windup', 'over'].includes(walkoff.game.state));
@@ -2577,24 +2630,26 @@ test.describe('조준 타격(실험)', () => {
     expect(errors).toEqual([]);
   });
 
-  test('폰: 누르면 손가락 위에 커서가 뜨고 끌어 맞춘 뒤 제때 떼면 맞는다. 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공이며, 손가락은 하나만 받는다', async ({ page, isMobile }) => {
+  test('폰: 누른 자리가 배트 손잡이 끝이고 맞는 자리는 손가락에서 타자 반대쪽 위로 100px라, 끌어 맞춘 뒤 제때 떼면 맞는다. 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공이며, 손가락은 하나만 받는다', async ({ page, isMobile }) => {
     test.skip(!isMobile, '터치는 폰에서 본다');
     const errors = await open(page, '?seed=42');
     await page.evaluate(() => walkoff.startGame('challenge', false, { aim: true }));
     await page.waitForFunction(() => walkoff.game.state === 'windup');
     expect(await drawnTexts(page)).toContain('끌어서 겨누고 떼면 스윙 · 랭킹에는 안 올라가요');
-    // 1구: 와인드업 중에 누르고, 다른 손가락은 받지 않고, 끌어 커서(손가락 80px 위)를 맞춘 뒤 제때 뗀다
-    let c = await crossAt(page);
-    await touch(page, 'pointerdown', c.x - 60, c.y + 150);
-    await touch(page, 'pointerdown', c.x + 90, c.y + 220, 8);
-    await touch(page, 'pointermove', c.x + 90, c.y + 220, 8);
-    await touch(page, 'pointermove', c.x, c.y + 80);
-    const cur = await page.evaluate(() => walkoff.aimCursor());
+    // 1구: 와인드업 중에 누르고, 다른 손가락은 받지 않고, 끌어 맞는 자리(손가락에서 오른쪽 위로 100px)를 맞춘 뒤 제때 뗀다
+    let c = await crossAt(page), f = fingerFor(c);
+    await touch(page, 'pointerdown', f.x - 60, f.y + 70);
+    await touch(page, 'pointerdown', f.x + 90, f.y + 140, 8);
+    await touch(page, 'pointermove', f.x + 90, f.y + 140, 8);
+    await touch(page, 'pointermove', f.x, f.y);
+    const cur = await page.evaluate(() => walkoff.aimCursor()), bat = await page.evaluate((cur) => walkoff.aimBatPoints(cur), cur);
     expect(cur).toMatchObject({ kind: 'touch' });
     expect(Math.hypot(cur.x - c.x, cur.y - c.y)).toBeLessThan(0.5);
+    expect(Math.hypot(bat.knob.x - f.x, bat.knob.y - f.y)).toBeLessThan(0.5);   // 손잡이 끝이 손가락
+    expect(bat.tip.x).toBeGreaterThan(c.x); expect(bat.tip.y).toBeLessThan(c.y);   // 배트는 손가락에서 오른쪽 위로 뻗는다
     expect((await outcome(page)).swingAt).toBe(null);   // 누르기만 해서는 휘두르지 않는다
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
-    await fireAt(page, 0, { type: 'pointerup', pointerType: 'touch', x: c.x, y: c.y + 80 });
+    await fireAt(page, 0, { type: 'pointerup', pointerType: 'touch', x: f.x, y: f.y });
     await page.waitForFunction(() => walkoff.game.state === 'result');
     let o = await outcome(page);
     expect(o.kind).not.toBe('whiff');
@@ -2611,30 +2666,32 @@ test.describe('조준 타격(실험)', () => {
     // 3구: 누른 채로 지켜본 공 판정이 나면 지켜본 공이고, 그 뒤에 떼도 휘두르지 않는다
     await nextPitch(page);
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
-    c = await crossAt(page);
-    await touch(page, 'pointerdown', c.x, c.y + 80);
+    f = fingerFor(await crossAt(page));
+    await touch(page, 'pointerdown', f.x, f.y);
     await page.waitForFunction(() => walkoff.game.state === 'result', null, { timeout: 10_000 });
-    await touch(page, 'pointerup', c.x, c.y + 80);
+    await touch(page, 'pointerup', f.x, f.y);
     expect(await outcome(page)).toMatchObject({ took: true, swingAt: null });
     expect(await page.evaluate(() => walkoff.aimPointer.touch)).toBe(null);
     expect(errors).toEqual([]);
   });
 
-  test('배트 커서: 맞는 자리가 겨눈 자리이고 손잡이는 타자 손 쪽(좌타는 거울)이며, 과녁은 배트 축을 따라 rx·수직으로 ry로 잰다. 조준 판은 존이 흐리고, 처음 세 판만 \'공이 배트에 닿을 때 치세요\'를 띄운다', async ({ page, isMobile }) => {
+  test('배트 커서: 맞는 자리가 겨눈 자리이고 손잡이는 타자 손 쪽(PC는 왼쪽 위, 폰은 손가락이 손잡이 끝, 좌타는 거울)이며, 과녁은 배트 축을 따라 rx·수직으로 ry(1.5배 넓힌 9cm)로 잰다. 조준 판은 존이 흐리고, 처음 세 판만 \'공이 배트에 닿을 때 치세요\'를 띄운다', async ({ page, isMobile }) => {
     test.skip(isMobile, '판정과 그림 계산은 화면 크기와 상관없어서 PC에서만 본다');
     const errors = await open(page, '?seed=42');
     const r = await page.evaluate(() => {
       const w = walkoff, g = w.game; w.paused = true;
       const toPitch = (aim) => { w.startGame('challenge', false, { aim }); const p = g.seq[g.i]; while (!(g.state === 'pitch' && w.ballTime() + 1 / 60 >= p.T)) { g.clockAt += 1000 / 60; w.update(1 / 60); } return p; };
-      const hit = (dx, dy) => {   // 공이 지날 자리에서 (dx, dy) m(화면 오른쪽·위가 +) 떨어진 곳을 겨누고 정확한 타이밍에 친다
+      const hit = (dx, dy, kind = 'mouse') => {   // 공이 지날 자리에서 (dx, dy) m(화면 오른쪽·위가 +) 떨어진 곳을 겨누고 정확한 타이밍에 친다
         const p = toPitch(true), c = w.project(p.tx, p.ty, 0);
-        w.swing(g.clockAt + (p.T - w.ballTime()) * 1000, 'mouse', { x: c.x + dx * c.s, y: c.y - dy * c.s, kind: 'mouse' });
+        w.swing(g.clockAt + (p.T - w.ballTime()) * 1000, kind, { x: c.x + dx * c.s, y: c.y - dy * c.s, kind });
         return { kind: g.outcome.kind, zone: g.outcome.aimZone, x: g.aims[g.i].x, y: g.aims[g.i].y };
       };
-      const { d, n } = w.aimAxes(), R = w.AIM_RADIUS.mouse;
+      const { d, n } = w.aimAxes(), R = w.AIM_RADIUS.mouse, T = w.aimAxes('touch');
       const along = hit(d.x * 0.97 * R.x, d.y * 0.97 * R.x), across = hit(n.x * 1.1 * R.y, n.y * 1.1 * R.y);
-      const at = { x: 700, y: 500 }, pR = w.aimBatPoints(at);
-      w.setBats('L'); const pL = w.aimBatPoints(at); w.setBats('R');
+      const tall = hit(n.x * 0.08, n.y * 0.08);   // 축에 수직으로 8cm: 옛 과녁(6cm) 밖이었다
+      const touchAlong = hit(T.d.x * 0.97 * R.x, T.d.y * 0.97 * R.x, 'touch'), touchAcross = hit(T.n.x * 1.1 * R.y, T.n.y * 1.1 * R.y, 'touch');
+      const at = { x: 700, y: 500 }, pR = w.aimBatPoints(at), tR = w.aimBatPoints({ ...at, kind: 'touch' });
+      w.setBats('L'); const pL = w.aimBatPoints(at), tL = w.aimBatPoints({ ...at, kind: 'touch' }); w.setBats('R');
       // 존(네모) 선의 밝기: 10구와 조준 판을 한 장면씩 그려 존 테두리(strokeRect)의 투명도를 본다
       const zoneAlpha = (aim) => {
         toPitch(aim);
@@ -2654,22 +2711,102 @@ test.describe('조준 타격(실험)', () => {
         try { w.render(g.t); } finally { proto.fillText = ft; }
         shown.push(texts.includes('공이 배트에 닿을 때 치세요 · 클릭'));
       }
-      return { along, across, pR, pL, zone, shown, hintCount: Number(localStorage.getItem('walkoff.aimHint')), batLen: Math.hypot(pR.knob.x - pR.tip.x, pR.knob.y - pR.tip.y) / pR.s };
+      return { along, across, tall, touchAlong, touchAcross, R: { ...R }, pR, pL, tR, tL, zone, shown, hintCount: Number(localStorage.getItem('walkoff.aimHint')), batLen: Math.hypot(pR.knob.x - pR.tip.x, pR.knob.y - pR.tip.y) / pR.s };
     });
     expect(r.along.kind).not.toBe('whiff');   // 배트 축 위(rx의 0.97배)는 맞는다. 옛 가로 타원이면 과녁 밖이었다
     expect(r.along.zone).toBe('edge');
     expect(Math.hypot(r.along.x, r.along.y)).toBeCloseTo(0.97, 2);
     expect(r.across).toMatchObject({ kind: 'whiff', zone: 'miss' });   // 축에 수직으로 ry를 넘으면 헛스윙
     expect(r.across.y).toBeCloseTo(1.1, 2);
+    expect(r.R).toEqual({ x: 0.10, y: 0.09 });   // 세로는 1.5배(2026-11-05), 가로는 그대로
+    expect(r.tall.kind).not.toBe('whiff'); expect(r.tall.zone).toBe('edge');
+    expect(r.touchAlong.kind).not.toBe('whiff'); expect(r.touchAlong.zone).toBe('edge');   // 폰 과녁은 폰 배트 축을 따라 잰다
+    expect(r.touchAcross).toMatchObject({ kind: 'whiff', zone: 'miss' });
     expect(r.batLen).toBeCloseTo(0.86, 2);   // 실제 배트 길이(멀수록 작게: 칠 자리 깊이의 축척)
     expect(r.pR.knob.x).toBeLessThan(700); expect(r.pR.knob.y).toBeLessThan(r.pR.tip.y);   // 우타: 손잡이는 왼쪽 위
     expect(r.pL.knob.x).toBeGreaterThan(700); expect(r.pL.knob.y).toBeCloseTo(r.pR.knob.y, 5);   // 좌타는 거울
+    // 폰: 손잡이 끝(손가락)은 맞는 자리에서 타자 쪽 아래로 45도 100px이고 배트는 그 반대쪽 위로 뻗는다(좌타는 거울)
+    expect(r.tR.knob.x).toBeCloseTo(700 - 100 * Math.SQRT1_2, 3); expect(r.tR.knob.y).toBeCloseTo(500 + 100 * Math.SQRT1_2, 3);
+    expect(r.tL.knob.x).toBeCloseTo(700 + 100 * Math.SQRT1_2, 3); expect(r.tL.knob.y).toBeCloseTo(500 + 100 * Math.SQRT1_2, 3);
+    expect(r.tR.tip.x).toBeGreaterThan(700); expect(r.tR.tip.y).toBeLessThan(500); expect(r.tL.tip.x).toBeLessThan(700);
     const t = (q) => (700 - q.knob.x) / (q.tip.x - q.knob.x);   // 맞는 자리(at)가 손잡이에서 끝으로 가는 길의 어디쯤인지
     expect(t(r.pR)).toBeCloseTo((0.86 - 0.16) / 0.86, 2);
     expect(r.zone.aim).toBeCloseTo(r.zone.plain * 0.45, 2);   // 조준 판의 존은 흐리게
     expect(r.zone.plain).toBeCloseTo(0.55 * 0.9, 2);          // 10구는 그대로
     expect(r.shown).toEqual([true, true, true, false]);
     expect(r.hintCount).toBe(3);
+    expect(errors).toEqual([]);
+  });
+
+  test('폰: 360·375·390·430 폭(사파리 높이 548·664)에서 존 네 모서리 공을 손가락이 화면 안에 있는 채로 끌어 맞춰 칠 수 있다(우타·좌타)', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '터치는 폰에서 본다');
+    const errors = await open(page, '?seed=42');
+    const bad = [];
+    for (const [w, h] of [[360, 548], [360, 664], [375, 548], [375, 664], [390, 548], [390, 664], [430, 548], [430, 664]]) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.waitForFunction((w) => walkoff.view.w === w, w);
+      const res = await page.evaluate(async (SQ) => {
+        const { ZONE } = await import('./js/core/field.js');
+        const wk = walkoff, g = wk.game, cv = document.querySelector('canvas'), out = [];
+        wk.paused = true;
+        const ev = (type, x, y) => cv.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 5, pointerType: 'touch', clientX: x, clientY: y }));
+        for (const bats of ['R', 'L']) {
+          wk.setBats(bats);
+          for (const [cx, cy] of [[ZONE.left, ZONE.top], [ZONE.right, ZONE.top], [ZONE.left, ZONE.bottom], [ZONE.right, ZONE.bottom]]) {
+            wk.startGame('challenge', false, { aim: true });
+            const p = g.seq[g.i];
+            Object.assign(p, { tx: cx, ty: cy });   // 이 공은 존 모서리를 지난다
+            const c = wk.project(cx, cy, 0), f = { x: c.x - (bats === 'L' ? -1 : 1) * 100 * SQ, y: c.y + 100 * SQ };   // 그 자리를 치려면 손가락을 둘 자리
+            ev('pointerdown', f.x, f.y + 40); ev('pointermove', f.x, f.y);   // 와인드업 중에 누르고 끌어 맞춘다
+            while (!(g.state === 'pitch' && wk.ballTime() + 1 / 60 >= p.T)) { g.clockAt += 1000 / 60; wk.update(1 / 60); }
+            wk.swing(g.clockAt + (p.T - wk.ballTime()) * 1000, 'touch', wk.aimCursor());   // 제때 뗀다(떼는 자리 = 지금 손가락)
+            ev('pointercancel', f.x, f.y);
+            out.push({ bats, corner: `${cx},${cy}`, f: { x: Math.round(f.x), y: Math.round(f.y) }, kind: g.outcome.kind, zone: g.outcome.aimZone });
+          }
+        }
+        wk.setBats('R');
+        return out;
+      }, Math.SQRT1_2);
+      for (const o of res) {
+        const inside = o.f.x >= 20 && o.f.x <= w - 20 && o.f.y >= 0 && o.f.y <= h - 20;   // 손가락이 화면 가장자리에서 20px 넘게 안쪽
+        if (!inside || o.kind === 'whiff' || o.zone !== 'near') bad.push({ w, h, ...o });
+      }
+    }
+    expect(bad).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('배트 커서는 한 색 반투명 그림자다: 상점 배트(무늬·효과)와 상관없이 같은 모양이고, 맞는 자리 둘레만 조금 밝다(PC·폰)', async ({ page, isMobile }) => {
+    test.skip(isMobile, '그림 계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const errors = await open(page, '?seed=42');
+    const r = await page.evaluate(() => {
+      const w = walkoff, cv = document.querySelector('canvas'), x = cv.getContext('2d'), dpr = w.view.dpr, box = [300 * dpr, 250 * dpr, 800 * dpr, 500 * dpr];
+      w.paused = true;
+      const shot = (bat, kind) => {   // 빈 캔버스에 커서만 그린 픽셀(맞는 자리 700, 500 둘레)
+        w.wallet.look = { ...w.wallet.look, bat };
+        x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, cv.width, cv.height); x.setTransform(dpr, 0, 0, dpr, 0, 0);
+        w.drawAimBat({ x: 700, y: 500, kind });
+        return x.getImageData(...box).data;
+      };
+      const out = {};
+      for (const kind of ['mouse', 'touch']) {
+        const base = shot('bat-wood', kind);
+        const same = ['bat-fire', 'bat-lightning', 'bat-ice', 'bat-beam', 'bat-diamond', 'bat-hammer', 'bat-leek', 'bat-gold'].filter((b) => { const d = shot(b, kind); return d.some((v, i) => v !== base[i]); });
+        let painted = 0, spread = 0;
+        for (let i = 0; i < base.length; i += 4) if (base[i + 3] > 40) { painted++; spread = Math.max(spread, Math.max(base[i], base[i + 1], base[i + 2]) - Math.min(base[i], base[i + 1], base[i + 2])); }
+        const alphaAt = (p) => base[((Math.round(p.y * dpr) - box[1]) * box[2] + (Math.round(p.x * dpr) - box[0])) * 4 + 3];
+        const { knob } = w.aimBatPoints({ x: 700, y: 500, kind });
+        out[kind] = { differs: same, painted, spread, spot: alphaAt({ x: 700, y: 500 }), handle: alphaAt({ x: 700 + (knob.x - 700) * 0.6, y: 500 + (knob.y - 500) * 0.6 }) };
+      }
+      return out;
+    });
+    for (const kind of ['mouse', 'touch']) {
+      expect(r[kind].differs, kind).toEqual([]);   // 어떤 상점 배트를 입어도 커서는 같다
+      expect(r[kind].painted, kind).toBeGreaterThan(300);
+      expect(r[kind].spread, kind).toBeLessThan(40);   // 한 색(희뿌연 흰색)
+      expect(r[kind].handle, kind).toBeGreaterThan(60); expect(r[kind].handle, kind).toBeLessThan(160);   // 반투명
+      expect(r[kind].spot, kind).toBeGreaterThan(r[kind].handle + 30); expect(r[kind].spot, kind).toBeLessThan(255);   // 맞는 자리만 조금 밝다
+    }
     expect(errors).toEqual([]);
   });
 
