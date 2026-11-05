@@ -26,7 +26,7 @@ const SAMPLE_RANKING = {
 // scoreReply: 'best'(보낸 점수가 이번 주 최고 기록) | 'lower'(이번 주에 더 높은 기록이 있다). 테스트 중에 바꿀 수 있게 요청 때 읽는다.
 // seed: /seeds가 내주는 10구 도전 시드(기본 42). 표는 요청마다 새로 만들어 돌려주는 배열의 tickets에 쌓는다(받은 시각 at).
 // seedFail: /seeds가 서버 오류로 답한다. seedExpired: /seeds만 로그인이 풀린 것처럼 401로 답한다(계정 확인 /me는 된다).
-// seedDelay: /seeds가 이만큼(ms) 늦게 답한다. scoreFail: /scores가 서버 오류로 답한다.
+// seedHold: /seeds 답을 테스트가 calls.releaseSeeds()로 풀 때까지 잡아 둔다(풀면 그 뒤 요청은 바로 답한다). scoreFail: /scores가 서버 오류로 답한다.
 // /scores는 실제 서버처럼 10구 도전에 표가 없거나 모르는 표, 이미 쓴 표면 거절한다.
 // 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다
 async function mockApi(page, opts = {}) {
@@ -35,7 +35,7 @@ async function mockApi(page, opts = {}) {
   const { replayScenario, WIN_BONUS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'scenario.js')).href);
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
-  const calls = [], tickets = [];
+  const calls = [], tickets = [], heldSeeds = [];
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
     const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
@@ -63,7 +63,7 @@ async function mockApi(page, opts = {}) {
       if (opts.seedExpired) return reply({ ok: false, error: 'login_required' }, 401);
       const t = { token: `00000000-0000-4000-8000-${String(tickets.length + 1).padStart(12, '0')}`, seed: opts.seed ?? 42 };
       tickets.push({ ...t, at: Date.now(), used: false });
-      return new Promise((done) => setTimeout(done, opts.seedDelay ?? 0)).then(() => reply({ ok: true, ...t }));
+      return (opts.seedHold ? new Promise((done) => heldSeeds.push(done)) : Promise.resolve()).then(() => reply({ ok: true, ...t }));
     }
     if (url.pathname === '/me' && req.method() === 'PUT' && opts.failProfile) return reply({ ok: false, error: 'server_error' }, 500);   // 팀·닉네임 저장 실패(테스트 중에 바꿀 수 있게 요청 때 읽는다)
     if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet() } : { ok: true });
@@ -97,6 +97,7 @@ async function mockApi(page, opts = {}) {
     return reply(rankings);
   });
   Object.defineProperty(calls, 'tickets', { value: tickets });   // 받은 요청 목록과 비교할 때 걸리지 않게 숨긴 속성으로 둔다
+  Object.defineProperty(calls, 'releaseSeeds', { value: () => { opts.seedHold = false; heldSeeds.splice(0).forEach((done) => done()); } });
   return calls;
 }
 
@@ -1085,13 +1086,16 @@ test.describe('화면', () => {
   });
 
   test('로그인했으면 서버가 내준 시드로 친다. 막 열어서 받는 중에 누르면 받은 뒤에 시작하고, 그동안 누른 것은 받지 않는다', async ({ page }) => {
-    const errors = await open(page, '', { login: true, api: { seed: 7, seedDelay: 1500 } });
+    // 시드 답은 테스트가 확인을 마치고 풀 때까지 잡아 둔다. 전에는 1.5초 뒤에 답해서 느린 CI에서 확인하기 전에 판이 시작됐다(8e091ed CI 첫 시도).
+    // 게임은 받는 중에 누르면 3초(SEED_WAIT_MS)까지 기다리므로 그 안에 푼다
+    const errors = await open(page, '', { login: true, api: { seed: 7, seedHold: true } });
     await page.keyboard.press('Space');   // 시드를 받는 중에 시작한다
     expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.waitingSeed])).toEqual(['title', true]);
     await expect.poll(() => page.evaluate(() => walkoff.game.toast?.text)).toBe('공을 받는 중…');
     await page.keyboard.press('Space');   // 기다리는 동안 또 눌러도 한 판만 시작한다
     await tap(page, '메뉴');   // 다른 버튼도 받지 않는다(메뉴가 열리면 시작하지 않게 돼 있다)
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.waitingSeed])).toEqual(['title', true]);
+    errors.calls.releaseSeeds();
     await page.waitForFunction(() => walkoff.game.state === 'windup', null, { timeout: 5000 });
     expect(await page.evaluate(() => ({ seed: walkoff.game.seed, token: walkoff.game.ticket?.token, throws: walkoff.game.throws === walkoff.pitcherHand(7), waiting: walkoff.game.waitingSeed, toast: walkoff.game.toast?.text ?? null })))
       .toEqual({ seed: 7, token: errors.calls.tickets[0].token, throws: true, waiting: false, toast: null });
