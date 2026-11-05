@@ -1821,6 +1821,17 @@ test.describe('화면', () => {
     await page.evaluate(() => walkoff.openRanking('title'));
     await page.waitForFunction(() => walkoff.game.ranking?.status === 'error');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '다시 시도'));
+    expect(await drawnTexts(page)).toContain('랭킹을 불러오지 못했어요');
+    // 서버 횟수 제한(429)이면 잠시 뒤 다시 하라고 하고, 다시 시도는 그대로 된다
+    await page.route(`${API}/rankings**`, (route) => route.fulfill({ status: 429, headers: { ...CORS, 'retry-after': '60' }, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'rate_limited' }) }));
+    await tap(page, '다시 시도');
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'error' && walkoff.game.ranking.busy);
+    expect(await drawnTexts(page)).toContain('요청이 많아요. 잠시 뒤 다시 해 주세요');
+    await page.unroute(`${API}/rankings**`);
+    await page.unroute(`${API}/**`);
+    await mockApi(page, { rankings: SAMPLE_RANKING });
+    await tap(page, '다시 시도');
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
     expect(errors).toEqual([]);
   });
 

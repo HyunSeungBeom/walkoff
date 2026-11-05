@@ -18,6 +18,17 @@ const HEADERS = {
   'cache-control': 'no-store',
 };
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: HEADERS });
+
+// 로그인 없이 받는 경로의 횟수 제한(wrangler.toml [[ratelimits]], 무료). IP마다 센다. 바인딩이 없으면(테스트·wrangler dev) 세지 않는다.
+// 넘으면 429: 게임은 통계를 sendBeacon으로 보내 답을 안 보고, 랭킹 화면은 '잠시 뒤 다시'를 띄운다
+const LIMITERS = { '/events': 'EVENTS_LIMIT', '/rankings': 'RANKINGS_LIMIT' };
+async function limited(request, env, path) {
+  const limiter = env[LIMITERS[path]];
+  if (!limiter) return false;
+  const { success } = await limiter.limit({ key: request.headers.get('cf-connecting-ip') ?? 'unknown' });
+  return !success;
+}
+const tooMany = () => new Response(JSON.stringify({ ok: false, error: 'rate_limited' }), { status: 429, headers: { ...HEADERS, 'retry-after': '60' } });
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
 
 // 합계 방식이던 예전 게임(fa4649a까지)은 사람 점수를 total로 읽는다. 열어 둔 탭까지 다 바뀔 때까지 같은 값을 total로도 보낸다
@@ -116,6 +127,7 @@ export default {
     const url = new URL(request.url), now = Date.now(), method = request.method;
     try {
       if (url.pathname === '/rankings' && method === 'GET') {
+        if (await limited(request, env, '/rankings')) return tooMany();
         const asked = url.searchParams.get('week') ?? '';
         const week = /^\d{4}-\d{2}-\d{2}$/.test(asked) ? weekStart(asked) : weekStart(kstDay(now));
         return json(await rankings(env.DB, week, url.searchParams.get('player'), now, { looks: true }));
@@ -124,6 +136,7 @@ export default {
       if (url.pathname === '/auth/kakao/callback' && method === 'GET') return await loginCallback(url, env, now);
       // 이용 통계(stats.js). 게임은 sendBeacon으로 보내서 본문이 text/plain으로 온다. 로그인은 보지 않는다
       if (url.pathname === '/events' && method === 'POST') {
+        if (await limited(request, env, '/events')) return tooMany();
         const checked = validateEvent(await request.text().then((t) => JSON.parse(t)).catch(() => null), kstDay(now));
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         await recordEvent(env.DB, checked.value);

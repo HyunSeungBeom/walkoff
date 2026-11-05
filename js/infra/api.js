@@ -37,6 +37,6 @@ export async function postScenario(body) {
 // 이번 주 랭킹. playerId는 이 브라우저의 랭킹 ID(서버가 내 줄을 표시한다)
 export async function fetchRanking(playerId) {
   const res = await fetch(`${RANKING_API}/rankings?player=${encodeURIComponent(playerId)}`);
-  if (!res.ok) throw new Error(`ranking ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`ranking ${res.status}`), { status: res.status });   // 429면 서버 횟수 제한(잠시 뒤 다시)
   return res.json();
 }

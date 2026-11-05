@@ -7,3 +7,15 @@ compatibility_date = "2026-10-01"
 binding = "DB"
 database_name = "walkoff"
 database_id = "2fe2c53b-2747-4af6-a360-b4359142e066"   # 2026-10-28 npx wrangler d1 create walkoff(APAC)로 만든 저장소
+
+# 로그인 없이 받는 요청의 횟수 제한(2026-11-05, 2026-11-02 보안 점검에서 남은 것). IP마다 1분에 limit번(index.js LIMITERS).
+# Cloudflare 위치마다 따로 세고 대략 맞다. 60번은 사용자 결정(평일 낮 같은 회사 와이파이에서 여럿이 쳐도 안 막게, 초당 수십 번 장난은 막는다)
+[[ratelimits]]
+name = "EVENTS_LIMIT"
+namespace_id = "1101"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "RANKINGS_LIMIT"
+namespace_id = "1102"
+simple = { limit = 60, period = 60 }

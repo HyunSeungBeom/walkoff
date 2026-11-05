@@ -4758,7 +4758,7 @@ function openRanking(back) {
 }
 async function loadRanking() {
   game.ranking = { status: 'loading' };
-  try { game.ranking = { status: 'ok', data: await fetchRanking(settings.playerId) }; } catch { game.ranking = { status: 'error' }; }
+  try { game.ranking = { status: 'ok', data: await fetchRanking(settings.playerId) }; } catch (e) { game.ranking = { status: 'error', busy: e?.status === 429 }; }
 }
 function closeRanking() {
   if (game.rankView) { game.rankView = null; return; }   // 사람 모습을 보고 있으면 목록으로
@@ -4857,7 +4857,7 @@ function drawRanking() {
   const note = (s) => text(s, cx, y + 20, { size: m ? 13 : 15, weight: 500, color: 'rgba(255,255,255,0.75)' });
   if (rk.status === 'loading') note('불러오는 중…');
   else if (rk.status === 'error') {
-    note('랭킹을 불러오지 못했어요');
+    note(rk.busy ? '요청이 많아요. 잠시 뒤 다시 해 주세요' : '랭킹을 불러오지 못했어요');   // busy: 서버 횟수 제한(429)
     addButton({ x: cx - 80, y: y + 44, w: 160, h: 42 }, '다시 시도', 'secondary', loadRanking);
   } else {
     const players = game.rankTab === 'players', rows = players ? d.players : d.teams;
@@ -5825,6 +5825,12 @@ function startDefault() {
 function drawTitle(time) {
   dim(0.6);
   const m = view.mobile, cx = view.w / 2, cy = view.h * 0.38;
+  // 폰은 타자를 화면 안으로 당겨 그려서(MOBILE_BATTER_SHIFT) 글자 뒤에 겹친다. 글자 뒤에 위아래가 부드러운 어두운 띠를 깐다(2026-11-05 사용자가 시안 A로 고름)
+  if (m) {
+    const y0 = cy - 140, h = 280, g = ctx.createLinearGradient(0, y0, 0, y0 + h);
+    g.addColorStop(0, 'rgba(4,9,18,0)'); g.addColorStop(0.22, 'rgba(4,9,18,0.72)'); g.addColorStop(0.78, 'rgba(4,9,18,0.72)'); g.addColorStop(1, 'rgba(4,9,18,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, y0, view.w, h);
+  }
   text('끝내기', cx, cy - (m ? 70 : 92), { size: m ? 16 : 20, weight: 700, color: '#f2c94c' });
   text('walkoff', cx, cy - (m ? 30 : 40), { size: m ? 52 : 76, weight: 900, shadow: true });
   const lines = ['기회 10번, 타이밍만 맞춰 쳐 내세요.', '존 밖 공을 골라내면 기회가 1번 늘어요.', '마지막 기회는 9회말 끝내기 찬스, 점수 2배예요.'];
@@ -5857,6 +5863,7 @@ const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 �
     "메뉴와 조준 타격 끝 화면에 '의견 보내기'가 생겼어요. 좋았던 점·불편한 점을 남겨 주세요(패들렛으로 열려요)",
     '조준 타격을 조금 쉽게 했어요. 위아래로 조금 빗나가도 맞아요',
     '조준 배트가 그림자로 바뀌어 덜 어지러워요. 폰에서는 누른 자리가 손잡이라, 위로 비스듬히 뻗은 배트 굵은 쪽으로 겨눠 쳐요',
+    '폰 시작 화면 글자가 더 잘 보여요',   // 작은 변화라 id(2026-11-05d)는 그대로(NEW를 다시 띄우지 않는다)
   ] },
   { id: '2026-11-05c', label: '11/5 오후', items: [   // 2026-11-05c: 조준 타격(실험) 줄을 맨 위에 더하며 id를 올려 이미 읽은 사람에게도 다시 NEW가 뜬다
     "메뉴에 '조준 타격(실험)'이 생겼어요. 배트로 공이 들어올 자리를 겨눠 쳐요",
