@@ -1235,6 +1235,9 @@ function buildPlay(r, o = {}) {
         const d = Math.max(race.runner, race.arrive.t);
         play.slow = [{ t0: d - 0.35, t1: d + 0.15, rate: 0.4 }];
         play.calls = [{ t: d, at: BASE1, text: safe ? '세이프' : '아웃' }];
+        // 폰은 시야가 좁아 공을 던질 때 1루로 돌기 시작하면 머리부터 슬라이딩과 세이프·아웃에 늦어서, 공을 잡는 순간부터 1루 4m 바깥(송구 때와 같은 곳)을 본다
+        const look = stepToward(BASE1, [0, 0.3], -4);
+        play.focusSegs.push({ t0: T, at: () => ({ x: look[0], y: 1.2, z: look[1] }) });
       }
       // 커버·백업: 공을 안 잡은 키스톤이 2루, 3루수는 3루(3루수가 잡았으면 유격수가 3루 쪽), 투수는 1·2루 쪽 공이면 1루로, 우익수는 1루 송구 뒤, 중견수·좌익수는 몇 걸음
       const cv2 = X === B2 ? SS : X === SS ? B2 : cover2;
@@ -3861,12 +3864,19 @@ function chaseStep(dt) {
 // (2026-11-03 사용자 '전광판을 화면에 붙잡기'). 폰은 시야가 좁아 공·주자를 따라 화면이 밀리면 전광판이 밖으로 나가, 홈런 글자가 뜨는 동안
 // 평균 절반만 보이고 끝에는 0%였다. 0.6초 전부터 돌아오면 폰 390폭의 안타 2,775개 모두 글자가 뜨는 동안 94% 넘게 보인다(0.4초는 좌익수 쪽
 // 안타에서 75%까지 잘렸다). 따라가는 카메라가 공 뒤로 날아가 있는 동안은 붙잡지 않는다. 돌려주는 값은 panX의 [최소, 최대]
-const BOARD_HOLD = { lead: 0.6, margin: 4 };
+// 간발 판정(세이프·아웃 표시)이 뜨는 동안과 그 뒤 call초까지는 그 베이스도 화면 안(가장자리 base몫 안쪽)에 두고, 전광판과 함께 못 두면(폰) 베이스를 둔다
+// (2026-11-05 사용자 결정 '폰에서 간발 세이프일 때 1루가 화면 밖'. 내야 안타는 HIT를 붙잡느라 판정 0.2초 앞에 카메라가 전광판 쪽으로 끌려가,
+// 머리부터 슬라이딩과 세이프가 화면 밖이었다). 그 뒤 HIT 쪽으로 돌아온다. PC는 둘 다 들어가서 그대로다
+const BOARD_HOLD = { lead: 0.6, margin: 4, call: 0.6, base: 0.1 };
+const callNow = () => (hasBattedBall() ? fieldPlay(game.outcome).calls.find((c) => game.flightT < c.t + BOARD_HOLD.call) : null);
 function boardHold() {
   const bm = boardMoment(), R = bm && !camMoved() && game.resultT >= bm.t0 - BOARD_HOLD.lead && game.resultT < bm.t1 ? scoreboardRect() : null;
   if (!R) return null;
   const x0 = R.x - view.panX, lo = BOARD_HOLD.margin - x0, hi = view.w - BOARD_HOLD.margin - (x0 + R.w);   // x0: 화면을 안 밀었을 때 전광판 왼쪽
-  return lo <= hi ? [lo, hi] : [(lo + hi) / 2, (lo + hi) / 2];
+  const hold = lo <= hi ? [lo, hi] : [(lo + hi) / 2, (lo + hi) / 2], c = callNow(), q = c && project(c.at[0], 0, c.at[1]);
+  if (!q) return hold;
+  const bx = q.x - view.panX, m = view.w * BOARD_HOLD.base, a = Math.max(hold[0], m - bx), b = Math.min(hold[1], view.w - m - bx);
+  return a <= b ? [a, b] : null;
 }
 function followBall(pos, dt) {
   const p = project(pos.x, pos.y, pos.z);
@@ -6007,6 +6017,7 @@ const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 �
     '1루 승부가 아슬아슬하면 주자가 머리부터 슬라이딩해요',
     '로그인했으면 끝 화면의 최고 기록도 계정 기록으로 보여요',
     '조준 타격은 누른 자리가 배트 손잡이예요. 배트가 옆으로 누워 진짜 스윙처럼 보여요(PC·폰 같음)',
+    '폰에서도 1루 승부 장면이 화면 안에 보여요',   // 같은 날 저녁에 더한 작은 변화라 id(2026-11-05e)는 그대로(NEW를 다시 띄우지 않는다)
   ] },
   { id: '2026-11-05d', label: '11/5 늦은 오후', items: [
     "메뉴와 조준 타격 끝 화면에 '의견 보내기'가 생겼어요. 좋았던 점·불편한 점을 남겨 주세요(패들렛으로 열려요)",

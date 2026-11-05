@@ -3298,6 +3298,34 @@ test.describe('가운데 큰 전광판', () => {
     expect(hr.follow).toBeGreaterThan(20);   // 글자가 끝나면 화면이 다시 주자를 따라간다
     expect(errors).toEqual([]);
   });
+
+  test('폰: 1루 간발이면 공을 잡는 순간부터 1루 쪽을 봐서, 머리부터 슬라이딩과 세이프·아웃이 뜨는 동안 1루가 화면 안이다(내야 안타도 HIT 전광판 쪽으로 끌려가지 않는다)', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '시야가 좁은 폰에서 본다(PC는 1루와 전광판이 원래 함께 보인다)');
+    const errors = await open(page, '?seed=1');
+    const r = await page.evaluate(() => {
+      const w = walkoff, g = w.game;
+      w.paused = true;
+      const play = (p, dt) => {
+        w.startGame('challenge'); g.seq[0] = p;
+        for (let k = 0; k < 3000 && g.state !== 'result'; k++) {
+          if (g.state === 'pitch' && g.swingAt == null && w.ballTime() + 1 / 60 >= p.T + dt / 1000) w.swing(g.clockAt + Math.max(0, p.T + dt / 1000 - w.ballTime()) * 1000);
+          g.clockAt += 1000 / 60; w.update(1 / 60);
+        }
+        const o = g.outcome, d = Math.max(o.race.runner, o.race.arrive.t);
+        let lo = 9, hi = -9;
+        for (let k = 0; k < 900 && g.state === 'result' && g.flightT < d + 0.5; k++) {   // 머리부터 날기 시작할 때(판정 0.5초 앞)부터 세이프·아웃이 뜬 뒤 0.5초까지
+          w.update(1 / 60);
+          if (g.flightT >= d - 0.5) { const b = w.project(w.BASE1[0], 0, w.BASE1[1]); lo = Math.min(lo, b.x / w.view.w); hi = Math.max(hi, b.x / w.view.w); }
+        }
+        return { kind: o.kind, pos: o.race.pos, lo, hi };
+      };
+      const seq = w.makeSequence(1, false);
+      return { safe: play(seq[3], -90), out: play(seq[5], -78) };   // 3루수 내야 안타(간발 세이프), 유격수 땅볼(간발 아웃)
+    });
+    expect([r.safe.kind, r.out.kind]).toEqual(['single', 'out']);
+    for (const [k, v] of Object.entries(r)) { expect(v.lo, k).toBeGreaterThan(0.1); expect(v.hi, k).toBeLessThan(0.95); }   // 전에는 내야 안타 판정 때 1루가 화면 폭의 1.85배 자리(화면 밖)였다
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('결과 한 박자·건너뛰기', () => {
