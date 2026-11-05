@@ -44,12 +44,19 @@ async function looksOf(db, ids) {
 
 // 이번 주 순위와 지난주 1등(사람, 팀). 주마다 모아 둔 요약(board.js)으로 매긴다.
 // looks면 이번 주 목록에 입은 물건(look)을 붙이고(/rankings만), lastWeek가 아니면 지난주는 읽지 않는다(/scores는 내 순위만 쓴다)
+// 그 사람의 역대 최고(지난주·한 달 전 포함, 계정으로 친 10구 점수 전체). 기본 키(player_id, day)로 그 사람 줄만 읽는다.
+// 메뉴 '역대'를 기기마다가 아니라 계정 기록으로 보이게(2026-11-05 사용자 '역대는 계정으로 친 점수 중 역대급으로 잘 친 기록이어야 한다')
+async function allTimeBest(db, playerId) {
+  const row = await db.prepare('SELECT MAX(score) AS best FROM daily_scores WHERE player_id = ?').bind(playerId).first();
+  return row?.best ?? null;
+}
+
 async function rankings(db, week, playerId, now, { looks = false, lastWeek = true } = {}) {
-  const [list, lastList] = await Promise.all([readBoard(db, week, now), lastWeek ? readBoard(db, addDays(week, -7), now) : null]);
+  const [list, lastList, allTime] = await Promise.all([readBoard(db, week, now), lastWeek ? readBoard(db, addDays(week, -7), now) : null, playerId ? allTimeBest(db, playerId) : null]);
   const { ids, ...cur } = rankSummary(list, playerId, { withIds: looks });   // ids는 응답에 넣지 않는다
   const lookById = looks ? await looksOf(db, ids) : null, last = lastList && rankSummary(lastList, null);
   return {
-    week, nextWeek: addDays(week, 7), ...cur,
+    week, nextWeek: addDays(week, 7), ...cur, ...(playerId ? { allTime } : {}),   // allTime: 그 사람이 이번 주에 친 판이 없어도(me가 null) 준다
     players: cur.players.map((p, i) => (lookById ? { ...withTotal(p), look: lookById.get(ids[i]) ?? null } : withTotal(p))), me: withTotal(cur.me),
     ...(last ? { lastWeek: { player: withTotal(last.players[0]), team: last.teams[0] ?? null } } : {}),
   };
@@ -168,7 +175,7 @@ export default {
         ]);
         const earned = await giveCoins(env.DB, s.playerId, coinsFor(s.score), now);
         const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId, now, { lastWeek: false }), accountById(env.DB, s.playerId)]);
-        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, coins: after.coins, earned });
+        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, allTime: r.allTime, coins: after.coins, earned });
       }
       // 끝내기 상황 한 판의 코인(scenario.js). 표는 10구 도전과 같은 /seeds 표이고, 서버가 그 시드로 판을 다시 돌려 끝·점수를 낸다.
       // 표를 먼저 쓴 것으로 적고 적은 요청만 코인을 준다(같은 표로 동시에 와도 한 번). 랭킹에는 올리지 않는다

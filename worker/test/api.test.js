@@ -2,7 +2,7 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { sign, verify, allowedReturn } from '../src/auth.js';
-import { kstDay, weekStart, maxScoreFor } from '../src/rules.js';
+import { kstDay, weekStart, addDays, maxScoreFor } from '../src/rules.js';
 import { DEFAULTS } from '../src/shop.js';
 import { makeSequence, pitcherHand, zoneMiss } from '../../js/core/pitches.js';
 import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
@@ -265,6 +265,24 @@ test('랭킹: 목록의 사람마다 입은 물건(look)을 같이 보내고, �
   assert.deepEqual([ranking.me.rank, ranking.count], [2, 3]);   // 내 순위는 그대로
   const sent = await (await call('POST', '/scores', { token: b, body: score(await seeded(b), { nick: '나래', score: 4500 }) })).json();
   assert.deepEqual([sent.ok, sent.players, sent.me.best], [true, undefined, 4500]);   // 점수를 보낸 답에는 목록이 없다(내 순위만)
+});
+
+test('역대 최고(allTime): 그 사람이 계정으로 친 10구 점수 전체의 최고를 /rankings?player=와 /scores 답에 준다(이번 주에 친 판이 없어도, 남의 기록은 섞지 않는다)', async () => {
+  const a = (await login('c1', 'p-device-0001')).hash.login;
+  const today = kstDay(Date.now()), week = weekStart(today), lastWeek = weekStart(addDays(week, -7)), monthAgo = addDays(today, -30);
+  const put = (pid, day, s) => env.DB.prepare('INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(pid, day, weekStart(day), '가람', 'lg', s, 'G').run();
+  await put('p-device-0001', monthAgo, 17600);   // 한 달 전(다른 기기에서 친 판도 같은 계정이면 여기 있다)
+  await put('p-device-0001', lastWeek, 9000);
+  await put('p-other-0001', today, 30000);       // 남의 기록
+  const r1 = await (await call('GET', '/rankings?player=p-device-0001')).json();
+  assert.deepEqual([r1.me, r1.allTime], [null, 17600]);   // 이번 주는 아직 안 쳤어도 역대는 준다
+  const sent = await (await call('POST', '/scores', { token: a, body: score(await seeded(a), { score: 5000 }) })).json();
+  assert.deepEqual([sent.ok, sent.me.best, sent.allTime], [true, 5000, 17600]);
+  await put('p-device-0001', addDays(lastWeek, 1), 21000);   // 지난주에 다른 기기에서 더 높게 친 판
+  const r2 = await (await call('GET', '/rankings?player=p-device-0001')).json();
+  assert.equal(r2.allTime, 21000);
+  assert.equal((await (await call('GET', '/rankings?player=p-nobody-0001')).json()).allTime, null);   // 기록이 없는 사람
+  assert.ok(!('allTime' in await (await call('GET', '/rankings')).json()));   // player가 없으면 주지 않는다
 });
 
 test('상점: 산 것만 입고, 코인이 모자라거나 이미 있으면 못 산다', async () => {

@@ -4537,7 +4537,7 @@ function drawRecords() {
   y += m ? 44 : 54;
   const ss = store.get('scnStats', { plays: 0, wins: 0 });
   const rows = [
-    ['10구 도전 최고', store.get('best', 0) ? `${store.get('best', 0).toLocaleString()}점` : '아직 없음'],
+    ['10구 도전 최고', allTimeBest() ? `${allTimeBest().toLocaleString()}점` : '아직 없음'],   // 로그인했으면 계정 역대 최고
     ['끝내기 상황', ss.plays ? `${ss.wins}승 / ${ss.plays}판` : '아직 없음'],
   ];
   for (const [k, v] of rows) {
@@ -4660,7 +4660,26 @@ function weekStartOf(day) {
 // 이번 주 최고 기록(메뉴 칩, 2026-11-05 사용자 결정 '이번 주와 역대 둘 다'. 메뉴 '최고'가 이번 주 랭킹의 내 기록과 달라 보였다).
 // 이 기기에 주(한국 시간 월요일)마다 { week, best }. 로그인했으면 점수를 보내고 받은 서버의 이번 주 최고(다른 기기 포함, 랭킹과 같은 숫자),
 // 아니면 이 기기에서 이번 주에 끝낸 10구 판의 최고(?seed= 판·조준 판은 빼고). 주가 바뀌면 없는 것으로 본다
-function weekBest() { const w = store.get('weekBest', null); return w?.week === weekStartOf(today()) && w.best > 0 ? w.best : null; }
+function weekBest() {
+  const w = loggedIn() ? store.get('accountBest', null) : store.get('weekBest', null);
+  return w?.week === weekStartOf(today()) && w.best > 0 ? w.best : null;
+}
+// 로그인했으면 메뉴·기록 화면의 이번 주·역대 최고는 계정 기록(서버)만 보인다(2026-11-05 사용자 '역대는 계정으로 친 점수 중 역대급으로 잘 친 기록이어야
+// 한다. 지난주든 한 달 전이든. 기기별로 말고'. 다른 기기에서 친 17,600점이 메뉴에 15,000점으로 보였다). 이 기기에 { week, best, allTime }으로 남겨 두고
+// 메뉴를 열 때(1분에 한 번까지)와 랭킹 화면은 /rankings?player=, 판을 끝내면 /scores 답으로 고친다. 실패·429면 남겨 둔 값 그대로, 받은 적이 없으면
+// 칩을 감춘다(기기 값을 잠깐 보였다가 바뀌지 않게). 로그인 전에 이 기기에서 친 판은 계정에 옮기지 않는다(서버가 확인할 수 없다). 로그아웃하면 이 기기 값
+const allTimeBest = () => Number(loggedIn() ? store.get('accountBest', null)?.allTime : store.get('best', 0)) || 0;
+function setAccountBest(week, best, allTime) {   // allTime이 없으면(옛 서버) 남겨 둔 값 그대로
+  const cur = store.get('accountBest', null);
+  store.set('accountBest', { week, best: best ?? null, allTime: allTime === undefined ? cur?.allTime ?? null : allTime });
+}
+const ACCOUNT_BEST_EVERY_MS = 60_000;
+let accountBestAt = 0;
+async function refreshAccountBest() {
+  if (!loggedIn() || Date.now() - accountBestAt < ACCOUNT_BEST_EVERY_MS) return;
+  accountBestAt = Date.now();
+  try { const d = await fetchRanking(settings.playerId); if (loggedIn()) setAccountBest(d.week, d.me?.best, d.allTime); } catch { /* 남겨 둔 값 그대로 */ }
+}
 function setWeekBest(week, best, keepMax = true) {
   const cur = store.get('weekBest', null);
   store.set('weekBest', { week, best: keepMax && cur?.week === week ? Math.max(cur.best, best) : best });
@@ -4712,7 +4731,7 @@ async function submitScore(s, mode) {
   if (status > 0 && status < 500 && store.get('pending', null)?.token === body.token) store.remove('pending');
   if (status === 200 && data.ok) {
     setWallet({ coins: data.coins });
-    if (Number.isInteger(data.me?.best)) setWeekBest(weekStartOf(s.date), data.me.best, false);   // 메뉴 '이번 주'를 랭킹과 같은 숫자로
+    setAccountBest(weekStartOf(s.date), data.me?.best, data.allTime);   // 메뉴 '이번 주'·'역대'를 계정 기록으로(랭킹과 같은 숫자)
     game.rankInfo = { status: 'ok', me: data.me, myTeam: data.myTeam, newBest: data.accepted && data.me?.best === s.score, earned: data.earned ?? 0 };
   } else game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error };
 }
@@ -4758,7 +4777,10 @@ function openRanking(back) {
 }
 async function loadRanking() {
   game.ranking = { status: 'loading' };
-  try { game.ranking = { status: 'ok', data: await fetchRanking(settings.playerId) }; } catch (e) { game.ranking = { status: 'error', busy: e?.status === 429 }; }
+  try {
+    game.ranking = { status: 'ok', data: await fetchRanking(settings.playerId) };
+    if (loggedIn()) setAccountBest(game.ranking.data.week, game.ranking.data.me?.best, game.ranking.data.allTime);
+  } catch (e) { game.ranking = { status: 'error', busy: e?.status === 429 }; }
 }
 function closeRanking() {
   if (game.rankView) { game.rankView = null; return; }   // 사람 모습을 보고 있으면 목록으로
@@ -4909,6 +4931,7 @@ async function syncAccount() {
     if (res.status === 401) { logout('expired'); return; }
     if (!res.ok) return;
     const acct = await res.json();
+    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
     settings.playerId = acct.playerId; store.set('playerId', acct.playerId);
     setWallet(acct);
     let msg = '카카오로 로그인했어요';
@@ -4946,7 +4969,7 @@ async function pushProfile() {
 function logout(reason) {
   Object.assign(auth, { token: null, fresh: false });
   seedTicket.ready = null;   // 받아 둔 시드는 그 계정 것이다
-  store.remove('session');
+  store.remove('session'); store.remove('accountBest'); accountBestAt = 0;   // 메뉴 최고 기록은 다시 이 기기 값으로
   resetWallet();   // 코인과 꾸미기는 계정에 남는다. 이 브라우저는 기본 모습으로
   toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
 }
@@ -4959,7 +4982,7 @@ async function deleteAccount() {
     if (!res.ok && res.status !== 401) throw new Error(`delete ${res.status}`);
     Object.assign(auth, { token: null, fresh: false });
     seedTicket.ready = null;
-    ['session', 'pending', 'playerId'].forEach((k) => store.remove(k));
+    ['session', 'pending', 'playerId', 'accountBest'].forEach((k) => store.remove(k));
     resetWallet();
     settings.playerId = ensurePlayerId();
     goTitle();
@@ -5864,6 +5887,7 @@ const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 �
     '조준 타격을 조금 쉽게 했어요. 위아래로 조금 빗나가도 맞아요',
     '조준 배트가 그림자로 바뀌어 덜 어지러워요. 폰에서는 누른 자리가 손잡이라, 위로 비스듬히 뻗은 배트 굵은 쪽으로 겨눠 쳐요',
     '폰 시작 화면 글자가 더 잘 보여요',   // 작은 변화라 id(2026-11-05d)는 그대로(NEW를 다시 띄우지 않는다)
+    '로그인했으면 메뉴의 이번 주·역대 최고가 다른 기기에서 친 기록까지 맞춰 보여요',
   ] },
   { id: '2026-11-05c', label: '11/5 오후', items: [   // 2026-11-05c: 조준 타격(실험) 줄을 맨 위에 더하며 id를 올려 이미 읽은 사람에게도 다시 NEW가 뜬다
     "메뉴에 '조준 타격(실험)'이 생겼어요. 배트로 공이 들어올 자리를 겨눠 쳐요",
@@ -5986,6 +6010,7 @@ const linkAt = (x, y) => ui.buttons.find((b) => b.href && inRect(b.r, x, y));
 function openMenu() {
   game.state = 'menu'; menu.scroll = 0;
   if (!store.get('menuSeen', false)) store.set('menuSeen', 1);   // 말풍선은 메뉴를 한 번 열면 다시 안 띄운다
+  refreshAccountBest();   // 로그인했으면 이번 주·역대 최고를 계정 기록으로(1분에 한 번까지)
 }
 // 아이콘: 24칸 SVG 경로(시안 mock.html, 원·둥근 네모도 경로로 바꿨다)를 금색 2px 선으로 그린다
 const circlePath = (cx, cy, r) => `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0z`;
@@ -6106,7 +6131,7 @@ function drawMenuChip(x, cy, parts, size) {
 }
 function drawMenu() {
   dim(0.9);   // 시안은 뒤를 흐리게 깔았다. 캔버스 흐림은 사파리에서 무거워서 더 어둡게만
-  const m = view.mobile, best = Number(store.get('best', 0)) || 0, streak = playStreak(), coins = loggedIn() ? wallet.coins : null, t = teamById(settings.team), gold = '#f2c94c';
+  const m = view.mobile, best = allTimeBest(), streak = playStreak(), coins = loggedIn() ? wallet.coins : null, t = teamById(settings.team), gold = '#f2c94c';
   // 묶음: [제목, 줄들]. 줄은 [아이콘, 이름, 오른쪽 값, 누르면, 단추 이름(없으면 이름. 테스트가 이 이름으로 누른다), 꼬리표]
   const groups = [
     ['놀기', [['scn', '끝내기 상황', '9회말 역전 승부', () => startGame('scenario')], ['practice', '연습', '구종 골라 치기', () => startGame('practice')],
@@ -6824,5 +6849,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, AIM_GRIP, aimAxes, aimBatPoints, drawAimBat, weekBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, AIM_GRIP, aimAxes, aimBatPoints, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };

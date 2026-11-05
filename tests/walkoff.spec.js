@@ -28,14 +28,15 @@ const SAMPLE_RANKING = {
 // seedFail: /seeds가 서버 오류로 답한다. seedExpired: /seeds만 로그인이 풀린 것처럼 401로 답한다(계정 확인 /me는 된다).
 // seedHold: /seeds 답을 테스트가 calls.releaseSeeds()로 풀 때까지 잡아 둔다(풀면 그 뒤 요청은 바로 답한다). scoreFail: /scores가 서버 오류로 답한다.
 // /scores는 실제 서버처럼 10구 도전에 표가 없거나 모르는 표, 이미 쓴 표면 거절한다.
-// 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다
+// 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다.
+// account.allTime: 계정의 역대 최고(다른 기기에서 친 판 포함). 실제 서버처럼 /rankings?player=와 /scores 답에 allTime으로 주고, 받은 점수로 올린다
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
   const { replayScenario, WIN_BONUS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'scenario.js')).href);
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
-  const calls = [], tickets = [], heldSeeds = [];
+  const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null };
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
     const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
@@ -74,9 +75,10 @@ async function mockApi(page, opts = {}) {
       if (mode === 'challenge' && !token) return reply({ ok: false, error: 'seed_required' }, 400);
       if (mode === 'challenge' && (!ticket || ticket.used)) return reply({ ok: false, error: ticket ? 'seed_used' : 'bad_seed' }, 400);
       if (ticket) ticket.used = true;
-      const earned = opts.earned ?? Math.floor(score / 100);
+      const earned = opts.earned ?? Math.floor(score / 100), best = lower ? score + 1000 : score;
       shop.coins += earned;
-      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best: lower ? score + 1000 : score, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, coins: shop.coins, earned });
+      record.allTime = Math.max(record.allTime ?? 0, best);
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, allTime: record.allTime, coins: shop.coins, earned });
     }
     if (url.pathname === '/shop/buy') {
       const it = ITEMS.find((i) => i.id === JSON.parse(req.postData() || '{}').item);
@@ -94,7 +96,7 @@ async function mockApi(page, opts = {}) {
       if (it.id === 'number-on') shop.look.no = b.number;
       return reply({ ok: true, ...wallet() });
     }
-    return reply(rankings);
+    return reply(url.searchParams.get('player') ? { ...rankings, allTime: record.allTime } : rankings);
   });
   Object.defineProperty(calls, 'tickets', { value: tickets });   // 받은 요청 목록과 비교할 때 걸리지 않게 숨긴 속성으로 둔다
   Object.defineProperty(calls, 'releaseSeeds', { value: () => { opts.seedHold = false; heldSeeds.splice(0).forEach((done) => done()); } });
@@ -864,13 +866,14 @@ test.describe('화면', () => {
   });
 
   test('메뉴 화면: 내 정보 카드(팀·닉네임·최고 기록·코인)와 새 소식 띠, 놀기·기록·내 것·설정 묶음의 줄마다 원래 화면으로 가고, 닫기(X)·Esc로 닫는다', async ({ page }) => {
-    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 1250 } } });
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 1250, allTime: 17600 } } });   // 계정 역대 최고는 다른 기기에서 친 17,600
     await page.evaluate(() => localStorage.setItem('walkoff.best', '5200'));
     await page.waitForFunction(() => walkoff.wallet.coins === 1250);
     await tap(page, '메뉴');
-    await page.waitForFunction(() => walkoff.game.state === 'menu');
+    await page.waitForFunction(() => walkoff.game.state === 'menu' && walkoff.store.get('accountBest', null)?.allTime === 17600);
     const texts = await drawnTexts(page);
-    for (const s of ['LG', '테스트', '역대 ', '5,200', '1,250', '새 소식', '놀기', '기록', '내 것', '설정', '9회말 역전 승부', '구종 골라 치기', '역대 최고 5,200', '내 순위 보기', 'LG · 테스트', '코인 1,250', '카카오 로그인됨', '0ms']) expect(texts, s).toContain(s);
+    for (const s of ['LG', '테스트', '역대 ', '17,600', '1,250', '새 소식', '놀기', '기록', '내 것', '설정', '9회말 역전 승부', '구종 골라 치기', '역대 최고 17,600', '내 순위 보기', 'LG · 테스트', '코인 1,250', '카카오 로그인됨', '0ms']) expect(texts, s).toContain(s);
+    expect(texts).not.toContain('5,200');   // 로그인했으면 이 기기 최고가 아니라 계정 기록
     expect(texts).not.toContain('이번 주 ');   // 이번 주 기록이 없으면 칩을 감춘다
     expect(texts.some((s) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s))).toBe(false);   // 이모지는 쓰지 않는다
     const go = async (label) => {   // 메뉴를 다시 열고 그 줄을 누른 뒤 간 화면
@@ -991,6 +994,52 @@ test.describe('화면', () => {
     const r = await page.evaluate(() => ({ score: walkoff.game.summary.score, wb: walkoff.weekBest(), me: walkoff.game.rankInfo.me.best }));
     expect(r.wb).toBe(r.me);
     expect(r.wb).toBe(r.score + 1000);
+    expect(errors).toEqual([]);
+  });
+
+  test("메뉴 '이번 주'·'역대'와 기록 화면: 로그인했으면 계정 기록(서버)만 보인다. 이 기기 최고가 더 높아도 계정 값, 받은 적이 없으면 감추고, 실패·429면 남겨 둔 값, 로그아웃하면 이 기기 값. 두 번째 기기도 계정 ID로 묻는다", async ({ page }) => {
+    await page.addInitScript(() => { if (!localStorage.getItem('walkoff.playerId')) localStorage.setItem('walkoff.playerId', JSON.stringify('p-device-9999')); });   // 이 기기 ID(계정과 다르다)
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 10, allTime: 17600 } } });
+    await page.waitForFunction(() => walkoff.wallet.coins === 10 && walkoff.settings.playerId === 'p-account-0001');   // 로그인하면 계정 ID를 이어 쓴다
+    const week = await page.evaluate(() => walkoff.weekStartOf(walkoff.today()));
+    await page.unroute(`${API}/**`);   // 이번 주 기록이 12,000인 계정으로 다시 띄운다
+    const calls = await mockApi(page, { account: { allTime: 17600 }, rankings: { ...EMPTY_RANKING, week, me: { rank: 2, best: 12000, days: 1, team: 'lg' } } });
+    await page.evaluate(() => { walkoff.store.set('best', 30000); walkoff.store.set('weekBest', { week: walkoff.weekStartOf(walkoff.today()), best: 30000 }); });   // 이 기기 기록이 더 높다(로그인 전 판 등)
+    const chips = async () => { await page.waitForTimeout(50); return (await drawnTexts(page)).filter((s) => /^\d{1,3}(,\d{3})*$/.test(s) || ['이번 주 ', '역대 '].includes(s)); };
+    await page.evaluate(() => walkoff.openMenu());
+    await page.waitForFunction(() => walkoff.store.get('accountBest', null)?.allTime === 17600);
+    expect(calls.filter((c) => c.path === '/rankings').map((c) => c.query.player)).toEqual(['p-account-0001']);   // 계정 ID로 물었다
+    expect(await chips()).toEqual(expect.arrayContaining(['이번 주 ', '12,000', '역대 ', '17,600']));
+    expect(await chips()).not.toContain('30,000');
+    await page.evaluate(() => { walkoff.game.state = 'records'; });
+    expect(await drawnTexts(page)).toContain('17,600점');   // 기록 화면도 계정 역대 최고
+    // 1분 안에 다시 열면 묻지 않는다. 랭킹 화면은 늘 새로 묻는데, 서버가 429면 남겨 둔 값 그대로
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
+    await page.waitForTimeout(300);
+    expect(calls.filter((c) => c.path === '/rankings')).toHaveLength(1);
+    await page.route(`${API}/rankings**`, (route) => route.fulfill({ status: 429, headers: CORS, contentType: 'application/json', body: '{"ok":false,"error":"rate_limited"}' }));
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'error');
+    expect(await page.evaluate(() => walkoff.store.get('accountBest', null))).toEqual({ week, best: 12000, allTime: 17600 });
+    await page.unroute(`${API}/rankings**`);
+    // 로그아웃하면 이 기기 값
+    await page.evaluate(() => walkoff.openAccount());
+    await tap(page, '로그아웃');
+    await page.evaluate(() => walkoff.openMenu());
+    expect(await chips()).toEqual(expect.arrayContaining(['이번 주 ', '30,000', '역대 ']));
+    expect(await chips()).not.toContain('17,600');
+    expect(errors).toEqual([]);
+  });
+
+  test("메뉴 '역대': 로그인했는데 계정 값을 아직 못 받았으면(서버 오류) 이 기기 값을 잠깐 보이지 않고 칩을 감춘다", async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true, api: { fail: true } });
+    await page.evaluate(() => { walkoff.store.set('best', 30000); walkoff.store.remove('accountBest'); walkoff.openMenu(); });
+    await expect.poll(() => errors.calls.some((c) => c.path === '/rankings')).toBe(true);
+    await page.waitForTimeout(200);
+    const texts = await drawnTexts(page);
+    expect(texts).not.toContain('역대 ');
+    expect(texts).not.toContain('30,000');
+    expect(texts).toContain('아직 없음');   // 기록 줄
     expect(errors).toEqual([]);
   });
 
