@@ -39,7 +39,8 @@ const cam = { x: 0, y: 1.4, z: -3.2 };
 // 홈런·큰 뜬공 때 공 뒤로 날아가는 카메라(2026-11-02 사용자 결정, 시안은 인프라 세션 walkoff-chasecam-proto). 방향은 늘 가운데 담장 쪽(회전 없음)이고
 // 자리(cam)만 움직인다. project가 회전 없는 핀홀이라 3D로 그리는 것은 모두 따라온다. CAM_HOME은 타석 시점(처음 자리)
 const CAM_HOME = { ...cam };
-const camMoved = () => cam.z - CAM_HOME.z > 0.3 || Math.abs(cam.x - CAM_HOME.x) > 0.3 || Math.abs(cam.y - CAM_HOME.y) > 0.3;
+const camOffset = () => Math.max(cam.z - CAM_HOME.z, Math.abs(cam.x - CAM_HOME.x), Math.abs(cam.y - CAM_HOME.y));   // 타석 시점에서 움직인 거리(m, 가장 큰 축)
+const camMoved = () => camOffset() > 0.3;
 const FONT = "-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif";
 const font = (size, weight = 700) => `${weight} ${Math.round(size)}px ${FONT}`;
 function resize() {
@@ -321,13 +322,13 @@ function scoreboardRect() {
   return a && b ? { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y, s: a.s, z } : null;
 }
 // 전광판이 HIT·HOMERUN을 띄우는 때(결과 화면 시간 resultT 기준): { word, t0, t1 }. 안타가 아니면 null
+// 결과를 알리는 때(revealAt)에 띄운다. 카메라가 공 뒤로 날아가는 타구는 revealAt이 타석 시점으로 돌아올 때라서(revealOf) 폰에서도 전광판이
+// 화면 안에 있고(2026-11-03 사용자 '전광판을 화면에 붙잡기'. 전에는 큰 뜬공 2루타가 카메라가 40m 앞에 있는 동안 HIT을 띄워 30%쯤만 보였다),
+// 공이 날아가는 동안 눌러 건너뛰면(skipToBeat) 그 순간이 revealAt이다
 function boardMoment() {
   const r = game.outcome;
   if (game.state !== 'result' || !r?.hit || game.replay != null) return null;
-  // 카메라가 공 뒤로 날아가 있으면 타석 시점으로 돌아온 뒤에 띄운다. 전에는 홈런만 그랬고, 큰 뜬공 2루타는 카메라가 40m 앞에 있는 동안
-  // HIT을 띄워 폰에서 전광판이 30%쯤만 보였다(2026-11-03 사용자 '전광판을 화면에 붙잡기')
-  // 공이 날아가는 동안 눌러 건너뛰었으면(skipToBeat) 그 순간에 띄운다
-  const t0 = game.skipAt != null ? Math.max(game.revealAt, game.skipAt) : chaseable(r) && !game.replayed ? Math.max(game.revealAt, chaseEnd(r)) : game.revealAt;
+  const t0 = game.revealAt;
   return { word: r.kind === 'hr' ? 'HOMERUN' : 'HIT', t0, t1: t0 + (r.kind === 'hr' ? SCOREBOARD.hrMoment : SCOREBOARD.moment) };
 }
 // 결과 카드를 그려도 되는지(전광판이 HIT·HOMERUN을 띄우는 동안과 그 전에는 숨긴다)
@@ -1538,7 +1539,10 @@ function drawPitchMark(p) {
 }
 
 function drawZone(alpha) {
-  if (camMoved()) return;
+  // 따라가는 카메라가 움직이기 시작하면 CHASE.zoneFade m에 걸쳐 흐려진다(홈플레이트 위라 카메라 뒤로 넘어간다). 전에는 0.3m에서 한 장면에 꺼졌다
+  const fade = 1 - clamp(camOffset() / CHASE.zoneFade, 0, 1);
+  if (fade <= 0) return;
+  alpha *= fade;
   const tl = project(ZONE.left, ZONE.top, 0), br = project(ZONE.right, ZONE.bottom, 0);
   if (!tl || !br) return;
   const w = br.x - tl.x, h = br.y - tl.y;
@@ -3718,20 +3722,33 @@ function cameraFocus(r, t) {
   return { x: run.x + dx * lead, y: 1.2, z: run.z + dz * lead };
 }
 // 따라갈 타구: 홈런, 또는 페어 지역의 뜬공·직선타 중 비거리 70m 이상. 땅볼·파울·1루 승부·다시 보기는 타석 시점 그대로
-const CHASE = { start: 0.25, backStart: 18, minBack: 8, lift: 0.8, k: 3.5, maxZ: 40, hrStop: 28, flyStop: 14, hold: 0.35, minDist: 70, ballMin: 0.006 };
+const CHASE = { start: 0.25, rise: 0.5, backStart: 18, minBack: 8, lift: 0.8, k: 3.5, maxZ: 40, pace: 0.5, hrStop: 28, flyStop: 14, hold: 0.35, minDist: 70, ballMin: 0.006, zoneFade: 1.2 };
 const chaseable = (r) => !!r && !r.took && r.kind !== 'whiff' && r.kind !== 'foul' && Math.abs(r.spray ?? 99) <= 45
   && (r.kind === 'hr' || ((r.type === 'fly' || r.type === 'line') && r.dist >= CHASE.minDist));
 // 카메라가 갈 자리. 맞은 뒤 0.25초는 타석 시점(스윙·맞는 순간)이고, 그 뒤 타석 카메라에서 공이 떨어질 곳으로 가는 수평 직선 위를 나아간다
-// (떨어질 곳은 타석에서 볼 때와 같은 쪽 화면에 남고, 좌우 나머지는 화면 밀기가 맞춘다). 공 뒤 거리는 처음 40m에서 떨어질 곳에 가까워질수록 16m까지
+// (떨어질 곳은 타석에서 볼 때와 같은 쪽 화면에 남고, 좌우 나머지는 화면 밀기가 맞춘다). 공 뒤 거리는 처음 18m에서 떨어질 곳에 가까워질수록 8m까지
 // 줄이고(높이 뜬 공에 너무 붙으면 방향이 고정이라 공이 위 시야 밖으로 나간다), 높이는 공 높이의 0.8배만큼 올린다. 홈런은 담장 28m 앞,
-// 뜬공은 떨어질 곳 14m 앞에서 멈추고 z 40m를 넘지 않는다(60m에서는 흐린 관중이 화면을 채웠다). 공이 떨어지면(잡히면, 홈런은 관중석에 들어가면)
-// 0.35초 뒤 돌아오는 장면 없이 끊는다(2026-11-02 사용자 '공 떨어지는 것까지만, 돌아오는 것은 안 보여 줘도'). null이면 바로 타석 시점
-function chaseEnd(r) {
-  if (r.chaseEnd !== undefined) return r.chaseEnd;
+// 뜬공은 떨어질 곳 14m 앞이 마지막 자리이고 z 40m를 넘지 않는다(60m에서는 흐린 관중이 화면을 채웠다). 공이 떨어지면(잡히면, 홈런은 관중석에 들어가면)
+// 0.35초 뒤 돌아오는 장면 없이 끊는다(2026-11-02 사용자 '공 떨어지는 것까지만, 돌아오는 것은 안 보여 줘도'). null이면 바로 타석 시점.
+// 다듬기(2026-11-05 사용자 결정): 마지막 자리까지는 공이 떨어질 때 닿게 나눠 간다(공이 떨어질 때까지 지난 시간 비율 u의 CHASE.pace제곱만큼.
+// 전에는 2초쯤 z 40m에 닿아 공이 떨어질 때까지 1.4~3초 같은 화면이었다). 높이는 처음 CHASE.rise초에 걸쳐 따라붙는다(전에는 앞으로 가기 전에
+// 0.1초 사이 2m를 솟아 타자가 화면 아래로 휙 빠졌다)
+// 공이 떨어지는 때(맞은 뒤 초): 잡히거나, 홈런은 관중석에 들어가 감춰지거나, 땅에 닿을 때
+function chaseLand(r) {
+  if (r.chaseLand !== undefined) return r.chaseLand;
   const T = flightDuration(r), play = fieldPlay(r);
   let land = r.kind === 'out' ? catchTime(r) : T;
   if (r.kind === 'hr') for (let t = 0; t < T; t += 1 / 60) if (play.ball(t).hidden) { land = t; break; }
-  return (r.chaseEnd = land + CHASE.hold);
+  return (r.chaseLand = land);
+}
+function chaseEnd(r) { return chaseLand(r) + CHASE.hold; }
+// 결과를 알리는 때(resultT): 함성·결과 제목·HIT·HOMERUN·아래 카드·위 점수판 불과 점수. 수비가 정하는 때(fieldPlay의 reveal, 2.6초 상한)이고,
+// 카메라가 공 뒤로 날아가는 타구는 공이 떨어지고 타석 시점으로 돌아올 때(chaseEnd)까지 기다린다(2026-11-05 사용자 결정. 전에는 2.6초에
+// 아래 카드·위 점수·함성이 공이 아직 날아가는 중에 먼저 나오고 HOMERUN·제목은 돌아온 뒤라 결과가 두 번에 나뉘었다). 이때 안타 함성만은
+// 0.35초 앞, 공이 떨어질 때 낸다(update. 2026-11-03 결정 '공이 관중석에 들어가거나 떨어질 때 함성, 돌아오면 HOMERUN과 제목')
+function revealOf(r) {
+  const play = fieldPlay(r);
+  return chaseable(r) ? Math.max(play.revealReal, play.realTime(chaseEnd(r))) : play.revealReal;
 }
 function chaseTarget() {
   const g = game, r = g.outcome;
@@ -3742,8 +3759,9 @@ function chaseTarget() {
   const lx = land.x - CAM_HOME.x, lz = land.z - CAM_HOME.z, L = Math.hypot(lx, lz) || 1, dx = lx / L, dz = lz / L;
   const along = (p) => (p[0] - CAM_HOME.x) * dx + (p[1] - CAM_HOME.z) * dz;
   const stop = r.kind === 'hr' ? along(polar(r.spray, fenceDist(r.spray) - CHASE.hrStop)) : L - CHASE.flyStop;
-  const y = CAM_HOME.y + CHASE.lift * Math.max(0, b.y - CAM_HOME.y), ab = along([b.x, b.z]), back = lerp(CHASE.backStart, CHASE.minBack, smooth(ab / L));
-  const s = Math.max(0, Math.min(ab - back, stop, dz > 0.05 ? (CHASE.maxZ - CAM_HOME.z) / dz : 0));
+  const far = Math.min(stop, dz > 0.05 ? (CHASE.maxZ - CAM_HOME.z) / dz : 0), u = (g.flightT - CHASE.start) / Math.max(0.1, chaseLand(r) - CHASE.start);
+  const y = CAM_HOME.y + CHASE.lift * Math.max(0, b.y - CAM_HOME.y) * smooth((g.flightT - CHASE.start) / CHASE.rise), ab = along([b.x, b.z]), back = lerp(CHASE.backStart, CHASE.minBack, smooth(ab / L));
+  const s = Math.max(0, Math.min(ab - back, far * Math.pow(clamp(u, 0, 1), CHASE.pace)));
   return { x: CAM_HOME.x + dx * s, y, z: CAM_HOME.z + dz * s };
 }
 // 카메라를 한 장면만큼 옮긴다(목표로 지수 감쇠). 끊을 때는 화면 밀기도 한 번에 타석 시점 값으로 맞춘다. 홈런 흔들림은 카메라가 움직이기 시작하면 멈춘다
@@ -3782,9 +3800,14 @@ function followBall(pos, dt) {
   const hold = boardHold();
   if (hold) tx = clamp(tx, hold[0], hold[1]);
   const k = Math.min(1, dt * 5);
-  view.panX += (tx - view.panX) * k;
+  view.panX += clamp((tx - view.panX) * k, -panCap(dt), panCap(dt));
   view.panY += (ty - view.panY) * k;
 }
+// 화면을 좌우로 미는 빠르기 상한: 초당 시야(view.f)의 PAN_SPEED배(1이면 초당 57도쯤). 목표가 한 번에 바뀔 때(공이 떨어진 뒤 주자로 넘어갈 때,
+// 전광판 붙잡기를 풀 때, 다음 공으로 타석 시점에 돌아갈 때) 화면이 휙 넘어갔다(2026-11-05 사용자 결정. 폰에서 HOMERUN이 끝나는 순간 1초에
+// 폰 폭의 6배, PC는 홈런 뒤 화면 폭의 2배). 따라가는 카메라를 끊을 때(dt 1)는 한 번에 맞춘다
+const PAN_SPEED = 1.0;
+const panCap = (dt) => (dt < 0.5 ? PAN_SPEED * view.f * dt : Infinity);
 
 // ===== 화면 위 정보 =====
 const KIND_COLOR = { hr: '#ff6b4a', triple: '#4ade80', double: '#4ade80', single: '#4ade80', ball: '#facc15', out: '#9aa3b2', whiff: '#9aa3b2', foul: '#9aa3b2', strike: '#9aa3b2' };
@@ -4055,7 +4078,7 @@ function drawResultCard() {
   if (!r || game.resultT < game.revealAt) return;
   // 제목 한 줄(제목과 얻은 점수)은 결과를 알리는 순간(안타·홈런은 전광판이 HIT·HOMERUN을 띄우는 때)에 함성과 함께 튀어나와 그 자리에 그대로 있는다
   // (2026-11-03 유저 피드백 '환호성 → 전광판 HIT → 결과 순서로 하나씩 나와 어색하다', 사용자 결정 '한 박자로 모으기'). 전에는 결과 카드가 전광판 자리를
-  // 가려서 HIT·HOMERUN이 끝난 뒤(안타 1.2초·홈런 1.6초 뒤) 제목부터 통째로 나왔다. 홈런·큰 뜬공의 함성은 공이 담장을 넘거나 떨어질 때(두 박자)
+  // 가려서 HIT·HOMERUN이 끝난 뒤(안타 1.2초·홈런 1.6초 뒤) 제목부터 통째로 나왔다. 홈런·큰 뜬공의 함성은 공이 관중석에 들어가거나 떨어질 때(카메라가 돌아오기 0.35초 앞, 두 박자)
   const bm = boardMoment(), beat = bm ? bm.t0 : game.revealAt;
   if (game.resultT < beat) return;
   const m = view.mobile, cx = view.w / 2, hr = r.kind === 'hr', T = resultTitleBox(r), title = resultTitle(r);
@@ -5820,6 +5843,13 @@ function drawTitle(time) {
 // 빨간 점(시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
+  { id: '2026-11-05a', label: '11/5', items: [
+    '홈런·큰 뜬공은 공이 떨어지면 결과와 점수가 한 번에 나와요',
+    '카메라가 날아가는 공을 끝까지 따라가요',
+    '치는 순간 화면이 위로 튀지 않고, 홈런 뒤에는 천천히 넘어가요',
+    '공을 따라가는 동안 누르면 결과부터 보여 줘요. 한 번 더 누르면 다음 공',
+    '끝내기 상황의 끝내기 홈런도 HOMERUN을 보여 준 뒤 끝나요',
+  ] },
   { id: '2026-11-04c', label: '11/4 저녁', items: [
     '투수 옆을 빠르게 지나는 땅볼에 투수가 움찔해요',
     '외야수가 뜬공을 잡으면 내야수에게 공을 가볍게 던져 줘요',
@@ -6090,7 +6120,7 @@ function finish(r) {
   game.outcome = r;
   game.state = 'result';
   game.resultT = 0; game.flightT = 0;
-  game.revealAt = r.took ? 0.15 : r.kind === 'whiff' ? 0.3 : fieldPlay(r).revealReal;   // 아웃은 잡거나 1루에 닿을 때, 안타는 떨어질 때(느린 화면이면 그만큼 늦게)
+  game.revealAt = r.took ? 0.15 : r.kind === 'whiff' ? 0.3 : revealOf(r);   // 아웃은 잡거나 1루에 닿을 때, 안타는 떨어질 때(느린 화면이면 그만큼 늦게), 따라가는 타구는 카메라가 돌아올 때
   game.cheered = false;   // 안타 환호는 결과 글자와 함께(update)
   game.skipAt = null;
   if (r.kind === 'ball') setTimeout(() => Sound.ding(), 150);
@@ -6167,7 +6197,9 @@ function update(dt) {
   if (game.state === 'result') {
     game.resultT += dt;
     game.flightT += dt * (hasBattedBall() && game.replay == null ? fieldPlay(game.outcome).rate(game.flightT) : 1);   // 1루 간발은 느리게
-    if (!game.cheered && game.resultT > game.revealAt && hasBattedBall()) { game.cheered = true; celebrate(game.outcome); }
+    // 함성은 결과를 알릴 때. 카메라가 공 뒤로 날아가는 안타는 공이 떨어질 때(홈런은 관중석에 들어갈 때) 먼저 낸다(revealOf)
+    const landCheer = game.replay == null && game.outcome?.hit && chaseable(game.outcome) && game.flightT >= chaseLand(game.outcome);
+    if (!game.cheered && hasBattedBall() && (game.resultT > game.revealAt || landCheer)) { game.cheered = true; celebrate(game.outcome); }
     if (game.replay != null) {
       const was = game.replay;
       game.replay += dt * 0.5;
@@ -6175,13 +6207,15 @@ function update(dt) {
       if (game.burst && was < game.swingAt && game.replay >= game.swingAt) game.burst.t = 0;
       if (game.replay > p.T * 1.08) game.replay = null;
     }
-    // 끝내기 승리는 이긴 점수가 홈을 밟는 순간 경기가 끝난다(2026-11-02 사용자 '끝내기 승리인데 안 끝난다'. 전에는 '결과 보기'를 눌러야 했다)
-    if (game.mode === 'scenario' && game.scnWinT != null && game.replay == null && game.flightT >= game.scnWinT && game.resultT > game.revealAt + 0.8) { finishScenario(); return; }
+    // 끝내기 승리는 이긴 점수가 홈을 밟는 순간 경기가 끝난다(2026-11-02 사용자 '끝내기 승리인데 안 끝난다'. 전에는 '결과 보기'를 눌러야 했다).
+    // HIT·HOMERUN은 다 띄운 뒤에 끝낸다(2026-11-05. 전에는 끝내기 홈런이 공이 날아가는 중에 끝 화면이 돼서 HOMERUN이 안 나왔다)
+    if (game.mode === 'scenario' && game.scnWinT != null && game.replay == null && game.flightT >= game.scnWinT && game.resultT > game.revealAt + 0.8
+      && game.resultT >= (boardMoment()?.t1 ?? 0)) { finishScenario(); return; }
   }
   if (game.state === 'over' || game.state === 'title') game.resultT += dt;
 
   if (game.state === 'result' && hasBattedBall() && !game.replayed) followBall(cameraFocus(game.outcome, game.flightT), dt);   // 송구 때는 받는 사람 쪽으로 먼저 간다
-  else { const k = Math.min(1, dt * 4); view.panX -= view.panX * k; view.panY -= view.panY * k; }
+  else { const k = Math.min(1, dt * 4); view.panX -= clamp(view.panX * k, -panCap(dt), panCap(dt)); view.panY -= view.panY * k; }
   chaseStep(dt);   // 홈런·큰 뜬공은 카메라가 공 뒤로 날아간다
 }
 
@@ -6189,9 +6223,10 @@ function update(dt) {
 // 공이 날아가는 동안 누르면 결과가 나오는 순간(한 박자: 함성·HIT·결과 제목)으로 건너뛴다(2026-11-03 유저 보이스 '치고 날아가는 모션 스킵은 없나요,
 // 떨어질 때까지 기다리기 힘들다', 사용자 결정 '탭하면 바로 결과'). 맞은 뒤 SKIP_GUARD초 동안은 받지 않는다(치면서 두 번 누르는 실수).
 // 공·수비·주자는 모두 flightT로 그려서 flightT를 결과가 정해지는 때로 옮기면 그 자리로 간다. 놓친 장면은 '다시 보기'로 본다
-// 결과가 정해진 뒤(revealAt 뒤, 홈런은 카메라가 아직 공을 따라가는 중이어도)에 누르면 전처럼 다음 공으로 간다
+// 결과가 나온 뒤(revealAt 뒤)에 누르면 전처럼 다음 공으로 간다. 카메라가 공 뒤로 날아가는 타구는 돌아온 뒤가 revealAt이라(revealOf),
+// 따라가는 동안 누르면 결과부터 나온다(2026-11-05. 전에는 2.6초가 지나면 따라가는 중에도 한 번에 다음 공으로 가서 HOMERUN을 못 봤다)
 const SKIP_GUARD = 0.4;
-const beatAt = () => boardMoment()?.t0 ?? game.revealAt;   // 결과를 알리는 순간: 안타·홈런은 전광판이 HIT·HOMERUN을 띄우는 때
+const beatAt = () => boardMoment()?.t0 ?? game.revealAt;   // 결과를 알리는 순간(안타·홈런은 전광판이 HIT·HOMERUN을 띄우는 때로 revealAt과 같다)
 const canSkip = () => game.state === 'result' && hasBattedBall() && game.replay == null && game.resultT >= SKIP_GUARD && game.resultT < game.revealAt;
 function skipToBeat() {
   game.resultT = Math.max(game.resultT, game.revealAt);

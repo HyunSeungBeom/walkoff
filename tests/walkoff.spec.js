@@ -1976,6 +1976,35 @@ test.describe('수비', () => {
     expect(errors).toEqual([]);
   });
 
+  test('끝내기 상황: 끝내기 홈런은 공이 관중석에 들어가고 HOMERUN을 다 띄운 뒤에 끝 화면이 된다(전에는 공이 날아가는 중에 끝났다)', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const w = walkoff, g = w.game; w.paused = true;   // 장면을 1/60초씩 직접 넘긴다
+      w.startGame('scenario');
+      Object.assign(g.scn, { outs: 2, bases: [true, true, false], away: 3, home: 2, count: { b: 0, s: 0 } });   // 홈런이면 5:3 끝내기
+      const p = w.makeSequence(1, false)[0]; g.seq[g.i] = p;   // 4ms 빨리 치면 가운데 130m 홈런
+      for (let k = 0; k < 3000 && g.state !== 'result'; k++) {
+        if (g.state === 'pitch' && g.swingAt == null && w.ballTime() + 1 / 60 >= p.T - 0.004) w.swing(g.clockAt + Math.max(0, p.T - 0.004 - w.ballTime()) * 1000);
+        g.clockAt += 1000 / 60; w.update(1 / 60);
+      }
+      const name = g.outcome.name, end = w.chaseEnd(g.outcome);
+      let lastT = null, t1 = null, moment = 0;
+      for (let k = 0; k < 60 * 12 && g.state === 'result'; k++) {
+        g.clockAt += 1000 / 60; w.update(1 / 60);
+        if (g.state !== 'result') break;
+        lastT = g.resultT; t1 = w.boardMoment()?.t1 ?? t1;
+        if (w.scoreboardShows() === 'moment') moment += 1 / 60;
+      }
+      return { name, state: g.state, win: g.summary?.end ?? null, end, lastT, t1, moment };
+    });
+    expect(r.name).toBe('중월 홈런');
+    expect(r).toMatchObject({ state: 'over', win: 'win' });
+    expect(r.lastT).toBeGreaterThan(r.end);               // 공이 관중석에 들어가고 카메라가 돌아온 뒤에
+    expect(r.lastT).toBeGreaterThanOrEqual(r.t1 - 0.02);  // HOMERUN을 다 띄우고 끝난다
+    expect(r.moment).toBeGreaterThan(1.5);                // HOMERUN 1.6초
+    expect(errors).toEqual([]);
+  });
+
   test('끝내기 상황의 내야 안타는 밀려서 한 베이스씩만 간다(1·2루면 만루, 점수 없음). 보통 안타는 2루 주자가 들어온다', async ({ page }) => {
     const errors = await open(page);
     const d = await page.evaluate(() => {
@@ -2309,6 +2338,41 @@ test.describe('따라가는 카메라', () => {
     expect(errors).toEqual([]);
   });
 
+  test('따라가는 카메라 다듬기: 공이 떨어질 때까지 멈추지 않고(마지막 자리 z 40m 그대로), 앞으로 가기 전에 위로만 솟지 않으며, 타석 시점에서 화면을 좌우로 미는 빠르기에 상한이 있다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const rows = await page.evaluate(() => {
+      const w = walkoff, g = w.game; w.paused = true;   // 장면을 1/60초씩 직접 넘긴다
+      const atHome = () => ['x', 'y', 'z'].every((a) => w.cam[a] === w.CAM_HOME[a]);
+      const run = (p, dt) => {
+        w.startGame('challenge'); g.seq[0] = p;
+        for (let k = 0; k < 3000 && g.state !== 'result'; k++) {
+          if (g.state === 'pitch' && g.swingAt == null && w.ballTime() + 1 / 60 >= p.T + dt / 1000) w.swing(g.clockAt + Math.max(0, p.T + dt / 1000 - w.ballTime()) * 1000);
+          g.clockAt += 1000 / 60; w.update(1 / 60);
+        }
+        const land = w.chaseEnd(g.outcome) - w.CHASE.hold, tr = [];
+        for (let k = 0; k < 60 * 9 && g.state === 'result'; k++) {
+          const px = w.view.panX, home = atHome();
+          g.clockAt += 1000 / 60; w.update(1 / 60);
+          tr.push({ t: g.flightT, y: w.cam.y - w.CAM_HOME.y, z: w.cam.z, dpx: Math.abs(w.view.panX - px), home: home && atHome() });   // home: 앞뒤 장면 모두 타석 시점(끊는 장면은 빼고)
+        }
+        const chase = tr.filter((q) => q.t > w.CHASE.start + 0.5 && q.t <= land);
+        const still = chase.filter((a) => { const b = chase.find((q) => q.t >= a.t + 1); return b && b.z - a.z < 1; }).length;   // 1초 사이 z가 1m도 안 움직인 장면
+        const go = tr.find((q) => q.z > w.CAM_HOME.z + 0.3);
+        return { name: g.outcome.name, maxZ: Math.max(...tr.map((q) => q.z)), zLand: chase.at(-1).z, still, riseAtGo: go.y, maxPan: Math.max(...tr.filter((q) => q.home).map((q) => q.dpx)) * 60, f: w.view.f };
+      };
+      return [run(w.makeSequence(42, w.pitcherHand(42) === 'L')[0], 0), run(w.makeSequence(1, w.pitcherHand(1) === 'L')[1], 25), run(w.makeSequence(1, false)[0], -44)];
+    });
+    expect(rows.map((q) => q.name)).toEqual(['중월 홈런', '우중간 2루타', '좌익수 뜬공']);
+    for (const q of rows) {
+      expect(q.maxZ, q.name).toBeLessThanOrEqual(40.01);         // 마지막 자리는 그대로(관중석에 붙지 않게)
+      expect(q.zLand, q.name).toBeGreaterThan(30);               // 공이 떨어질 때쯤 마지막 자리 가까이
+      expect(q.still, q.name).toBe(0);                           // 전에는 2초쯤 z 40m에 닿아 1.2~2.8초 서 있었다
+      expect(q.riseAtGo, q.name).toBeLessThan(2);                // 앞으로 가기 시작할 때 아직 2m 안(전에는 2.6~4.9m를 먼저 솟았다)
+      expect(q.maxPan, q.name).toBeLessThanOrEqual(q.f * 1.01);  // 초당 시야 f까지(전에는 홈런 뒤 폰에서 f의 2.8배)
+    }
+    expect(errors).toEqual([]);
+  });
+
   test('친 공도 돈다: 뜬공은 백스핀(보이는 면이 아래로), 땅볼은 앞회전(위로)', async ({ page }) => {
     const errors = await open(page);
     const r = await page.evaluate(() => {
@@ -2525,7 +2589,7 @@ test.describe('가운데 큰 전광판', () => {
             home ??= ['x', 'y', 'z'].every((a) => w.cam[a] === w.CAM_HOME[a]);
             pan = w.view.panX;
           }
-          if (g.resultT >= bm.t1 + 1) return { name: g.outcome.name, min, home, late: bm.t0 - g.revealAt, follow: Math.abs(w.view.panX - pan) };
+          if (g.resultT >= bm.t1 + 1) return { name: g.outcome.name, min, home, beat: bm.t0 - g.revealAt, late: w.chaseable(g.outcome) ? bm.t0 - w.chaseEnd(g.outcome) : null, follow: Math.abs(w.view.panX - pan) };
         }
         return null;
       };
@@ -2537,7 +2601,8 @@ test.describe('가운데 큰 전광판', () => {
     expect([hr.name, dbl.name, single.name]).toEqual(['중월 홈런', '우중간 2루타', '좌전 안타']);
     for (const r of [hr, dbl, single]) expect(r.min, r.name).toBeGreaterThan(0.9);   // 붙잡기 전에는 폰에서 홈런 끝에 0%, 큰 뜬공 2루타는 30%쯤
     expect([hr.home, dbl.home]).toEqual([true, true]);   // 따라가는 카메라가 타석 시점으로 돌아온 뒤에 글자가 뜬다
-    expect(dbl.late).toBeGreaterThan(0.3);
+    expect(dbl.late).toBeGreaterThanOrEqual(0);           // 공이 떨어지고 카메라가 끊긴 뒤
+    expect([hr.beat, dbl.beat, single.beat]).toEqual([0, 0, 0]);   // 결과 카드·위 점수와 같은 순간(2026-11-05. 전에는 큰 뜬공 2루타의 카드가 2.6초에 먼저 나왔다)
     expect(hr.follow).toBeGreaterThan(20);   // 글자가 끝나면 화면이 다시 주자를 따라간다
     expect(errors).toEqual([]);
   });
@@ -2576,7 +2641,7 @@ test.describe('결과 한 박자·건너뛰기', () => {
       __hit(w.makeSequence(42, w.pitcherHand(42) === 'L')[0], 0);   // 중월 홈런(공 뒤로 날아가는 카메라)
       let hrCheer = null;
       for (let k = 0; k < 900 && hrCheer == null; k++) { __step(); if (g.cheered) hrCheer = g.resultT; }
-      return { name, t0: bm.t0, t1: bm.t1, cheerAt, titleAt, before, detailsBefore, after, hrCheer, hrT0: w.boardMoment().t0 };
+      return { name, t0: bm.t0, t1: bm.t1, cheerAt, titleAt, before, detailsBefore, after, hrCheer, hrT0: w.boardMoment().t0, hrLand: w.chaseEnd(g.outcome) - w.CHASE.hold };
     });
     expect(r.name).toBe('좌전 안타');
     expect(Math.abs(r.cheerAt - r.t0)).toBeLessThan(0.05);   // 함성과 HIT이 같은 순간에
@@ -2584,7 +2649,8 @@ test.describe('결과 한 박자·건너뛰기', () => {
     expect(r.detailsBefore).toBe(false);                      // 자세한 카드는 HIT 동안 없고
     expect(r.after.details).toBe(true);                       // 끝난 뒤에 나오며
     expect(r.after.title).toEqual(r.before);                  // 제목은 자리·크기 그대로(다시 튀어나오지 않는다)
-    expect(r.hrT0 - r.hrCheer).toBeGreaterThan(0.3);          // 홈런: 공이 담장을 넘을 때 함성, 카메라가 돌아오면 HOMERUN과 제목
+    expect(r.hrT0 - r.hrCheer).toBeGreaterThan(0.3);          // 홈런: 공이 관중석에 들어갈 때 함성, 카메라가 돌아오면 HOMERUN과 제목
+    expect(Math.abs(r.hrCheer - r.hrLand)).toBeLessThan(0.05);  // (2026-11-05 전에는 2.6초 상한에 걸려 공이 가장 높이 떴을 때 함성이 났다)
     expect(errors).toEqual([]);
   });
 
@@ -2626,6 +2692,61 @@ test.describe('결과 한 박자·건너뛰기', () => {
     expect(r.next).toMatchObject({ home: true, cheered: true, word: 'HOMERUN' });   // 타석 시점으로 끊고 그 순간 함성·HOMERUN
     expect(r.next.t0).toBeCloseTo(r.after.resultT, 3);
     expect(r.last).toEqual({ state: 'windup', i: r.before.i + 1 });   // 다음 탭에 다음 공
+    expect(errors).toEqual([]);
+  });
+
+  test('카메라가 공 뒤로 날아가는 타구는 공이 떨어지고 돌아올 때 결과를 한 번에 알린다: 날아가는 동안 아래 카드·버튼·위 점수와 불·제목이 없고, 안타 함성은 공이 떨어질 때, 2.6초가 지나도 누르면 다음 공이 아니라 결과부터 나온다(보통 안타는 그대로)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(SETUP);
+    const r = await page.evaluate(() => {
+      const w = walkoff, g = w.game, atHome = () => ['x', 'y', 'z'].every((a) => w.cam[a] === w.CAM_HOME[a]);
+      // 날아가는 동안(맞고 0.5초 ~ 끊기 직전)과 끊긴 바로 뒤를 그려 본다
+      const watch = (p, dt) => {
+        __hit(p, dt);
+        const r = g.outcome, end = w.chaseEnd(r), score0 = w.boardView().score, title = r.kind === 'hr' ? '홈런!' : r.name, during = { cards: false, title: false, board: false };
+        let cheerAt = null;
+        while (g.resultT < end - 0.02) {
+          __step();
+          if (g.cheered && cheerAt == null) cheerAt = g.flightT;
+          if (g.resultT < 0.5) continue;
+          const texts = __draw(), v = w.boardView();
+          during.cards ||= w.ui.buttons.some((b) => /다음 공|다시 보기/.test(b.label));
+          during.title ||= texts.some((q) => q.s === title);
+          during.board ||= v.score !== score0 || v.lamps[g.i] != null;
+        }
+        while (g.resultT <= g.revealAt) __step();
+        const texts = __draw(), v = w.boardView();
+        const after = { home: atHome(), cards: w.ui.buttons.some((b) => /다음 공/.test(b.label)), title: texts.some((q) => q.s === title), board: v.score === g.score && v.lamps[g.i] != null };
+        return { name: r.name, reveal: g.revealAt, end, land: end - w.CHASE.hold, cheerAt, during, after, word: w.boardMoment()?.word ?? null };
+      };
+      const hr = watch(w.makeSequence(42, w.pitcherHand(42) === 'L')[0], 0);   // 중월 홈런
+      const fly = watch(w.makeSequence(1, false)[0], -44);                      // 95m 좌익수 뜬공(따라가는 아웃)
+      __hit(w.makeSequence(42, w.pitcherHand(42) === 'L')[0], 0);               // 2.6초가 지나 누르면
+      while (g.resultT < 3) __step();
+      const i0 = g.i;
+      w.tap(g.clockAt); __step();
+      const tap1 = { state: g.state, i: g.i, home: atHome(), word: w.boardMoment()?.word ?? null };
+      w.tap(g.clockAt);
+      const tap2 = { state: g.state, i: g.i };
+      __hit(w.makeSequence(332, false)[2], -40);                                // 따라가지 않는 보통 안타
+      const single = { name: g.outcome.name, chase: w.chaseable(g.outcome), reveal: g.revealAt, play: w.fieldPlay(g.outcome).revealReal };
+      return { hr, fly, i0, tap1, tap2, single };
+    });
+    expect([r.hr.name, r.fly.name]).toEqual(['중월 홈런', '좌익수 뜬공']);
+    for (const s of [r.hr, r.fly]) {
+      expect(s.during, s.name).toEqual({ cards: false, title: false, board: false });   // 날아가는 동안은 결과가 미리 안 보인다
+      expect(s.reveal, s.name).toBeCloseTo(s.end, 3);                                   // 카메라가 돌아올 때
+      expect(s.after, s.name).toEqual({ home: true, cards: true, title: true, board: true });   // 한 번에
+    }
+    expect(r.hr.reveal).toBeGreaterThan(2.6 + 1);   // 2.6초 상한을 넘어 기다린다
+    expect(r.hr.word).toBe('HOMERUN');
+    expect(Math.abs(r.hr.cheerAt - r.hr.land)).toBeLessThan(0.05);   // 홈런 함성은 공이 관중석에 들어갈 때(전에는 2.6초)
+    expect(r.fly.cheerAt).toBeNull();                                // 아웃은 날아가는 동안 함성이 없다
+    expect(r.tap1).toEqual({ state: 'result', i: r.i0, home: true, word: 'HOMERUN' });   // 2.6초가 지나도 따라가는 중이면 결과부터(전에는 다음 공으로 갔다)
+    expect(r.tap2).toEqual({ state: 'windup', i: r.i0 + 1 });                          // 다음 탭에 다음 공
+    expect(r.single).toMatchObject({ name: '좌전 안타', chase: false });
+    expect(r.single.reveal).toBe(r.single.play);    // 보통 안타는 그대로 수비가 정하는 때
+    expect(r.single.reveal).toBeLessThanOrEqual(2.6);
     expect(errors).toEqual([]);
   });
 
