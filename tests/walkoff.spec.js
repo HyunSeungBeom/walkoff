@@ -2858,6 +2858,15 @@ test.describe('조준 타격(실험)', () => {
       const R = w.AIM_RADIUS.mouse;
       const along = hit(0.97 * R.x, 0), across = hit(0, 1.1 * R.y), tall = hit(0, 0.08);   // 축에 수직으로 8cm: 옛 과녁(6cm) 밖이었다
       const touchAlong = hit(0.97 * R.x, 0, 'touch'), touchAcross = hit(0, 1.1 * R.y, 'touch');
+      const inside = hit(0, 0.17), outside = hit(0, 0.19);   // 세로 0.18m 안은 맞고 넘으면 헛스윙(2026-11-05 저녁 2배)
+      // 그린 띠(판정 타원과 가운데 몫)의 반지름(m): drawAimBat이 그리는 타원 둘을 잰다
+      const band = (() => {
+        const proto = CanvasRenderingContext2D.prototype, el = proto.ellipse, seen = [];
+        proto.ellipse = function (x, y, rx, ry, ...a) { seen.push([rx, ry]); return el.call(this, x, y, rx, ry, ...a); };
+        try { w.drawAimBat({ x: 700, y: 500, kind: 'mouse' }); w.drawAimBat({ x: 700, y: 500, kind: 'touch' }); } finally { proto.ellipse = el; }
+        const sc = w.project(0, 0.8, 0).s;
+        return seen.map(([a, b]) => [+(a / sc).toFixed(4), +(b / sc).toFixed(4)]);
+      })();
       // 그림: 높은 공(존 위끝)과 낮은 공(존 아래끝) 자리에 맞는 자리를 두고 손잡이·끝을 본다(우타·좌타)
       const top = w.project(0, 1.1, 0), low = w.project(0, 0.5, 0), s = w.project(0, 0.8, 0).s;
       const bat = (y) => w.aimBatPoints({ x: 700, y, kind: 'mouse' }), slope = (q) => Math.atan2(q.tip.y - q.knob.y, Math.abs(q.tip.x - q.knob.x)) * 180 / Math.PI;
@@ -2884,7 +2893,7 @@ test.describe('조준 타격(실험)', () => {
         try { w.render(g.t); } finally { proto.fillText = ft; }
         shown.push(texts.includes('공이 배트에 닿을 때 치세요 · 클릭'));
       }
-      return { along, across, tall, touchAlong, touchAcross, R: { ...R }, s, hiR, loR, hiL, loL, slope: { hi: slope(hiR), lo: slope(loR), hiL: slope(hiL), loL: slope(loL) },
+      return { along, across, tall, touchAlong, touchAcross, inside, outside, band, R: { ...R }, s, hiR, loR, hiL, loL, slope: { hi: slope(hiR), lo: slope(loR), hiL: slope(hiL), loL: slope(loL) },
         reach: Math.hypot(loR.knob.x - 700, loR.knob.y - low.y) / s, batLen: Math.hypot(loR.knob.x - loR.tip.x, loR.knob.y - loR.tip.y) / s,
         round: Math.hypot(back.x - 700, back.y - low.y), mouseKind: mouse.kind, touchKind: back.kind, zone, shown, hintCount: Number(localStorage.getItem('walkoff.aimHint')) };
     });
@@ -2893,7 +2902,9 @@ test.describe('조준 타격(실험)', () => {
     expect(Math.hypot(r.along.x, r.along.y)).toBeCloseTo(0.97, 2);
     expect(r.across).toMatchObject({ kind: 'whiff', zone: 'miss' });   // 축에 수직으로 ry를 넘으면 헛스윙
     expect(r.across.y).toBeCloseTo(1.1, 2);
-    expect(r.R).toEqual({ x: 0.10, y: 0.09 });   // 세로는 1.5배(2026-11-05), 가로는 그대로
+    expect(r.R).toEqual({ x: 0.15, y: 0.18 });   // 2026-11-05 저녁 가로 1.5배·세로 2배(전에는 0.10·0.09)
+    expect(r.inside.kind).not.toBe('whiff'); expect(r.outside).toMatchObject({ kind: 'whiff', zone: 'miss' });
+    expect(r.band).toEqual([[0.15, 0.18], [0.0525, 0.063], [0.15, 0.18], [0.0525, 0.063]]);   // 그린 띠가 판정 타원과 같고, 안쪽 밝은 몫은 정타가 나는 가운데(0.35배)
     expect(r.tall.kind).not.toBe('whiff'); expect(r.tall.zone).toBe('edge');
     expect(r.touchAlong.kind).not.toBe('whiff'); expect(r.touchAlong.zone).toBe('edge');   // 폰도 같은 배트 축으로 잰다
     expect(r.touchAcross).toMatchObject({ kind: 'whiff', zone: 'miss' });

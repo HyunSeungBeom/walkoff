@@ -8,7 +8,7 @@ import {
   computeRace, DIVE_GLOVE, diveShort, FIELD_REACT, FIELD_SPEED, GRASS_DECEL, groundPath, interceptGround, PCOVER, PCOVER_LEN, PLAY_EX, reachGround,
   RUN_REACH, RUN_TO_1B, SET_REACH, smoothRoute, sprintDist, sprintTime, TOSS_STEP,
 } from './core/race.js';
-import { FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
+import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, HOME_PLATE, HOME_THROW, leadAt, makeScenario as makeScenarioIn, RUN_JUMP, SCENARIOS, RUN_TAU, RUNNER_ROUTES, scenarioPitch, scenarioPoints, SLIDE_BRAKE as BASE_SLIDE, TAG_TIME } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos, hrExtra, hrLiftK, interceptRoll, rollPath, THROW_OUT } from './core/flight.js';
 import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
@@ -6012,12 +6012,13 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
-  { id: '2026-11-05e', label: '11/5 저녁', items: [
+  { id: '2026-11-05f', label: '11/5 저녁', items: [   // 2026-11-05f: 조준 배트 굵게 줄을 더하며 id를 올려 이미 읽은 사람에게도 다시 NEW가 뜬다(조준을 해 본 사람이 다시 쳐 보게)
     '홈런은 전광판과 결과에 초록 별로 표시돼요(공유 글에는 ⭐)',
     '1루 승부가 아슬아슬하면 주자가 머리부터 슬라이딩해요',
     '로그인했으면 끝 화면의 최고 기록도 계정 기록으로 보여요',
     '조준 타격은 누른 자리가 배트 손잡이예요. 배트가 옆으로 누워 진짜 스윙처럼 보여요(PC·폰 같음)',
-    '폰에서도 1루 승부 장면이 화면 안에 보여요',   // 같은 날 저녁에 더한 작은 변화라 id(2026-11-05e)는 그대로(NEW를 다시 띄우지 않는다)
+    '폰에서도 1루 승부 장면이 화면 안에 보여요',
+    '조준 타격의 배트가 굵어져 더 잘 맞아요(맞는 범위를 흐린 띠로 보여 줘요)',
   ] },
   { id: '2026-11-05d', label: '11/5 늦은 오후', items: [
     "메뉴와 조준 타격 끝 화면에 '의견 보내기'가 생겼어요. 좋았던 점·불편한 점을 남겨 주세요(패들렛으로 열려요)",
@@ -6504,7 +6505,9 @@ const ballTime = () => game.t - WINDUP;
 // 랭킹·서버 시드·연속 기록·최고 기록·코인·공유에는 넣지 않고 이 기기 조준 최고 기록(walkoff.aimBest)만 남긴다. 통계는 모드 'aim'으로 센다
 // 과녁(m): 배트 축을 따라 x, 축에 수직으로 y. 마우스·터치를 따로 맞출 수 있게 나눠 둔다(처음엔 같다).
 // 세로는 2026-11-05 사용자 '아직 너무 어렵다' → 1.5배(0.06 → 0.09)
-const AIM_RADIUS = { mouse: { x: 0.10, y: 0.09 }, touch: { x: 0.10, y: 0.09 } };
+// 2026-11-05 저녁 사용자 '조준 타격은 절대 못 친다, 너무 어렵다, 배트를 더 굵게' → 가로 1.5배·세로 2배(0.10·0.09 → 0.15·0.18). 그날 조준 판은
+// 폰 117번 휘둘러 안타 8%(과녁 밖 83%), 마우스 29번에 17%였다(그냥 10구는 폰 78%·마우스 50%). 가운데 몫(core AIM.sweet)은 그대로
+const AIM_RADIUS = { mouse: { x: 0.15, y: 0.18 }, touch: { x: 0.15, y: 0.18 } };
 // 배트 커서(2026-11-05 사용자가 쳐 보고 '원 말고 배트 모양으로'. 그린 공은 쳐야 할 때보다 0.1초쯤 먼저 네모에 닿아서 네모를 신호로 치면 늦었다).
 // 칠 자리 깊이(홈플레이트 앞면)에 그린다. 2026-11-05 저녁 사용자 결정('폰은 그전 배트 모양, 칠 자리에 비스듬히 누운 진짜 배트가 훨씬 좋았다. 지금은 위로
 // 치우쳐 있다. PC도 마우스가 배트 잡는 곳에 가야'): PC·폰 모두 누른 자리(마우스·손가락)가 손잡이 끝이고, 배트는 손잡이에서 타자 반대쪽(우타 오른쪽, 좌타 왼쪽)으로
@@ -6572,6 +6575,16 @@ function batShadowPath(a, b, wa, wb) {
 }
 // 배트 커서(2026-11-05 사용자 '배트 그림자만 떠야 한다. 다 그려지니 어지럽다'): 한 색 반투명 그림자이고 맞는 자리 둘레(배트 축으로 과녁 rx만큼)만
 // 조금 밝다. 상점 배트 무늬·효과는 쓰지 않는다(PC·폰 같다)
+// 맞는 범위(2026-11-05 저녁 사용자 결정 '맞는 범위를 흐린 띠로'): 판정 타원(배트 축으로 rx, 수직으로 ry, aimFrom과 같은 크기)을 맞는 자리를 가운데로
+// 반투명하게 깔고, 그 안의 가운데 몫(AIM.sweet, 정타가 나는 곳)은 조금 더 밝게 한 뒤 배트 그림자를 위에 그린다. 그림자 흐림(shadowBlur)은 쓰지 않는다(사파리에서 무겁다)
+function aimBand(at, s, ang) {
+  const R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'];
+  ctx.beginPath(); ctx.ellipse(at.x, at.y, R.x * s, R.y * s, ang, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(225,235,250,0.14)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(225,235,250,0.32)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(at.x, at.y, R.x * s * AIM.sweet, R.y * s * AIM.sweet, ang, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fill();
+}
 function drawAimBat(at, alpha = 1) {
   const { knob, tip, s } = aimBatPoints(at);
   if (!s) return;
@@ -6579,6 +6592,7 @@ function drawAimBat(at, alpha = 1) {
   const r = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'].x * s, glow = ctx.createLinearGradient(at.x - ux * r, at.y - uy * r, at.x + ux * r, at.y + uy * r);
   glow.addColorStop(0, 'rgba(255,255,255,0)'); glow.addColorStop(0.5, 'rgba(255,255,255,0.42)'); glow.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.save(); ctx.globalAlpha = alpha;
+  aimBand(at, s, Math.atan2(uy, ux));
   ctx.fillStyle = 'rgba(225,235,250,0.4)'; ctx.fill(path);
   ctx.clip(path);
   ctx.fillStyle = glow; ctx.fillRect(Math.min(knob.x, tip.x) - s, Math.min(knob.y, tip.y) - s, Math.abs(tip.x - knob.x) + 2 * s, Math.abs(tip.y - knob.y) + 2 * s);
