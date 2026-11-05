@@ -3149,6 +3149,14 @@ const RUN_START = 0.28, RUN_BRAKE = 6;
 // SLIDE_DOWN초 누워 있다가 SLIDE_UP초에 일어나 베이스 위에 선다. 단타는 1루를 4.5m 돌아 섰다가 외야수가 공을 던지면 1루로 돌아오고,
 // 내야 안타는 1루를 지나쳐 멈췄다가 0.5초 뒤 돌아온다(TROT: 천천히 뛰어 돌아오기)
 const SLIDE_BRAKE = 10, SLIDE_IN = 0.12, SLIDE_DOWN = 0.5, SLIDE_UP = 0.45;
+// 1루 머리부터 슬라이딩(2026-11-05 유저 피드백 '1루 슬라이딩', 사용자 결정은 '확률적' 대신 '아슬아슬할 때만'): 1루 경주가 간발이면(느린 화면과
+// 세이프·아웃이 뜨는 공과 같은 조건, headFirstAt1) 친 타자가 몸을 날려 배로 미끄러지며 두 손으로 베이스를 짚는다. 판정은 그대로이고, 손이 베이스
+// 앞쪽 끝에 닿는 때가 판정에서 주자가 1루를 밟는 때(race.runner)다. 손이 엉덩이 앞 HF_REACH m라 엉덩이는 달려 지나갈 때보다 그만큼 뒤에 있어야 해서,
+// 닿기 HF_LEAD초 앞(엉덩이가 베이스 4m쯤 앞)에서 날아 닿을 때까지 고르게 줄이고(초속 10m씩쯤, 공마다 맞춰 정한다), 닿은 뒤에는 손이 베이스를 잡아
+// HF_STOP m 안에 멈춘다. 몸은 HF_DIVE초에 엎드리고, 멈춘 뒤 HF_LIE초 엎드려 있다가 HF_UP초에 일어나 세이프면 1루에 서고 아웃이면 고개를 숙이고
+// 파울 지역으로 나간다(runAfter)
+const HF_LEAD = 0.5, HF_DIVE = 0.3, HF_REACH = 1.05, HF_STOP = 0.2, HF_LIE = 0.45, HF_UP = 0.75;
+const headFirstAt1 = (r) => !!r.race?.arrive && r.race.arrive.to !== 'tag' && Math.abs(r.race.margin) < 0.15 && !r.scnPlay?.dp?.out2;
 // 걸음새: top 최고 빠르기(m/s), tau 빨라지는 시간 상수(초), cad 걸음 놀림(1초에 도는 바퀴 = 두 걸음, cad[0] + cad[1] × 빠르기), D 한 발이 땅에 붙어 있는 몫,
 // effort 걸음 모양(1 전력 질주, 0 천천히 뛰기, 사이는 섞음. 자세는 runnerSkeleton의 RUN_POSE),
 // lean 다 빨라졌을 때 숙임, start 출발할 때 더 숙임(라디안), Dstart 출발할 때 더 오래 디딤, drive 출발할 때 몸 뒤를 디뎌 미는 거리(m), dust 발을 찰 때 흙먼지
@@ -3194,7 +3202,7 @@ function runPlan(r) {
   const toward = (a, b, d) => { const u = unitTo(a, b); return [a[0] + u[0] * d, a[1] + u[1] * d]; };
   const banana = [S, on1(8, 0.6), on1(22.5, 1.8), on1(27.1, 0.15)];   // 1루 5m 앞에서 바깥으로 휘었다가 1루 안쪽을 밟는다
   let plan = null;
-  if ((r.kind === 'out' && r.type === 'ground') || r.infield) plan = { pts: [S, on1(10, 0.5), on1(26.9, 0.45), on1(33.5, 0.5)] };   // 주로를 따라 1루를 밟고 지나쳐 달린다(내야 안타도 1루 경주라 같은 길)
+  if ((r.kind === 'out' && r.type === 'ground') || r.infield) plan = { pts: [S, on1(10, 0.5), on1(26.9, 0.45), on1(33.5, 0.5)], race1: true };   // 주로를 따라 1루를 밟고 지나쳐 달린다(내야 안타도 1루 경주라 같은 길)
   else if (r.kind === 'out') plan = { pts: [S, on1(10, 0.5), on1(26.9, 0.45), on1(33.5, 0.5)], until: catchTime(r) };
   else if (r.kind === 'single') plan = { pts: [...banana, toward(BASE1, BASE2, 4.5)] };
   else if (r.kind === 'double') plan = { pts: [...banana, toward(BASE1, BASE2, 7), toward(BASE2, BASE1, 0.95)], brake: SLIDE_BRAKE, slide: true };
@@ -3206,6 +3214,7 @@ function runPlan(r) {
     plan.total = plan.route.slice(1).reduce((sum, q, i) => sum + flatDist(plan.route[i], q), 0);
     plan.track = runTrack(plan);
     if (plan.slide) { const V = plan.track.V; plan.slideAt = plan.track.T[V.findIndex((v, i) => i > 0 && v < V[i - 1])]; }   // 줄이기 시작하는 때 = 미끄러지기 시작
+    if (plan.race1 && headFirstAt1(r)) plan.dive = headFirst(r, plan);   // 1루 간발: 달려 지나가는 길에서 머리부터 미끄러져 들어간다
     // 지나가는 베이스와 그 길 위 거리(화면이 주자가 가는 베이스 쪽을 잡는다). 마지막은 멈추는 자리
     plan.goals = [];
     for (const b of [BASE1, BASE2, BASE3, [0, 0]]) {
@@ -3216,6 +3225,23 @@ function runPlan(r) {
     plan.goals.push({ at: plan.total, p: plan.route[plan.route.length - 1] });
   }
   return (r.runPlan = plan);
+}
+// 머리부터 슬라이딩의 자리와 때. t0는 날기 시작하는 뛰기 표의 시각이고, 나머지 때(stop 멈춤, up0·up1 일어나기 시작·끝)는 날기 시작한 뒤 초다.
+// 손을 대는 곳은 1루 앞쪽 끝(베이스 가운데에서 홈 쪽으로 0.2m, 선 바깥으로 0.15m)이다. 엉덩이가 간 거리는 닿기까지 v0·τ - a·τ²/2이고
+// (닿을 때 손이 그곳에 오게 a를 정한다), 닿은 뒤에는 HF_STOP m 안에 멈춘다
+function headFirst(r, plan) {
+  const t0 = r.race.runner - runStartOf(batsOf(r)) - plan.delay - HF_LEAD, st = trackAt(plan.track, t0), from = alongRoute(plan.route, st.s);
+  const u1 = unitTo([0, 0], BASE1), hand = [BASE1[0] - u1[0] * 0.2 + u1[1] * 0.15, BASE1[1] - u1[1] * 0.2 - u1[0] * 0.15];
+  const dir = unitTo(from, hand), dTouch = flatDist(from, hand) - HF_REACH, v0 = st.v;
+  const a = Math.max(0, 2 * (v0 * HF_LEAD - dTouch) / (HF_LEAD * HF_LEAD)), vTouch = Math.max(0.5, v0 - a * HF_LEAD), a2 = vTouch * vTouch / (2 * HF_STOP);
+  const stop = HF_LEAD + vTouch / a2, d = dTouch + HF_STOP;
+  return { t0, stop, from, dir, s0: st.s, v0, a, dTouch, vTouch, a2, rest: [from[0] + dir[0] * d, from[1] + dir[1] * d], up0: stop + HF_LIE, up1: stop + HF_LIE + HF_UP };
+}
+// 날기 시작하고 tau초 뒤 엉덩이가 간 거리와 빠르기
+function headFirstAt(D, tau) {
+  if (tau <= HF_LEAD) return { d: D.v0 * tau - 0.5 * D.a * tau * tau, v: D.v0 - D.a * tau };
+  const q = Math.min(tau - HF_LEAD, D.vTouch / D.a2);
+  return { d: D.dTouch + D.vTouch * q - 0.5 * D.a2 * q * q, v: Math.max(0, D.vTouch - D.a2 * q) };
 }
 // 뛰기 시작한 뒤 거리·빠르기·걸음 위상을 1/120초마다 미리 계산한다. 빠르기는 단거리 출발처럼 v = top(1 - e^(-t/tau))로 늘고,
 // 길 끝에 멈출 수 있는 때(또는 공이 잡힌 때)부터 초속 6m씩 줄인다. 걸음은 출발부터 빠르게 놀려(1초에 3.5걸음) 첫 걸음이 짧고,
@@ -3251,8 +3277,9 @@ function runAfter(r) {
   if (r.runAfter !== undefined) return r.runAfter;
   const plan = runPlan(r);
   if (!plan || !['single', 'out', 'hr'].includes(r.kind)) return (r.runAfter = null);
-  const stopT = plan.track.T[plan.track.T.length - 1], end = runStartOf(batsOf(r)) + plan.delay + stopT;
-  const st = routeState(plan.route, plan.track, plan.gait, stopT), at = [st.x, st.z];   // 멈춘 자리와 보는 쪽(뜬공 아웃은 1루 가는 길 중간)
+  const hf = plan.dive, stopT = hf ? hf.t0 + hf.up1 : plan.track.T[plan.track.T.length - 1], end = runStartOf(batsOf(r)) + plan.delay + stopT;
+  // 멈춘 자리와 보는 쪽(뜬공 아웃은 1루 가는 길 중간, 머리부터 슬라이딩은 일어선 자리)
+  const st = hf ? { x: hf.rest[0], z: hf.rest[1], dir: hf.dir } : routeState(plan.route, plan.track, plan.gait, stopT), at = [st.x, st.z];
   let leg;
   const fc = r.scnPlay?.dp?.out2 && !r.scnPlay.dp.out1;   // 끝내기 야수 선택: 타자는 1루에 산다
   if (r.kind === 'single' || fc) {
@@ -3338,6 +3365,12 @@ function runnerAt(r, t) {
   const tt = Math.max(0, t - t0 - plan.delay), st = routeState(plan.route, plan.track, plan.gait, tt);
   const drawShift = batSide() * batterShift() * clamp(1 - st.dist / 8, 0, 1);   // 폰은 타자를 화면 안으로 당겨 그려서, 주자도 처음 8m 동안 그만큼 옮겨 그린다
   const run = { ...st, goals: plan.goals, drawShift, lookFoul: ((r.kind === 'out' && r.type === 'ground') || r.infield) && st.dist > 27, top: plan.gait.top };
+  const hf = plan.dive;
+  if (hf && tt >= hf.t0) {   // 1루 머리부터 슬라이딩: 엎드리는 정도(u), 달리던 자세에서 섞는 정도(blend), 일어나는 정도(up), 멈춘 뒤 시간(rest)
+    const tau = tt - hf.t0, m = headFirstAt(hf, tau), x = hf.from[0] + hf.dir[0] * m.d, z = hf.from[1] + hf.dir[1] * m.d;
+    const dive = { u: clamp(tau / HF_DIVE, 0, 1), blend: smooth(tau / 0.1), up: clamp((tau - hf.up0) / HF_UP, 0, 1), rest: Math.max(0, tau - hf.stop), run };
+    return { ...run, x, z, dir: hf.dir, speed: m.v, dist: hf.s0 + m.d, braking: true, bank: 0, lookFoul: false, dive };
+  }
   if (r.kind === 'hr') {   // 홈을 밟기 0.45초 전부터 한 손을 들었다가 더그아웃으로 걷기 전에 내린다
     const stop = plan.track.T[plan.track.T.length - 1];
     run.raise = smooth((tt - stop + 0.45) / 0.25) * (1 - smooth((tt - stop - RAISE_T + 0.3) / 0.3));
@@ -3503,6 +3536,7 @@ function runPose(G, vv) {
 const landOf = (G, kv) => lerp(RUN_POSE.jog.land, lerp(RUN_POSE.drive.land, RUN_POSE.sprint.land, Math.pow(kv, 1.3)), G.effort ?? 1) * kv;
 function runnerSkeleton(run) {
   if (run.slide) return slideSkeleton(run);
+  if (run.dive) return diveSkeleton(run);
   const th = Math.atan2(run.dir[1], run.dir[0]), facing = (deg) => [Math.cos(th + deg * DEG), 0, Math.sin(th + deg * DEG)], left = (deg) => [-Math.sin(th + deg * DEG), 0, Math.cos(th + deg * DEG)];
   const G = run.gait ?? SPRINT, tr = run.track, v = run.speed, D = G.D, f = facing(0), l = left(0), up = [0, 1, 0], base = [run.x, 0, run.z], RP = RUN_POSE;
   const g = clamp(v / 1.2, 0, 1), ka = clamp(v / 1.5, 0, 1), amp = clamp(v / 2.5, 0, 1), ef = G.effort ?? 1;   // g: 거의 서 있을 때는 두 발을 모으고 선다
@@ -3637,6 +3671,43 @@ function slideSkeleton(run) {
   if (up > 0) return blendSkeleton(lie, runnerSkeleton({ ...run, slide: null, x: bag[0], z: bag[1], speed: 0, braking: false, bank: 0 }), up);
   return down < 1 ? blendSkeleton(runnerSkeleton({ ...run, slide: null }), lie, down) : lie;
 }
+// 1루 머리부터 슬라이딩 자세(수비수 다이빙 FTRACK.dive와 같은 키 모양, 엉덩이가 원점이고 몸 앞이 -z): 박차며 숙임 → 두 팔을 앞으로 뻗고 다리를 뒤로
+// 띄워 난다 → 배로 떨어진다 → 엎드려 미끄러진다(손은 엉덩이 앞 HF_REACH m). 두 손을 모두 뻗고, 팔다리는 닿는 길이 안이다
+const HF_POSE = makeTrack([
+  [0, fpose({ pel: [0, 0.86, 0], lean: 0.55, lf: [0.12, 0.03, -0.2], rf: [-0.12, 0.3, 0.5], gl: [0.22, 0.98, -0.42], bh: [-0.22, 0.98, -0.42] })],
+  [0.4, fpose({ pel: [0, 0.6, 0], lean: 1.25, lf: [0.13, 0.32, 0.7], rf: [-0.13, 0.42, 0.75], gl: [0.2, 0.68, -1.0], bh: [-0.2, 0.68, -1.0] })],
+  [0.7, fpose({ pel: [0, 0.32, 0], lean: 1.45, lf: [0.14, 0.18, 0.86], rf: [-0.14, 0.22, 0.84], gl: [0.19, 0.24, -1.04], bh: [-0.19, 0.24, -1.04] })],
+  [1, fpose({ pel: [0, 0.27, 0], lean: 1.48, lf: [0.15, 0.1, 0.88], rf: [-0.15, 0.12, 0.86], gl: [0.18, 0.15, -HF_REACH], bh: [-0.18, 0.15, -HF_REACH] })],
+]);
+// 일어나기: 엎드린 채 팔로 밀어 올리고 → 왼발을 앞에 디뎌 한쪽 무릎을 꿇었다가 → 선다
+const HF_GETUP = makeTrack([
+  [0, fpose({ pel: [0, 0.27, 0], lean: 1.48, lf: [0.15, 0.1, 0.88], rf: [-0.15, 0.12, 0.86], gl: [0.18, 0.15, -HF_REACH], bh: [-0.18, 0.15, -HF_REACH] })],
+  [0.3, fpose({ pel: [0, 0.4, 0.1], lean: 1.05, lf: [0.15, 0.1, 0.75], rf: [-0.15, 0.1, 0.72], gl: [0.22, 0.12, -0.42], bh: [-0.22, 0.12, -0.42] })],
+  [0.45, fpose({ pel: [0, 0.47, 0.13], lean: 0.82, lf: [0.17, 0.2, 0.25], rf: [-0.15, 0.1, 0.65], gl: [0.24, 0.25, -0.38], bh: [-0.24, 0.25, -0.38] })],
+  [0.6, fpose({ pel: [0, 0.55, 0.15], lean: 0.6, lf: [0.18, 0.03, -0.3], rf: [-0.16, 0.12, 0.55], gl: [0.25, 0.45, -0.3], bh: [-0.25, 0.45, -0.3] })],
+  [1, fpose({ pel: [0, 0.93, 0.02], lean: 0.06, lf: [0.15, 0.03, -0.02], rf: [-0.15, 0.03, 0.04], gl: [0.25, 0.95, -0.08], bh: [-0.25, 0.95, -0.08] })],
+]);
+// 키 자세 v로 at에서 face 쪽을 보는 친 타자 뼈대(수비수 조립을 빌리되 글러브·모자 없이 타자 헬멧·장갑·상점 물건을 그린다).
+// 몸이 누울수록 고개를 들어 앞(베이스)을 보고, 밑창이 뒤(카메라 쪽)를 본다. 팔꿈치는 아래로 굽힌다(수비수처럼 옆으로 굽히면 뒤에서 날개처럼 보였다)
+function runnerFigure(at, face, v) {
+  const k = fielderSkeleton(at, face, v), f = k.facing(k.shTurn), l = k.left(k.shTurn), w = clamp((v[5] - 0.9) / 0.5, 0, 1);
+  delete k.plain; delete k.cap; delete k.bare; delete k.mitt;
+  for (const s of ['l', 'r']) k.elbows[s] = bendJoint(k.shoulders[s], k.hands[s], 0.3, 0.29, V.add(V.mul(l, s === 'l' ? 0.3 : -0.3), [0, -1, 0]));
+  k.head = V.add(k.chest, V.mul(unit3(V.add(V.mul(unit3(V.sub(k.chest, k.pelvis)), 1 - w), V.mul(unit3(V.add(f, [0, 0.75, 0])), w))), 0.24));
+  k.brim = V.add(k.head, V.add([0, -0.03, 0], V.mul(f, 0.12)));
+  k.soles = { l: 0.8 * w, r: 0.8 * w };
+  return k;
+}
+// 달리던 자세 → 머리부터 슬라이딩(blend·u) → 엎드려 있다가 일어나(up) 선 자세로 섞는다
+function diveSkeleton(run) {
+  const D = run.dive, face = Math.atan2(run.dir[1], run.dir[0]), at = [run.x, run.z];
+  if (D.up > 0) {
+    const k = runnerFigure(at, face, HF_GETUP(D.up));
+    return D.up < 0.75 ? k : blendSkeleton(k, runnerSkeleton(standingRunner(at, run.dir)), smooth((D.up - 0.75) / 0.25));
+  }
+  const k = runnerFigure(at, face, HF_POSE(D.u));
+  return D.blend < 1 ? blendSkeleton(runnerSkeleton(D.run), k, D.blend) : k;
+}
 function clampLook(look, f) {
   const h = Math.hypot(look[0], look[2]) || 1, c = (look[0] * f[0] + look[2] * f[2]) / h;
   if (c >= Math.cos(110 * DEG)) return look;
@@ -3651,6 +3722,14 @@ function runDust(run) {
     const { rest, down } = run.slide, k = run.speed > 0.1 ? clamp(run.speed / 6, 0.3, 1) * down : Math.max(0, 1 - rest / 0.7), grow = 1 + 1.5 * clamp(rest / 0.7, 0, 1);
     if (k <= 0) return out;
     for (const [a, b, r0] of [[0.9, 0.15, 0.22], [0.55, -0.2, 0.28], [0.1, 0.25, 0.3], [-0.3, -0.1, 0.26]]) {   // 몸을 따라 앞(발)에서 뒤(어깨)까지
+      out.push({ x: run.x + run.dir[0] * a - run.dir[1] * b, y: 0.12 + 0.1 * grow, z: run.z + run.dir[1] * a + run.dir[0] * b, r: r0 * grow, alpha: 0.42 * k });
+    }
+    return out;
+  }
+  if (run.dive) {   // 머리부터 슬라이딩: 배가 땅에 닿으면(진행 0.6부터) 몸을 따라 흙먼지가 일고, 멈춘 뒤 0.7초에 걸쳐 퍼지며 가라앉는다
+    const { u, rest } = run.dive, k = rest > 0 ? Math.max(0, 1 - rest / 0.7) : clamp(run.speed / 6, 0.3, 1) * smooth((u - 0.6) / 0.25), grow = 1 + 1.5 * clamp(rest / 0.7, 0, 1);
+    if (k <= 0) return out;
+    for (const [a, b, r0] of [[1.0, 0.1, 0.22], [0.5, -0.18, 0.28], [-0.05, 0.2, 0.3], [-0.6, -0.08, 0.26]]) {   // 몸을 따라 앞(손)에서 뒤(발)까지
       out.push({ x: run.x + run.dir[0] * a - run.dir[1] * b, y: 0.12 + 0.1 * grow, z: run.z + run.dir[1] * a + run.dir[0] * b, r: r0 * grow, alpha: 0.42 * k });
     }
     return out;
@@ -3812,15 +3891,37 @@ const panCap = (dt) => (dt < 0.5 ? PAN_SPEED * view.f * dt : Infinity);
 
 // ===== 화면 위 정보 =====
 const KIND_COLOR = { hr: '#ff6b4a', triple: '#4ade80', double: '#4ade80', single: '#4ade80', ball: '#facc15', out: '#9aa3b2', whiff: '#9aa3b2', foul: '#9aa3b2', strike: '#9aa3b2' };
-// 10구 전광판 불: 안타(2루타·홈런 포함)는 초록, 참아서 골라낸 볼은 노랑, 나머지는 빨강
+// 10구 전광판 불: 안타(2루타 포함)는 초록, 참아서 골라낸 볼은 노랑, 나머지는 빨강. 홈런은 초록 별(2026-11-05 유저 피드백 '점수판에서 홈런은 다르게(별?)'.
+// 처음에는 금색 별이었는데 사용자가 '볼과 같은 색이라 더 헷갈린다'고 해서 안타와 같은 초록에 모양만 별로 가른다).
+// 공마다 코드 하나: S 단타·D 2루타·T 3루타·H 홈런·Y 볼·R 그 밖. G는 예전 판과 끝내기 상황 타석의 '어떤 안타'다
 const LIGHT = { hit: '#3ddc6e', ball: '#facc15', miss: '#ff4d4d' };
-const lightColor = (r) => (r.hit ? LIGHT.hit : r.kind === 'ball' ? LIGHT.ball : LIGHT.miss);
+const STAR_K = 1.2;   // 별은 불 반지름의 1.2배
+const HIT_CODE = { single: 'S', double: 'D', triple: 'T', hr: 'H' };
+const lightCode = (r) => (r.hit ? HIT_CODE[r.kind] : r.kind === 'ball' ? 'Y' : 'R');
+const LIGHT_BY_CODE = { S: LIGHT.hit, D: LIGHT.hit, T: LIGHT.hit, G: LIGHT.hit, Y: LIGHT.ball, R: LIGHT.miss };
 
 function drawLight(x, y, radius, color) {
   ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2);
   ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = radius * 1.8;
   ctx.fill();
   ctx.shadowBlur = 0;
+}
+// 다섯 꼭짓점 별(위가 꼭짓점). 꼭짓점 끝을 둥글게 하려고 같은 색 테두리를 두르고, 위아래 폭의 가운데가 y에 오게 조금 내린다
+function starPath(g, x, y, R) {
+  const cy = y + R * 0.1;
+  g.beginPath();
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? R * 0.5 : R; g.lineTo(x + Math.cos(a) * rr, cy + Math.sin(a) * rr); }
+  g.closePath();
+}
+// 불 하나: 홈런(H)은 꽉 찬 초록 별에 약한 빛, 나머지는 색 동그라미(drawLight)
+function drawMark(x, y, radius, code) {
+  if (code !== 'H') { drawLight(x, y, radius, LIGHT_BY_CODE[code]); return; }
+  const R = radius * STAR_K;
+  ctx.save();
+  starPath(ctx, x, y, R);
+  ctx.fillStyle = LIGHT.hit; ctx.shadowColor = LIGHT.hit; ctx.shadowBlur = R * 0.9; ctx.fill();
+  ctx.shadowBlur = 0; ctx.lineJoin = 'round'; ctx.lineWidth = R * 0.16; ctx.strokeStyle = LIGHT.hit; ctx.stroke();
+  ctx.restore();
 }
 
 function roundRect(x, y, w, h, r) {
@@ -3902,7 +4003,7 @@ function boardView() {
     return { ...v, type: `${typeName(pr.type)}${pr.slow ? ' · 느리게' : ''}`, stat: `정타 ${pr.perfect} / 스윙 ${pr.swings}`, avg: `평균 오차 ${pr.swings ? `${Math.round(pr.sumAbs / pr.swings)}ms` : '-'}` };
   }
   const lamps = [];   // 칸 수 = 지난 공 + 남은 기회(볼을 골라내면 한 칸 늘어난다)
-  for (let i = 0; i < game.results.length + game.left; i++) { const res = early && i === game.i ? null : game.results[i]; lamps.push(res ? lightColor(res) : null); }
+  for (let i = 0; i < game.results.length + game.left; i++) { const res = early && i === game.i ? null : game.results[i]; lamps.push(res ? lightCode(res) : null); }
   return { ...v, score: game.score - (early ? game.gained : 0), left: game.left, lamps,
     note: game.lastChance && playing && game.state !== 'result' ? '9회말 2아웃 · 끝내기 찬스 · 점수 2배' : '' };   // 결과 화면에서는 결과 글자와 겹쳐서 뺀다
 }
@@ -3979,13 +4080,23 @@ function renderBoard(v, L) {
   // 가운데: 지난 공·남은 기회 불과 번호. 마지막 칸(끝내기 찬스)은 노란 테두리와 '끝'
   const c0 = M + leftW + (m ? 14 : 30), c1 = M + pw - rightW - (m ? 14 : 110), n = v.lamps.length, y = cy - (m ? 4 : 5);
   const gap = n > 1 ? Math.min((c1 - c0) / (n - 1), (m ? 6 : 8) * 3.4) : 0, r = Math.min(m ? 6 : 8, gap * 0.36 || 8), x0 = (c0 + c1) / 2 - gap * (n - 1) / 2;
-  v.lamps.forEach((color, i) => {
+  v.lamps.forEach((code, i) => {
     const x = x0 + i * gap, last = i === n - 1;
-    ledLamp(g, x, y, r, color);
-    if (last && !color && i !== v.now) { g.strokeStyle = 'rgba(255,181,46,0.9)'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, r + 3, 0, Math.PI * 2); g.stroke(); }
-    tx(last && !color ? '끝' : String(i + 1), x, y + r + 10, 9, last && !color ? LED_AMBER : 'rgba(255,255,255,0.38)', 'center', 700);
-    if (i === v.now && !color) board.ring = { x: L.px - M + x, y: L.py - M + y, r };   // 화면 좌표(매 화면 깜빡이는 테두리)
+    if (code === 'H') ledStar(g, x, y, r); else ledLamp(g, x, y, r, code && LIGHT_BY_CODE[code]);
+    if (last && !code && i !== v.now) { g.strokeStyle = 'rgba(255,181,46,0.9)'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, r + 3, 0, Math.PI * 2); g.stroke(); }
+    tx(last && !code ? '끝' : String(i + 1), x, y + r + 10, 9, last && !code ? LED_AMBER : 'rgba(255,255,255,0.38)', 'center', 700);
+    if (i === v.now && !code) board.ring = { x: L.px - M + x, y: L.py - M + y, r };   // 화면 좌표(매 화면 깜빡이는 테두리)
   });
+}
+// 홈런 불: 꺼진 유리알 자리에 꽉 찬 초록 별(불 반지름의 STAR_K배). 위가 밝은 초록이고 빛은 불보다 약하게 번진다
+function ledStar(g, x, y, r) {
+  const R = r * STAR_K, gr = g.createLinearGradient(0, y - R, 0, y + R);
+  gr.addColorStop(0, '#d8ffe4'); gr.addColorStop(0.45, LIGHT.hit); gr.addColorStop(1, '#1e9a48');
+  g.save();
+  starPath(g, x, y, R);
+  g.shadowColor = LIGHT.hit; g.shadowBlur = R * 1.1; g.fillStyle = gr; g.fill();
+  g.shadowBlur = 0; g.lineJoin = 'round'; g.lineWidth = R * 0.16; g.strokeStyle = gr; g.stroke();
+  g.restore();
 }
 function ledPath(g, x, y, w, h, r) {
   g.beginPath(); g.moveTo(x + r, y);
@@ -4310,9 +4421,8 @@ function playStreak(day = today()) {
   return n;
 }
 
-const lightCode = (r) => (r.hit ? 'G' : r.kind === 'ball' ? 'Y' : 'R');
-const LIGHT_BY_CODE = { G: LIGHT.hit, Y: LIGHT.ball, R: LIGHT.miss };
-const SHARE_EMOJI = { G: '🟢', Y: '🟡', R: '🔴' };
+const SHARE_EMOJI = { S: '🟢', D: '🟢', T: '🟢', G: '🟢', H: '⭐', Y: '🟡', R: '🔴' };
+const serverLights = (codes) => codes.replace(/[SDTH]/g, 'G');
 const rankOf = (score) => (score >= 4000 ? '끝내기 영웅' : score >= 2500 ? '클러치 히터' : score >= 1200 ? '주전 타자' : '내일 다시 도전');
 
 function gameSummary() {
@@ -4372,7 +4482,13 @@ function drawShareCard(s, mode) {
   }
   const codes = (scn ? s.pa : s.lights).split(''), gap = Math.min(72, 900 / Math.max(1, codes.length - 1));
   codes.forEach((ch, i) => {
-    g.beginPath(); g.arc(540 + (i - (codes.length - 1) / 2) * gap, 715, Math.min(24, gap * 0.36), 0, Math.PI * 2);
+    const x = 540 + (i - (codes.length - 1) / 2) * gap, r = Math.min(24, gap * 0.36);
+    if (ch === 'H') {   // 홈런은 초록 별(끝 화면과 같은 모양)
+      starPath(g, x, 715, r * STAR_K);
+      g.fillStyle = LIGHT.hit; g.fill(); g.lineJoin = 'round'; g.lineWidth = r * STAR_K * 0.16; g.strokeStyle = LIGHT.hit; g.stroke();
+      return;
+    }
+    g.beginPath(); g.arc(x, 715, r, 0, Math.PI * 2);
     g.fillStyle = LIGHT_BY_CODE[ch]; g.fill();
   });
   const cnt = (ch) => codes.filter((x) => x === ch).length;
@@ -4384,10 +4500,12 @@ function drawShareCard(s, mode) {
 
 // 끝 화면이 뜰 때 카드 그림을 미리 만들어 둔다. 아이폰은 누른 그 순간에 공유를 불러야 해서 누른 뒤에 만들면 늦다.
 // 그림 공유를 쓰는 곳(모바일 공유 창)에서만 만든다
+// 서버 답으로 '새 최고 기록'이 바뀌어 다시 그릴 때(settleBest)는 새 그림이 다 될 때까지 같은 판의 앞 그림을 쓴다
 function prepareShareCard() {
+  const old = game.shareCard?.summary === game.summary ? game.shareCard.file : null;
   game.shareCard = null;
   if (!view.mobile || !canShareFiles() || !game.summary || !['challenge', 'scenario'].includes(game.mode)) return;
-  const card = { file: null };
+  const card = { file: old, summary: game.summary };
   game.shareCard = card;
   try {
     pngFile(drawShareCard(game.summary, game.mode), 'walkoff.png', (file) => { card.file = file; });
@@ -4721,19 +4839,21 @@ async function submitScore(s, mode) {
   if (game.fixedSeed) { game.rankInfo = { status: 'unranked' }; return; }   // 주소에 ?seed=를 붙여 공 순서를 정한 판
   // 서버는 자기가 내준 시드(token)로 공 순서를 다시 만들어 전광판·점수를 맞춰 본다. 시드를 못 받은 판은 token 없이 가서 거절된다.
   // seed는 시드를 내주기 전의 서버가 보던 값이다
-  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, seed: game.seed, ...(game.ticket ? { token: game.ticket.token } : {}) };
+  // 서버(cd492b29)는 불을 G·Y·R로만 받아서 안타 종류(S·D·T·H)는 G로 보낸다. 칭호·업적 서버가 종류를 받기 시작하면 그대로 보낸다
+  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: serverLights(s.lights), mode, seed: game.seed, ...(game.ticket ? { token: game.ticket.token } : {}) };
   keepPending(body);
   game.rankInfo = { status: 'sending' };
   let res;
   try { res = await postScore(body); } catch { res = { status: 0, data: {} }; }
   const { status, data } = res;
-  if (status === 401) { logout('expired'); return; }   // 남겨 둔 판은 다시 로그인하면 보낸다
+  if (status === 401) { logout('expired'); settleBest(s, null); return; }   // 남겨 둔 판은 다시 로그인하면 보낸다
   if (status > 0 && status < 500 && store.get('pending', null)?.token === body.token) store.remove('pending');
   if (status === 200 && data.ok) {
     setWallet({ coins: data.coins });
     setAccountBest(weekStartOf(s.date), data.me?.best, data.allTime);   // 메뉴 '이번 주'·'역대'를 계정 기록으로(랭킹과 같은 숫자)
     game.rankInfo = { status: 'ok', me: data.me, myTeam: data.myTeam, newBest: data.accepted && data.me?.best === s.score, earned: data.earned ?? 0 };
-  } else game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error };
+    settleBest(s, data);   // 끝 화면 '최고 기록'도 계정 역대 최고로
+  } else { game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error }; settleBest(s, null); }
 }
 
 // 끝내기 상황 코인(2026-11-04 사용자 결정 '이기면 코인, 서버 검증'): 로그인하고 서버 시드로 친 판이 끝나면 공마다 휘두른 때(moves)를 보낸다.
@@ -5882,6 +6002,12 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
+  { id: '2026-11-05e', label: '11/5 저녁', items: [
+    '홈런은 전광판과 결과에 초록 별로 표시돼요(공유 글에는 ⭐)',
+    '1루 승부가 아슬아슬하면 주자가 머리부터 슬라이딩해요',
+    '로그인했으면 끝 화면의 최고 기록도 계정 기록으로 보여요',
+    '조준 타격은 누른 자리가 배트 손잡이예요. 배트가 옆으로 누워 진짜 스윙처럼 보여요(PC·폰 같음)',
+  ] },
   { id: '2026-11-05d', label: '11/5 늦은 오후', items: [
     "메뉴와 조준 타격 끝 화면에 '의견 보내기'가 생겼어요. 좋았던 점·불편한 점을 남겨 주세요(패들렛으로 열려요)",
     '조준 타격을 조금 쉽게 했어요. 위아래로 조금 빗나가도 맞아요',
@@ -6268,12 +6394,14 @@ function drawGameOver() {
   y += m ? 54 : 70;
   text(s.score.toLocaleString(), cx, y, { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
   y += m ? 50 : 64;
-  const best = game.mode === 'challenge', kind = game.aim ? '조준 최고 기록' : '최고 기록';   // 조준 판은 이 기기 조준 최고 기록(walkoff.aimBest)
-  text((best ? (game.newBest ? `새 ${kind}!` : `${kind} ${game.best.toLocaleString()}점`) : rankOf(s.score)) + coinNote(), cx, y,
+  // 조준 판은 이 기기 조준 최고 기록(walkoff.aimBest). 10구는 로그인했으면 계정 역대 최고, 서버 답을 기다리면 '확인 중'(startBest)
+  const best = game.mode === 'challenge', kind = game.aim ? '조준 최고 기록' : '최고 기록';
+  const bestText = game.newBest ? `새 ${kind}!` : game.best != null ? `${kind} ${game.best.toLocaleString()}점` : game.bestWait ? `${kind} 확인 중…` : rankOf(s.score);
+  text((best ? bestText : rankOf(s.score)) + coinNote(), cx, y,
     { size: m ? 18 : 22, color: best && game.newBest ? '#f2c94c' : '#fff' });
   y += m ? 40 : 50;
   const lights = s.lights.split(''), lg = Math.min(m ? 30 : 36, (m ? view.w - 70 : 520) / Math.max(1, lights.length - 1));
-  lights.forEach((c, i) => drawLight(cx + (i - (lights.length - 1) / 2) * lg, y, Math.min(m ? 10 : 12, lg * 0.36), LIGHT_BY_CODE[c]));
+  lights.forEach((c, i) => drawMark(cx + (i - (lights.length - 1) / 2) * lg, y, Math.min(m ? 10 : 12, lg * 0.36), c));
   y += m ? 36 : 44;
   text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
   y += m ? 38 : 48;
@@ -6360,45 +6488,60 @@ const ballTime = () => game.t - WINDUP;
 
 // ===== 조준 타격(실험, 2026-11-05 사용자 아이디어·결정, 계획 ~/.claude/plans/piped-bouncing-bird.md) =====
 // 메뉴 '조준 타격(실험)'은 10구 도전과 같은 규칙인데(game.mode 'challenge', game.aim) 타이밍과 함께 공이 지나는 자리를 겨눠야 한다.
-// PC는 마우스로 겨누고 클릭(스페이스바는 마지막 마우스 자리, 움직인 적이 없으면 존 가운데)으로, 폰은 누른 자리가 배트 손잡이 끝이고(AIM_GRIP)
-// 끌어 맞춘 뒤 떼는 순간 친다(손가락 하나만, 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공). 과녁은 배트 축을 따라 잰 타원(m, 판정은 core AIM).
+// PC는 마우스로 겨누고 클릭(스페이스바는 마지막 마우스 자리, 움직인 적이 없으면 맞는 자리가 존 가운데)으로, 폰은 끌어 맞춘 뒤 떼는 순간 친다(손가락 하나만,
+// 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공). PC·폰 모두 누른 자리가 배트 손잡이 끝이다(AIM_BAT). 과녁은 배트 축을 따라 잰 타원(m, 판정은 core AIM).
 // 랭킹·서버 시드·연속 기록·최고 기록·코인·공유에는 넣지 않고 이 기기 조준 최고 기록(walkoff.aimBest)만 남긴다. 통계는 모드 'aim'으로 센다
 // 과녁(m): 배트 축을 따라 x, 축에 수직으로 y. 마우스·터치를 따로 맞출 수 있게 나눠 둔다(처음엔 같다).
 // 세로는 2026-11-05 사용자 '아직 너무 어렵다' → 1.5배(0.06 → 0.09)
 const AIM_RADIUS = { mouse: { x: 0.10, y: 0.09 }, touch: { x: 0.10, y: 0.09 } };
-// 배트 커서(2026-11-05 사용자가 쳐 보고 '원 말고 배트 모양으로'. 그린 공은 쳐야 할 때보다 0.1초쯤 먼저 네모에 닿아서 네모를 신호로 치면 늦었다):
-// 칠 자리 깊이(홈플레이트 앞면)에 그리고, 맞는 자리(끝에서 tip m)가 커서다. PC(마우스)는 실제 크기 배트를 수평에서 tilt도 들어 비스듬히, 손잡이는 타자 손 쪽(우타 왼쪽 위, 좌타 거울)
-const AIM_BAT = { tilt: 15, knob: BAT_LEN - 0.16, tip: 0.16 }, AIM_ZONE_ALPHA = 0.45;   // 조준 판의 존(네모)은 흐리게(볼·스트라이크는 보일 만큼)
-// 폰(2026-11-05 사용자 '누를 때 배트 가운데가 아니라 끝을 잡아야 덜 어색하다'): 누른 자리가 손잡이 끝이고 맞는 자리는 손가락에서 타자 반대쪽 위로 angle도,
-// reach px(우타는 오른쪽 위, 좌타는 왼쪽 위). 실제 크기(폰 180px쯤)면 존 왼쪽 공에서 손가락이 화면 밖으로 나가서 짧게 그린다(360 폭에서도 화면 가장자리와 67px)
-const AIM_GRIP = { reach: 100, angle: 45 };
-// 배트 축(맞는 자리 → 손잡이, m 단위 벡터, 위가 +)과 축에 수직인 위쪽. kind 'touch'면 폰 배트(손잡이가 아래)
-function aimAxes(kind = 'mouse') {
-  const sd = batSide(), t = (kind === 'touch' ? -AIM_GRIP.angle : AIM_BAT.tilt) * DEG;
-  return { d: { x: -sd * Math.cos(t), y: Math.sin(t) }, n: { x: sd * Math.sin(t), y: Math.cos(t) } };
+// 배트 커서(2026-11-05 사용자가 쳐 보고 '원 말고 배트 모양으로'. 그린 공은 쳐야 할 때보다 0.1초쯤 먼저 네모에 닿아서 네모를 신호로 치면 늦었다).
+// 칠 자리 깊이(홈플레이트 앞면)에 그린다. 2026-11-05 저녁 사용자 결정('폰은 그전 배트 모양, 칠 자리에 비스듬히 누운 진짜 배트가 훨씬 좋았다. 지금은 위로
+// 치우쳐 있다. PC도 마우스가 배트 잡는 곳에 가야'): PC·폰 모두 누른 자리(마우스·손가락)가 손잡이 끝이고, 배트는 손잡이에서 타자 반대쪽(우타 오른쪽, 좌타 왼쪽)으로
+// 거의 옆으로 눕는다. 맞는 자리(굵은 쪽)가 낮을수록 굵은 쪽이 내려간다(존 위끝 위로는 high도, 존 아래끝에서 0.1m 아래부터는 low도. 진짜 스윙처럼).
+// 손잡이에서 맞는 자리까지는 칠 자리 깊이의 reach m(폰 390 폭 100px쯤, PC 1440 폭 155px쯤, 실제 배트 0.70m의 반쯤)이고 맞는 자리 너머로 tip m 더 그린다.
+// 굵기(wa 손잡이, wb 굵은 쪽)는 줄인 길이에 맞추되 작은 화면에서 보이게 실제 비율보다 조금 굵다.
+// 실제 크기면 폰에서 존 왼쪽 공을 칠 때 손가락이 화면 밖으로 나갔다(360 폭에서도 존 네 모서리 공을 손가락이 화면 안인 채로 친다, 테스트가 본다).
+// 전에는 PC는 맞는 자리가 마우스인 실제 크기 배트(15도), 폰은 손가락에서 위로 45도 100px였다
+const AIM_BAT = { reach: 0.38, tip: 0.09, wa: 0.022, wb: 0.044, high: 2, low: 25 }, AIM_ZONE_ALPHA = 0.45;   // 조준 판의 존(네모)은 흐리게(볼·스트라이크는 보일 만큼)
+// 칠 자리 깊이의 축척(1m가 몇 px인지)과 화면 y의 높이(m)
+const aimScale = () => project(0, 0.8, 0);
+const aimHeight = (y) => { const z = aimScale(); return z ? 0.8 + (z.y - y) / z.s : 0.8; };
+// 맞는 자리 높이 h(m)에서 굵은 쪽이 수평에서 내려간 각(도)
+const aimTilt = (h) => lerp(AIM_BAT.high, AIM_BAT.low, clamp((ZONE.top - h) / (ZONE.top - ZONE.bottom + 0.1), 0, 1));
+// 배트 축(맞는 자리 → 손잡이, 단위 벡터, 위가 +)과 축에 수직인 위쪽. t는 굵은 쪽이 내려간 각(도)
+function aimAxes(t = AIM_BAT.high) {
+  const sd = batSide(), a = t * DEG;
+  return { d: { x: -sd * Math.cos(a), y: Math.sin(a) }, n: { x: sd * Math.sin(a), y: Math.cos(a) } };
 }
-// 배트 커서의 손잡이 끝·배트 끝(화면 px). at은 맞는 자리(kind가 'touch'면 손잡이 끝이 손가락), s는 그 깊이에서 1m가 몇 px인지
+// 배트 커서의 손잡이 끝·배트 끝(화면 px). at은 맞는 자리({ x, y, kind, t }, t가 없으면 그 높이로 정한다), s는 그 깊이에서 1m가 몇 px인지
 function aimBatPoints(at) {
-  const z = project(0, 0.8, 0), s = z ? z.s : 0, { d } = aimAxes(at.kind), k = at.kind === 'touch' ? AIM_GRIP.reach : AIM_BAT.knob * s;
+  const z = aimScale(), s = z ? z.s : 0, { d } = aimAxes(at.t ?? aimTilt(aimHeight(at.y))), k = AIM_BAT.reach * s;
   return { knob: { x: at.x + d.x * k, y: at.y - d.y * k, s }, tip: { x: at.x - d.x * AIM_BAT.tip * s, y: at.y + d.y * AIM_BAT.tip * s, s }, s };
 }
-// 폰: 손가락(손잡이 끝) 자리에서 맞는 자리
-const gripSpot = (x, y) => ({ x: x + batSide() * AIM_GRIP.reach * Math.cos(AIM_GRIP.angle * DEG), y: y - AIM_GRIP.reach * Math.sin(AIM_GRIP.angle * DEG), kind: 'touch' });
+// 누른 자리(손잡이 끝, 화면 px)에서 맞는 자리와 기울기. 기울기가 맞는 자리 높이로 정해져서 몇 번 고쳐 맞춘다(한 번에 오차가 5분의 1 아래로 준다)
+function gripSpot(x, y, kind = 'touch') {
+  const L = AIM_BAT.reach * (aimScale()?.s ?? 0);
+  let t = AIM_BAT.high, at = { x, y };
+  for (let i = 0; i < 6; i++) { const { d } = aimAxes(t); at = { x: x - d.x * L, y: y + d.y * L }; t = aimTilt(aimHeight(at.y)); }
+  return { ...at, kind, t };
+}
+// 맞는 자리(화면 px)를 치려면 누를 자리(손잡이 끝). 테스트가 쓴다
+const aimGripFor = (x, y) => aimBatPoints({ x, y }).knob;
 const aimPointer = { x: 0, y: 0, moved: false, touch: null };   // 마우스가 있는 자리, 누르고 있는 손가락 { id, x, y }
-// 지금 커서 자리(화면 px)와 과녁 종류(touch면 터치 과녁)
+// 지금 커서(맞는 자리, 화면 px)와 과녁 종류(touch면 터치 과녁)
 function aimCursor() {
-  if (aimPointer.touch) return gripSpot(aimPointer.touch.x, aimPointer.touch.y);
-  if (aimPointer.moved) return { x: aimPointer.x, y: aimPointer.y, kind: 'mouse' };
+  if (aimPointer.touch) return gripSpot(aimPointer.touch.x, aimPointer.touch.y, 'touch');
+  if (aimPointer.moved) return gripSpot(aimPointer.x, aimPointer.y, 'mouse');
   const c = project(0, (ZONE.top + ZONE.bottom) / 2, 0);
-  return { x: c.x, y: c.y, kind: 'mouse' };
+  return { x: c.x, y: c.y, kind: 'mouse', t: aimTilt((ZONE.top + ZONE.bottom) / 2) };
 }
 // 커서(배트 맞는 자리)와 공이 지나는 자리(홈플레이트 앞면의 p.tx·p.ty, 지금 화면 밀기 그대로)의 차이를 그 깊이의 m로 바꿔, 배트 축을 따라 R.x·
 // 축에 수직으로 R.y인 기운 타원으로 나눈다. x·y는 판정에 넘길 과녁 비율(y는 축에 수직인 위쪽 +, 발사각에 쓴다), dx·dy는 화면 쪽 m(오른쪽·위 +, 이유 글),
-// wx·wy는 겨눈 자리(다시 보기·결과 화면에 그린다)
+// wx·wy는 겨눈 자리, t는 그때 배트 기울기(다시 보기·결과 화면에 같은 배트를 그린다)
 function aimFrom(at, p) {
-  const c = project(p.tx, p.ty, 0), R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'];
-  const dx = (at.x - c.x) / c.s, dy = (c.y - at.y) / c.s, { d, n } = aimAxes(at.kind);
-  return { x: (dx * d.x + dy * d.y) / R.x, y: (dx * n.x + dy * n.y) / R.y, dx, dy, wx: p.tx + dx, wy: p.ty + dy, kind: at.kind };
+  const c = project(p.tx, p.ty, 0), R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'], t = at.t ?? aimTilt(aimHeight(at.y));
+  const dx = (at.x - c.x) / c.s, dy = (c.y - at.y) / c.s, { d, n } = aimAxes(t);
+  return { x: (dx * d.x + dy * d.y) / R.x, y: (dx * n.x + dy * n.y) / R.y, dx, dy, wx: p.tx + dx, wy: p.ty + dy, kind: at.kind, t };
 }
 
 // 배트 그림자 모양(손잡이 끝 a → 배트 끝 b, 굵기 wa → wb): 둥근 손잡이 끝, 가는 손잡이가 굵은 쪽으로 굵어지고 끝은 둥글다.
@@ -6421,7 +6564,7 @@ function batShadowPath(a, b, wa, wb) {
 function drawAimBat(at, alpha = 1) {
   const { knob, tip, s } = aimBatPoints(at);
   if (!s) return;
-  const path = batShadowPath(knob, tip, 0.034 * s, 0.068 * s), len = Math.hypot(tip.x - knob.x, tip.y - knob.y) || 1, ux = (tip.x - knob.x) / len, uy = (tip.y - knob.y) / len;
+  const path = batShadowPath(knob, tip, AIM_BAT.wa * s, AIM_BAT.wb * s), len = Math.hypot(tip.x - knob.x, tip.y - knob.y) || 1, ux = (tip.x - knob.x) / len, uy = (tip.y - knob.y) / len;
   const r = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'].x * s, glow = ctx.createLinearGradient(at.x - ux * r, at.y - uy * r, at.x + ux * r, at.y + uy * r);
   glow.addColorStop(0, 'rgba(255,255,255,0)'); glow.addColorStop(0.5, 'rgba(255,255,255,0.42)'); glow.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.save(); ctx.globalAlpha = alpha;
@@ -6439,7 +6582,7 @@ function drawAimLayer(p) {
   if (!c) return;
   ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(at.x, at.y); ctx.lineTo(c.x, c.y); ctx.stroke(); ctx.restore();
-  drawAimBat({ x: at.x, y: at.y, kind: a.kind }, 0.8);
+  drawAimBat({ x: at.x, y: at.y, kind: a.kind, t: a.t }, 0.8);
   ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(3, BALL_R * c.s), 0, Math.PI * 2); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke();   // 공이 지난 자리
 }
 
@@ -6548,15 +6691,37 @@ function recordGame() {
     if (game.newBest) store.set('aimBest', game.score);
   } else if (game.mode === 'challenge') {
     store.set('played.' + today(), 1);   // 끝까지 친 날(연속 기록)
-    const best = store.get('best', 0);
-    game.newBest = game.score > best;
-    game.summary.newBest = game.newBest;   // 공유 글에 '새 최고 기록'을 붙인다
-    game.best = Math.max(best, game.score);
-    if (game.newBest) store.set('best', game.score);
+    const best = store.get('best', 0);   // 이 기기 최고(로그아웃했을 때 메뉴·끝 화면이 쓴다)
+    if (game.score > best) store.set('best', game.score);
+    startBest(best);
     if (!loggedIn() && !game.fixedSeed) setWeekBest(weekStartOf(game.summary.date), game.score);   // 로그인했으면 서버 답으로(submitScore)
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
   track('end', game.aim ? 'aim' : game.mode);
+}
+// 끝 화면 '최고 기록 N점'·'새 최고 기록!'과 공유 글·카드의 '새 최고 기록'(2026-11-05 사용자 결정 '계정 기준으로, 다음 push에 같이').
+// 로그인했으면 메뉴 '역대'와 같은 계정 역대 최고(남겨 둔 accountBest.allTime)와 견주고, 판을 보낸 뒤 /scores 답의 allTime(이 판까지 넣은 값)으로
+// 고친다. 다른 기기에서 더 높게 친 사람에게 '새 최고 기록!'이 뜨지 않게 하려는 것이다. 남겨 둔 값을 넘었거나 아직 모르면 서버 답까지
+// '최고 기록 확인 중…'이고, 서버에 안 올라간 판(?seed=·거절·연결 실패)은 새 기록이라 하지 않는다. 로그인 안 했으면 이 기기 최고(walkoff.best)
+function startBest(deviceBest) {
+  const s = game.summary;
+  if (!loggedIn()) {
+    Object.assign(game, { newBest: s.score > deviceBest, best: Math.max(deviceBest, s.score), bestWait: false });
+    s.newBest = game.newBest;
+    return;
+  }
+  const prev = store.get('accountBest', null)?.allTime ?? null, below = prev != null && s.score <= prev;   // 남겨 둔 값 아래면 서버 답을 기다리지 않아도 새 기록이 아니다
+  Object.assign(game, { prevBest: prev, newBest: false, best: below ? prev : null, bestWait: !below && !game.fixedSeed && !!settings.team });
+  s.newBest = false;
+}
+// 서버 답으로 고친다. data는 받아들인 /scores 답이고, 거절·연결 실패·로그인 풀림이면 null(남겨 둔 값 그대로, 새 기록 아님)
+function settleBest(s, data) {
+  if (game.summary !== s) return;   // 그사이 새 판을 시작했다
+  const prev = game.prevBest, was = s.newBest;
+  if (data && data.allTime != null) Object.assign(game, { newBest: !!data.accepted && data.allTime === s.score && (prev == null || s.score > prev), best: data.allTime });
+  game.bestWait = false;
+  s.newBest = game.newBest;
+  if (s.newBest !== was) prepareShareCard();   // 공유 카드의 '새 최고 기록!'도 고친다
 }
 
 function finishGame() {
@@ -6644,7 +6809,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
     if (b) { if (b.href) openOutside(b.href); else b.onTap(); return; }
   }
   if (game.state === 'title') startDefault();   // 버튼이 아닌 빈 곳을 누르면 시작
-  else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime, x == null ? 'key' : kind, game.aim && x != null ? { x, y, kind: 'mouse' } : null);   // 조준 판의 클릭은 그 자리로
+  else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime, x == null ? 'key' : kind, game.aim && x != null ? gripSpot(x, y, 'mouse') : null);   // 조준 판의 클릭은 그 자리를 손잡이로
   else if (game.state === 'calib') calibTap(eventTime);
   else if (game.state === 'records' && x == null) goTitle();
   else if (game.state === 'news' && x == null) openMenu();
@@ -6694,7 +6859,7 @@ addEventListener('pointerup', (e) => {
   const t = aimPointer.touch;
   if (t && e.pointerId === t.id) {   // 조준 판(폰): 떼는 순간 친다. 와인드업 중이거나 지켜본 공 판정이 났으면 아무 일도 없다
     aimPointer.touch = null;
-    if (game.aim && game.state === 'pitch' && game.swingAt == null) swing(e.timeStamp, 'touch', gripSpot(e.clientX, e.clientY));
+    if (game.aim && game.state === 'pitch' && game.swingAt == null) swing(e.timeStamp, 'touch', gripSpot(e.clientX, e.clientY, 'touch'));
   }
 });
 addEventListener('pointercancel', (e) => {
@@ -6849,5 +7014,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, AIM_GRIP, aimAxes, aimBatPoints, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };
