@@ -511,7 +511,7 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.game.state === 'menu');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '기록'));
     const items = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
-    for (const want of [/^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^이번 주 랭킹$/, /^팀·닉네임 바꾸기$/, /^카카오 로그인$/, /^닫기$/]) {
+    for (const want of [/^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^이번 주 랭킹$/, /^팀·닉네임$/, /^카카오 로그인$/, /^닫기$/]) {
       expect(items.some((l) => want.test(l)), String(want)).toBe(true);
     }
     await page.keyboard.press('Escape');
@@ -797,14 +797,14 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('새 소식: 처음 온 사람은 점이 없고, 쳐 본 사람은 ≡에 빨간 점이 떴다가 읽으면 사라지며, 더 새 소식이 오면 다시 뜬다', async ({ page }) => {
+  test("새 소식: 처음 온 사람은 표시가 없고, 쳐 본 사람은 '≡ 메뉴'에 NEW가 떴다가 읽으면 사라지며, 더 새 소식이 오면 다시 뜬다", async ({ page }) => {
     const errors = await open(page);   // 처음 온 사람(이 기기에 친 기록이 없음)
     expect(await page.evaluate(() => ({ unread: walkoff.newsUnread(), seen: localStorage.getItem('walkoff.newsSeen') === walkoff.NEWS[0].id }))).toEqual({ unread: false, seen: true });
     // 쳐 본 사람이 처음 이 기능을 만나면(읽은 기록 없음) 첫 소식부터 점이 뜬다
     await page.evaluate(() => { localStorage.removeItem('walkoff.newsSeen'); localStorage.setItem('walkoff.best', '1500'); });
     await reloadUntil(page, () => walkoff.newsUnread());
     await page.evaluate(() => { walkoff.game.state = 'menu'; });
-    await expect.poll(() => page.evaluate(() => walkoff.ui.buttons.map((b) => b.label)[0])).toBe('새 소식');
+    await expect.poll(() => page.evaluate(() => walkoff.ui.buttons.some((b) => b.label === '새 소식'))).toBe(true);   // 메뉴 맨 위 카드 아래 띠
     await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '새 소식').onTap());
     const n = await page.evaluate(() => walkoff.NEWS[0]), texts = await drawnTexts(page);
     expect(texts).toContain('새 소식');
@@ -824,6 +824,100 @@ test.describe('화면', () => {
     expect(await page.evaluate(() => walkoff.newsUnread())).toBe(false);   // 읽은 기록은 남는다
     await page.evaluate(() => walkoff.NEWS.unshift({ id: '2099-01-01', label: '1/1', items: ['더 새 소식'] }));   // 다음 업데이트
     expect(await page.evaluate(() => walkoff.newsUnread())).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  test("메뉴 단추: 시작 화면 오른쪽 위 '≡ 메뉴'(누르는 자리 48px)는 안 읽은 새 소식이 있을 때만 NEW를 달고, 메뉴를 한 번도 안 연 쳐 본 사람에게만 말풍선을 띄운다(누르면 메뉴, 열면 사라짐)", async ({ page }) => {
+    const BUBBLE = '끝내기 상황·연습·랭킹은 여기 있어요';
+    const errors = await open(page);   // 처음 온 사람: NEW도 말풍선도 없다
+    const title = () => page.evaluate(() => ({ labels: walkoff.ui.buttons.map((b) => b.label), menu: walkoff.ui.buttons.find((b) => b.label === '메뉴')?.r, bubble: walkoff.ui.buttons.find((b) => b.label === '메뉴 안내')?.r ?? null, w: walkoff.view.w }));
+    let t = await title(), texts = await drawnTexts(page);
+    expect(t.bubble).toBe(null);
+    expect(texts).toContain('메뉴');
+    expect(texts.some((s) => s === 'NEW' || s === BUBBLE)).toBe(false);
+    expect(t.menu.h).toBeGreaterThanOrEqual(48);   // 손가락으로 누르기 좋게
+    expect(t.menu.x + t.menu.w).toBeLessThanOrEqual(t.w);
+    expect(t.menu.x).toBeGreaterThan(t.w * 0.6);   // 오른쪽 위
+    // 쳐 본 사람(최고 기록이 있음)이 아직 안 읽은 소식이 있고 메뉴를 한 번도 안 열었으면
+    await page.evaluate(() => { localStorage.setItem('walkoff.best', '1500'); localStorage.setItem('walkoff.newsSeen', '2026-01-01'); });
+    await reloadUntil(page, () => walkoff.newsUnread() && walkoff.ui.buttons.some((b) => b.label === '메뉴 안내'));
+    t = await title(); texts = await drawnTexts(page);
+    expect(texts).toEqual(expect.arrayContaining(['NEW', BUBBLE]));
+    expect(t.bubble.y).toBeGreaterThanOrEqual(t.menu.y + t.menu.h);   // 단추 아래, 누르는 자리가 안 겹친다
+    await tap(page, '메뉴 안내');   // 말풍선을 눌러도 메뉴
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, localStorage.getItem('walkoff.menuSeen')])).toEqual(['menu', '1']);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    texts = await drawnTexts(page);
+    expect(texts).toContain('NEW');               // 소식은 아직 안 읽었다
+    expect(texts).not.toContain(BUBBLE);          // 말풍선은 한 번 열면 다시 안 뜬다
+    await page.reload(); await page.waitForFunction(() => !!window.walkoff);
+    expect(await page.evaluate(() => walkoff.ui.buttons.some((b) => b.label === '메뉴 안내'))).toBe(false);
+    await tap(page, '메뉴');
+    await tap(page, '새 소식');
+    await tap(page, '메뉴로');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    expect(await drawnTexts(page)).not.toContain('NEW');   // 읽으면 사라진다
+    expect(errors).toEqual([]);
+  });
+
+  test('메뉴 화면: 내 정보 카드(팀·닉네임·최고 기록·코인)와 새 소식 띠, 놀기·기록·내 것·설정 묶음의 줄마다 원래 화면으로 가고, 닫기(X)·Esc로 닫는다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 1250 } } });
+    await page.evaluate(() => localStorage.setItem('walkoff.best', '5200'));
+    await page.waitForFunction(() => walkoff.wallet.coins === 1250);
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.game.state === 'menu');
+    const texts = await drawnTexts(page);
+    for (const s of ['LG', '테스트', '5,200', '1,250', '새 소식', '놀기', '기록', '내 것', '설정', '9회말 역전 승부', '구종 골라 치기', '최고 5,200', '내 순위 보기', 'LG · 테스트', '코인 1,250', '카카오 로그인됨', '0ms']) expect(texts, s).toContain(s);
+    expect(texts.some((s) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s))).toBe(false);   // 이모지는 쓰지 않는다
+    const go = async (label) => {   // 메뉴를 다시 열고 그 줄을 누른 뒤 간 화면
+      await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
+      await tap(page, label);
+      return page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }));
+    };
+    expect(await go('기록')).toMatchObject({ state: 'records' });
+    expect(await go('이번 주 랭킹')).toMatchObject({ state: 'ranking' });
+    expect(await go('팀·닉네임')).toMatchObject({ state: 'onboard' });
+    expect(await go('상점 · 내 물건')).toMatchObject({ state: 'shop' });
+    expect(await go('내 계정')).toMatchObject({ state: 'account' });
+    expect(await go('타이밍 보정 0ms')).toMatchObject({ state: 'calib' });
+    expect(await go('새 소식')).toMatchObject({ state: 'news' });
+    expect(await go('연습')).toMatchObject({ state: 'windup', mode: 'practice' });
+    expect(await go('닫기')).toMatchObject({ state: 'title' });
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+    expect(errors).toEqual([]);
+  });
+
+  test('메뉴 크기: 360×640·390×844·1440×900·1920×1080에서 줄이 화면 안이고 안 겹치며 시작 화면 코인과 메뉴 단추도 안 겹친다. 더 낮으면(360×480) 끌어 넘기고, 끄는 동안에는 줄이 안 눌린다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '창 크기를 바꿔 가며 보므로 PC에서만 본다');
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 123456 } } });   // 코인 자리가 가장 넓을 때
+    await page.waitForFunction(() => walkoff.wallet.coins === 123456);
+    const overlaps = (list) => { const out = []; list.forEach((a, i) => list.slice(i + 1).forEach((b) => { if (a.r.x < b.r.x + b.r.w - 0.5 && b.r.x < a.r.x + a.r.w - 0.5 && a.r.y < b.r.y + b.r.h - 0.5 && b.r.y < a.r.y + a.r.h - 0.5) out.push(`${a.label}/${b.label}`); })); return out; };
+    const buttons = () => page.evaluate(() => walkoff.ui.buttons.map((b) => ({ label: b.label, r: { ...b.r } })));
+    for (const [w, h] of [[360, 640], [390, 844], [1440, 900], [1920, 1080]]) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.evaluate(() => walkoff.goTitle());
+      await page.waitForFunction((w) => walkoff.view.w === w && walkoff.ui.buttons.some((b) => b.label === '코인'), w);
+      expect(overlaps(await buttons()), `시작 화면 ${w}×${h}`).toEqual([]);
+      await page.evaluate(() => walkoff.openMenu());
+      await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '새 소식'));
+      const list = await buttons();
+      expect(list.filter((b) => b.r.x < 0 || b.r.y < 0 || b.r.x + b.r.w > w || b.r.y + b.r.h > h).map((b) => b.label), `${w}×${h}`).toEqual([]);
+      expect(overlaps(list), `${w}×${h}`).toEqual([]);
+      expect(await page.evaluate(() => walkoff.menu.max), `${w}×${h}`).toBe(0);   // 넘기지 않아도 다 들어간다
+      expect(list.filter((b) => !['닫기', '새 소식'].includes(b.label)).every((b) => b.r.h >= 34), `${w}×${h}`).toBe(true);
+    }
+    await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 8줄)
+    await expect.poll(() => page.evaluate(() => walkoff.menu.max)).toBeGreaterThan(0);
+    const box = await page.locator('canvas').boundingBox(), row = (await buttons()).find((b) => b.label === '연습').r;
+    await page.mouse.move(box.x + row.x + 40, box.y + row.y + row.h / 2); await page.mouse.down();
+    await page.mouse.move(box.x + row.x + 40, box.y + row.y + row.h / 2 - 200, { steps: 6 }); await page.mouse.up();
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, scroll: walkoff.menu.scroll === walkoff.menu.max }))).toEqual({ state: 'menu', scroll: true });   // 끌면 넘어가고 줄은 안 눌린다
+    await tap(page, '기록');   // 누르고 바로 떼면 그 줄
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('records');
     expect(errors).toEqual([]);
   });
 
@@ -1531,8 +1625,8 @@ test.describe('화면', () => {
   test('메뉴에서 팀·닉네임을 바꾸고 엔터로 저장한다. 로그인했으면 계정에도 적는다', async ({ page }) => {
     const errors = await open(page, '?seed=42', { login: true });
     await tap(page, '메뉴');
-    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀·닉네임 바꾸기'));
-    await tap(page, '팀·닉네임 바꾸기');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀·닉네임'));
+    await tap(page, '팀·닉네임');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '저장'));
     await tap(page, 'NC 다이노스');
     const nick = page.locator('input[aria-label="닉네임"]');

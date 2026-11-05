@@ -1737,6 +1737,7 @@ function tint(hex, k) {
   const n = parseInt(hex.slice(1), 16);
   return `#${[16, 8, 0].map((s) => clamp(Math.round(((n >> s) & 255) * k), 0, 255).toString(16).padStart(2, '0')).join('')}`;
 }
+const hexAlpha = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };   // '#a50034' → 투명도 a
 
 // 타자는 팀 색 유니폼을 입는다. 조명을 등지고 있어서 상의는 조금 어둡게 칠한다.
 // 팀을 고르는 화면에서는 고르는 중인 팀을 미리 입혀 보여 준다
@@ -4186,9 +4187,6 @@ function addButton(r, label, style, onTap) {
     const tw = ctx.measureText(label).width;
     ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(r.x + r.w / 2 - tw / 2, r.y + r.h / 2 + 10, tw, 1);
   } else if (style === 'none') {   // 그리지 않고 누르는 자리만(랭킹 줄)
-  } else if (style === 'menuIcon') {
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    for (let i = 0; i < 3; i++) ctx.fillRect(r.x + r.w * 0.25, r.y + r.h * (0.32 + i * 0.18) - 1.5, r.w * 0.5, 3);
   } else button(r, label, style);
   ui.buttons.push({ r, onTap, label });
 }
@@ -5829,20 +5827,26 @@ function drawTitle(time) {
   const line = hot ? (streak >= 2 ? `${streak}일 연속 중 · 오늘 치면 ${streak + 1}일` : '오늘 치면 2일 연속')
     : `${streak >= 2 ? `${streak}일 연속 · ` : ''}주간 랭킹은 이번 주 최고 기록이에요`;
   text(line, cx, cy + (m ? 196 : 250), { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
-  const s = 40, pad = m ? 8 : 14;
-  addButton({ x: view.w - pad - s, y: pad, w: s, h: s }, '메뉴', 'menuIcon', () => { game.state = 'menu'; });
-  if (newsUnread()) redDot(view.w - pad - 7, pad + 8, 5);   // 안 읽은 새 소식
+  const mb = menuButtonRect();   // 오른쪽 위 '≡ 메뉴'(안 읽은 새 소식은 NEW), 메뉴를 한 번도 안 연 사람에게는 아래 말풍선
+  drawMenuButton(mb, newsUnread());
+  ui.buttons.push({ r: mb.hit, label: '메뉴', onTap: openMenu });
+  if (hasPlayed() && !store.get('menuSeen', false)) ui.buttons.push({ r: drawMenuBubble(mb), label: '메뉴 안내', onTap: openMenu });
   if (loggedIn() && wallet.coins != null) {   // 메뉴 옆 코인. 누르면 상점
-    const r = drawCoinPill(view.w - pad - s - 8, pad + s / 2, wallet.coins, 'right');
+    const r = drawCoinPill(mb.x - 8, mb.y + mb.h / 2, wallet.coins, 'right');
     ui.buttons.push({ r, label: '코인', onTap: () => openShop('shop') });
   }
 }
 
 // ===== 새 소식(2026-11-04 사용자 결정, 문구는 인프라 세션이 쓰고 사용자가 확인) =====
-// 메뉴(≡)의 '새 소식'에 화면이 바뀐 업데이트를 날짜별 불릿으로 최근 NEWS_MAX개만 둔다. 안 읽은 소식이 있으면 시작 화면 ≡ 버튼과 메뉴 항목에
-// 빨간 점(시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
+// 메뉴(≡)의 '새 소식'에 화면이 바뀐 업데이트를 날짜별 불릿으로 최근 NEWS_MAX개만 둔다. 안 읽은 소식이 있으면 시작 화면 '≡ 메뉴' 단추와 메뉴의
+// 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
+  { id: '2026-11-05b', label: '11/5 오후', items: [
+    "시작 화면의 '≡ 메뉴' 단추가 잘 보이게 바뀌었어요. 새 소식이 있으면 NEW가 떠요",
+    '메뉴를 새로 꾸몄어요. 맨 위에 내 팀과 최고 기록이 보이고, 놀기·기록·내 것·설정으로 묶었어요',
+    'PC에서는 메뉴가 두 칸으로 넓게 보여요',
+  ] },
   { id: '2026-11-05a', label: '11/5', items: [
     '홈런·큰 뜬공은 공이 떨어지면 결과와 점수가 한 번에 나와요',
     '카메라가 날아가는 공을 끝까지 따라가요',
@@ -5894,7 +5898,6 @@ function openNews() {
   news.scroll = 0;
   if (NEWS.length) store.set('newsSeen', NEWS[0].id);
 }
-const redDot = (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = '#ff4d4f'; ctx.fill(); };
 // 폭 w(px)에 맞춰 띄어쓰기 자리에서 줄을 나눈다(지금 ctx.font 기준)
 function wrapWords(str, w) {
   const lines = [''];
@@ -5934,36 +5937,201 @@ function drawNews() {
     ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(x0 + w + 8, clipTop, 3, room);
     ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.fillRect(x0 + w + 8, barY, 3, barH);
   }
-  addButton({ x: cx - 80, y: view.h - (m ? 96 : 104), w: 160, h: 46 }, '메뉴로', 'primary', () => { game.state = 'menu'; });
+  addButton({ x: cx - 80, y: view.h - (m ? 96 : 104), w: 160, h: 46 }, '메뉴로', 'primary', openMenu);
 }
 
+// ===== 메뉴(2026-11-05 사용자 '햄버거 메뉴가 잘 안 보이는 사람도 있다, 가독성 좋게, 꾸며 줬으면' → 오른쪽 세션 시안 A·말풍선) =====
+// 시작 화면 오른쪽 위는 '≡ 메뉴' 알약 단추이고(전에는 배경 없는 흰 줄 셋) 안 읽은 새 소식이 있으면 오른쪽 위에 NEW를 단다.
+// 메뉴를 한 번도 안 연 사람에게는 단추 아래 말풍선을 띄운다(walkoff.menuSeen. 새 소식 점처럼 처음 온 사람은 빼고 쳐 본 사람만).
+// 메뉴는 내 정보 카드(팀 배지·닉네임·칩·닫기) + 새 소식 띠 + 놀기·기록·내 것·설정 묶음(금색 선 아이콘·이름·오른쪽 값)이고 PC는 780px 두 칸,
+// 폰은 한 칸이다. 낮은 화면은 줄을 줄이고(MENU_SIZE.compact), 그래도 넘치면 끌어 넘긴다(그때는 줄을 뗄 때 누른다). 이모지는 쓰지 않는다
+const menu = { scroll: 0, max: 0, drag: null };
+function openMenu() {
+  game.state = 'menu'; menu.scroll = 0;
+  if (!store.get('menuSeen', false)) store.set('menuSeen', 1);   // 말풍선은 메뉴를 한 번 열면 다시 안 띄운다
+}
+// 아이콘: 24칸 SVG 경로(시안 mock.html, 원·둥근 네모도 경로로 바꿨다)를 금색 2px 선으로 그린다
+const circlePath = (cx, cy, r) => `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0z`;
+const MENU_ICONS = Object.fromEntries(Object.entries({
+  scn: 'M6 5h12v8l-6 6-6-6z',
+  practice: `M5 19L16 8M14 6l4 4${circlePath(18.5, 17.5, 2.5)}`,
+  rec: 'M8 4h8v5a4 4 0 0 1-8 0zM12 13v4M8 20h8M16 6h3a3 3 0 0 1-3 3M8 6H5a3 3 0 0 0 3 3',
+  rank: 'M4 20v-6h5v6M9 20V9h6v11M15 20v-8h5v8',
+  team: 'M8 4l-5 3 2 4 3-1v10h8V10l3 1 2-4-5-3a4 4 0 0 1-8 0z',
+  shop: circlePath(12, 12, 8) + circlePath(12, 12, 4.5),
+  me: `${circlePath(12, 8, 4)}M4 21a8 8 0 0 1 16 0`,
+  calib: `${circlePath(12, 13, 7)}M12 13V9M10 3h4M18 6l1.5-1.5`,
+  vib: 'M10 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM4 9v6M20 9v6',
+  close: 'M6 6l12 12M18 6L6 18',
+}).map(([k, d]) => [k, new Path2D(d)]));
+function menuIcon(name, x, y, size, color = '#f2c94c') {   // (x, y)가 왼쪽 위인 size px 칸에
+  ctx.save(); ctx.translate(x, y); ctx.scale(size / 24, size / 24);
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke(MENU_ICONS[name]);
+  ctx.restore();
+}
+// 지금 ctx.font로 폭 w를 넘으면 끝을 '…'로 줄인다
+function fitText(str, w) {
+  if (ctx.measureText(str).width <= w) return str;
+  let s = str;
+  while (s.length > 1 && ctx.measureText(`${s}…`).width > w) s = s.slice(0, -1);
+  return `${s.trimEnd()}…`;
+}
+// 빨간 NEW 배지. x는 왼쪽 끝(right면 오른쪽 끝), cy는 세로 가운데. 폭을 돌려준다
+function drawNewBadge(x, cy, align = 'left') {
+  ctx.font = font(10, 800);
+  const w = ctx.measureText('NEW').width + 12, h = 16, x0 = align === 'right' ? x - w : x;
+  roundRect(x0, cy - h / 2, w, h, 8); ctx.fillStyle = '#ff4d4d'; ctx.fill();
+  text('NEW', x0 + w / 2, cy + 0.5, { size: 10, weight: 800 });
+  return w;
+}
+// 시작 화면 '≡ 메뉴' 단추: 그리는 알약(PC 44·폰 40px)과 누르는 자리 hit(위아래로 넓혀 48px)
+function menuButtonRect() {
+  const m = view.mobile, h = m ? 40 : 44, y = m ? 10 : 12;
+  ctx.font = font(m ? 15 : 16, 800);
+  const w = 13 + 18 + 9 + ctx.measureText('메뉴').width + 16, x = view.w - (m ? 10 : 14) - w;
+  return { x, y, w, h, hit: { x, y: y - (48 - h) / 2, w, h: 48 } };
+}
+function drawMenuButton(b, unread) {
+  const cy = b.y + b.h / 2;
+  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 2;
+  roundRect(b.x, b.y, b.w, b.h, b.h / 2); ctx.fillStyle = 'rgba(6,14,28,0.85)'; ctx.fill(); ctx.restore();
+  roundRect(b.x, b.y, b.w, b.h, b.h / 2); ctx.strokeStyle = 'rgba(242,201,76,0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#f2c94c';
+  for (let i = 0; i < 3; i++) { roundRect(b.x + 13, cy - 7.25 + i * 6, 18, 2.5, 1.25); ctx.fill(); }   // 줄 셋
+  text('메뉴', b.x + 40, cy + 1, { size: view.mobile ? 15 : 16, weight: 800, align: 'left' });
+  if (unread) drawNewBadge(b.x + b.w + 6, b.y, 'right');   // 안 읽은 새 소식
+}
+// 메뉴를 한 번도 안 연 사람에게 단추 아래 흰 말풍선(꼭지는 단추 가운데를 가리킨다). 누르는 자리(꼭지는 빼고, 단추 누르는 자리와 안 겹치게)를 돌려준다
+function drawMenuBubble(b) {
+  const m = view.mobile, size = m ? 13 : 14, str = '끝내기 상황·연습·랭킹은 여기 있어요';
+  ctx.font = font(size, 700);
+  const w = ctx.measureText(str).width + 26, h = size + 18, x = view.w - (m ? 8 : 12) - w, y = b.y + b.h + (m ? 10 : 12), ax = clamp(b.x + b.w / 2, x + 16, x + w - 16);
+  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 4;
+  roundRect(x, y, w, h, 10); ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.restore();
+  ctx.beginPath(); ctx.moveTo(ax - 7, y + 0.5); ctx.lineTo(ax, y - 7); ctx.lineTo(ax + 7, y + 0.5); ctx.closePath(); ctx.fill();
+  text(str, x + w / 2, y + h / 2 + 0.5, { size, weight: 700, color: '#141414' });
+  return { x, y, w, h };
+}
+// 크기(시안 mock.html). 낮은 화면은 compact를 덮어쓴다. minRow는 줄을 줄여도 지킬 높이(그보다 낮아야 들어가면 끌어 넘긴다)
+const MENU_SIZE = {
+  pc: { w: 780, top: 64, bottom: 24, side: 16, colGap: 14, headPad: 14, headPadX: 16, badge: 52, badgeFont: 18, nick: 20, chip: 12, newsGap: 10, newsH: 40, newsFont: 14,
+    h3Top: 14, h3Bottom: 6, h3Font: 12, row: 54, gap: 6, rowPad: 14, icon: 34, label: 16, value: 13, foot: 28, footFont: 12, minRow: 40 },
+  mo: { w: Infinity, top: 12, bottom: 12, side: 12, colGap: 0, headPad: 10, headPadX: 12, badge: 44, badgeFont: 16, nick: 17, chip: 11, newsGap: 8, newsH: 34, newsFont: 13,
+    h3Top: 9, h3Bottom: 5, h3Font: 11, row: 44, gap: 5, rowPad: 12, icon: 30, label: 15, value: 12, foot: 24, footFont: 11, minRow: 38 },
+  compact: { top: 8, bottom: 8, headPad: 8, badge: 40, badgeFont: 15, nick: 16, newsGap: 6, newsH: 30, h3Top: 6, h3Bottom: 3, gap: 4, foot: 20, minRow: 34 },
+};
+// 메뉴 자리: 묶음을 PC는 두 칸(놀기·기록 | 내 것·설정), 폰은 한 칸에 놓고 줄 높이를 남는 높이에 맞춘다. max는 넘쳐서 끌어 넘길 길이
+function menuLayout(groups) {
+  const m = view.mobile, cols = m ? [groups] : [groups.slice(0, 2), groups.slice(2)];
+  const heads = Math.max(...cols.map((c) => c.length)), rows = Math.max(...cols.map((c) => c.reduce((n, g) => n + g[1].length, 0)));
+  const size = (compact) => {
+    const c = { ...MENU_SIZE[m ? 'mo' : 'pc'], ...(compact ? MENU_SIZE.compact : {}) };
+    if (!m && !compact) c.top = clamp(view.h * 0.07, 12, c.top);
+    const fixed = c.top + c.headPad * 2 + c.badge + c.newsGap + c.newsH + heads * (c.h3Top + c.h3Font + c.h3Bottom) + c.foot + c.bottom;
+    return { c, fixed, rowH: clamp((view.h - fixed) / rows - c.gap, c.minRow, c.row) };
+  };
+  let L = size(false);
+  if ((view.h - L.fixed) / rows - L.c.gap < L.c.minRow) L = size(true);   // 보통 크기로는 minRow를 못 지키면
+  const W = Math.min(L.c.w, view.w - 2 * L.c.side), height = L.fixed + rows * (L.rowH + L.c.gap);
+  return { ...L, cols, W, x0: (view.w - W) / 2, max: Math.max(0, height - view.h) };
+}
+// 메뉴 한 줄: 아이콘 칸 + 이름 + 오른쪽 값(넘치면 …)
+function drawMenuRow(r, icon, name, value, c) {
+  roundRect(r.x, r.y, r.w, r.h, 12); ctx.fillStyle = 'rgba(10,16,28,0.8)'; ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,0.065)'; ctx.fill();   // 뒤의 경기장이 줄 글자 밑으로 비치지 않게 어두운 바탕부터
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1; ctx.stroke();
+  const is = Math.min(c.icon, r.h - 8), ix = r.x + c.rowPad, iy = r.y + (r.h - is) / 2, lx = ix + is + (view.mobile ? 10 : 12), mid = r.y + r.h / 2 + 0.5;
+  roundRect(ix, iy, is, is, is * 0.3); ctx.fillStyle = 'rgba(242,201,76,0.14)'; ctx.fill();
+  menuIcon(icon, ix + is * 0.2, iy + is * 0.2, is * 0.6);   // 34px 칸에 20px 아이콘
+  text(name, lx, mid, { size: c.label, weight: 800, align: 'left' });
+  const lw = ctx.measureText(name).width;
+  ctx.font = font(c.value, 500);
+  text(fitText(value, r.x + r.w - c.rowPad - (lx + lw + 12)), r.x + r.w - c.rowPad, mid, { size: c.value, weight: 500, color: 'rgba(255,255,255,0.58)', align: 'right' });
+}
+// 내 정보 카드의 칩. parts는 [글자, 색] 조각들(숫자는 금색). 폭을 돌려준다
+function drawMenuChip(x, cy, parts, size) {
+  ctx.font = font(size, 700);
+  const padX = size > 11 ? 9 : 7, w = parts.reduce((s, [str]) => s + ctx.measureText(str).width, 0) + padX * 2, h = size + 8;
+  roundRect(x, cy - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fill();
+  let px = x + padX;
+  for (const [str, color] of parts) { text(str, px, cy + 0.5, { size, weight: 700, color, align: 'left' }); px += ctx.measureText(str).width; }
+  return w;
+}
 function drawMenu() {
-  dim(0.84);
-  const m = view.mobile, cx = view.w / 2, bw = m ? view.w - 64 : 320, bh = m ? 44 : 48;
-  let y = view.h * (m ? 0.14 : 0.18);
-  text('메뉴', cx, y, { size: m ? 22 : 28, weight: 800 });
-  y += m ? 36 : 50;
-  const items = [
-    ['새 소식', openNews, newsUnread()],
-    ['끝내기 상황', () => startGame('scenario')],
-    ['연습', () => startGame('practice')],
-    [`타이밍 보정 ${fmtMs(settings.offset)}`, startCalib],
-    ['기록', () => { game.state = 'records'; }],
-    ['이번 주 랭킹', () => openRanking('title')],
-    ['팀·닉네임 바꾸기', () => openOnboard('menu')],
-    ['상점 · 내 물건', () => openShop('shop')],
-    [loggedIn() ? '내 계정' : '카카오 로그인', openAccount],
+  dim(0.9);   // 시안은 뒤를 흐리게 깔았다. 캔버스 흐림은 사파리에서 무거워서 더 어둡게만
+  const m = view.mobile, best = Number(store.get('best', 0)) || 0, streak = playStreak(), coins = loggedIn() ? wallet.coins : null, t = teamById(settings.team), gold = '#f2c94c';
+  // 묶음: [제목, 줄들]. 줄은 [아이콘, 이름, 오른쪽 값, 누르면, 단추 이름(없으면 이름. 테스트가 이 이름으로 누른다)]
+  const groups = [
+    ['놀기', [['scn', '끝내기 상황', '9회말 역전 승부', () => startGame('scenario')], ['practice', '연습', '구종 골라 치기', () => startGame('practice')]]],
+    ['기록', [['rec', '기록', best > 0 ? `최고 ${best.toLocaleString()}` : '아직 없음', () => { game.state = 'records'; }], ['rank', '이번 주 랭킹', '내 순위 보기', () => openRanking('title')]]],
+    ['내 것', [['team', '팀·닉네임', `${t ? t.short : '팀 없음'} · ${settings.nick || '-'}`, () => openOnboard('menu')],
+      ['shop', '상점 · 내 물건', coins != null ? `코인 ${coins.toLocaleString()}` : '물건 구경', () => openShop('shop')],
+      loggedIn() ? ['me', '내 계정', '카카오 로그인됨', openAccount] : ['me', '카카오 로그인', '랭킹에 이름 올리기', openAccount]]],
+    ['설정', [['calib', '타이밍 보정', fmtMs(settings.offset), startCalib, `타이밍 보정 ${fmtMs(settings.offset)}`],
+      ...(canVibrate ? [['vib', '진동', settings.vibrate ? '켜짐' : '꺼짐', toggleVibrate, settings.vibrate ? '진동 켜짐' : '진동 꺼짐']] : [])]],
   ];
-  if (canVibrate) items.push([settings.vibrate ? '진동 켜짐' : '진동 꺼짐', toggleVibrate]);
-  // 낮은 화면(360×640)에서도 닫기·안내까지 들어가게 항목 간격을 남는 높이로 줄인다(새 소식이 들어와 항목이 10개가 됐다)
-  const step = Math.min(bh + (m ? 10 : 12), (view.h - y - (m ? 92 : 104)) / items.length), h = Math.max(32, Math.min(bh, step - 6));
-  for (const [label, fn, dot] of items) {
-    addButton({ x: cx - bw / 2, y, w: bw, h }, label, 'secondary', fn);
-    if (dot) redDot(cx + bw / 2 - 20, y + h / 2, 5);
-    y += step;
+  const L = menuLayout(groups), c = L.c, { x0, W } = L;
+  menu.max = L.max; menu.scroll = clamp(menu.scroll, 0, menu.max);
+  let y = c.top - menu.scroll;
+  // 내 정보 카드: 팀 배지(팀 색), 닉네임, 칩(최고 기록·연속 기록 2일부터·코인), 오른쪽 닫기
+  const hh = c.headPad * 2 + c.badge, team = t ? t.main : '#24314a', bg = ctx.createLinearGradient(x0, y, x0 + W, y + hh * 0.4);
+  bg.addColorStop(0, hexAlpha(team, 0.55)); bg.addColorStop(0.55, 'rgba(20,26,40,0.9)'); bg.addColorStop(1, 'rgba(20,26,40,0.9)');
+  roundRect(x0, y, W, hh, 16); ctx.fillStyle = bg; ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1; ctx.stroke();
+  const bx = x0 + c.headPadX, by = y + c.headPad, xs = 40, close = { x: x0 + W - c.headPadX - xs, y: y + hh / 2 - xs / 2, w: xs, h: xs };
+  ctx.save(); roundRect(bx, by, c.badge, c.badge, 12); ctx.fillStyle = team; ctx.fill(); ctx.clip();
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx, by + c.badge - 4, c.badge, 4); ctx.restore();   // 배지 아래쪽 그늘
+  text(t ? t.short : '?', bx + c.badge / 2, by + c.badge / 2 + 1, { size: c.badgeFont, weight: 900 });
+  const tx = bx + c.badge + (m ? 11 : 14), soft = 'rgba(255,255,255,0.85)', chips = [];
+  if (best > 0) chips.push([['최고 ', soft], [best.toLocaleString(), gold]]);
+  if (streak >= 2) chips.push([[String(streak), gold], ['일 연속', soft]]);
+  if (coins != null) chips.push([['코인 ', soft], [coins.toLocaleString(), gold]]);
+  ctx.font = font(c.nick, 800);
+  text(fitText(settings.nick || '-', close.x - 10 - tx), tx, chips.length ? by + c.badge * 0.3 : by + c.badge / 2, { size: c.nick, weight: 800, align: 'left' });
+  let chipX = tx;
+  for (const parts of chips) {   // 닫기 단추 앞까지만
+    ctx.font = font(c.chip, 700);
+    if (chipX + parts.reduce((s, [str]) => s + ctx.measureText(str).width, 0) + 18 > close.x - 8) break;
+    chipX += drawMenuChip(chipX, by + c.badge * 0.75, parts, c.chip) + 6;
   }
-  addButton({ x: cx - 70, y: y + 2, w: 140, h: 36 }, '닫기', 'link', goTitle);
-  text('판 수만 익명으로 세고, 이름·계정은 보내지 않아요', cx, y + 58, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.45)' });   // 이용 통계(track) 안내
+  ctx.beginPath(); ctx.arc(close.x + xs / 2, close.y + xs / 2, xs / 2, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fill();
+  menuIcon('close', close.x + 10, close.y + 10, 20, '#ffffff');
+  ui.buttons.push({ r: close, label: '닫기', onTap: goTitle });
+  y += hh + c.newsGap;
+  // 새 소식 띠: 맨 위 소식의 날짜와 첫 줄(넘치면 …), 안 읽었으면 NEW. 누르면 새 소식
+  const nr = { x: x0, y, w: W, h: c.newsH }, nx0 = nr.x + (m ? 12 : 14), ny = nr.y + nr.h / 2, arrowX = nr.x + nr.w - (m ? 12 : 14), ng = ctx.createLinearGradient(nr.x, 0, nr.x + nr.w, 0);
+  ng.addColorStop(0, 'rgba(255,77,77,0.24)'); ng.addColorStop(1, 'rgba(255,77,77,0.05)');
+  roundRect(nr.x, nr.y, nr.w, nr.h, 12); ctx.fillStyle = ng; ctx.fill(); ctx.strokeStyle = 'rgba(255,77,77,0.5)'; ctx.stroke();
+  let nx = nx0 + (newsUnread() ? drawNewBadge(nx0, ny) + 10 : 0);
+  text('새 소식', nx, ny + 0.5, { size: c.newsFont, weight: 800, align: 'left' });
+  nx += ctx.measureText('새 소식').width + 10;
+  text('›', arrowX, ny, { size: c.newsFont + 6, weight: 700, color: 'rgba(255,255,255,0.5)', align: 'right' });
+  if (NEWS.length) { ctx.font = font(c.newsFont, 500); text(fitText(`${NEWS[0].label} · ${NEWS[0].items[0]}`, arrowX - 16 - nx), nx, ny + 0.5, { size: c.newsFont, weight: 500, color: 'rgba(255,255,255,0.7)', align: 'left' }); }
+  ui.buttons.push({ r: nr, label: '새 소식', onTap: openNews });
+  y += nr.h;
+  // 묶음: 금색 제목과 줄들
+  const colW = (W - c.colGap * (L.cols.length - 1)) / L.cols.length;
+  let bottom = y;
+  L.cols.forEach((col, ci) => {
+    const cx = x0 + ci * (colW + c.colGap);
+    let cy = y;
+    for (const [title, rows] of col) {
+      cy += c.h3Top;
+      text(title, cx + 4, cy + c.h3Font / 2, { size: c.h3Font, weight: 800, color: gold, align: 'left' });
+      cy += c.h3Font + c.h3Bottom;
+      for (const [icon, name, value, onTap, label = name] of rows) {
+        const r = { x: cx, y: cy, w: colW, h: L.rowH };
+        drawMenuRow(r, icon, name, value, c);
+        ui.buttons.push({ r, label, onTap });
+        cy += L.rowH + c.gap;
+      }
+    }
+    bottom = Math.max(bottom, cy);
+  });
+  text('판 수만 익명으로 세고, 이름·계정은 보내지 않아요', view.w / 2, bottom + c.foot / 2, { size: c.footFont, weight: 500, color: 'rgba(255,255,255,0.42)' });   // 이용 통계(track) 안내
+  if (menu.max > 0) {   // 넘치면 오른쪽에 위치 막대
+    const barH = Math.max(30, view.h * view.h / (view.h + menu.max)), barY = (view.h - barH) * (menu.scroll / menu.max);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(view.w - 5, 0, 3, view.h);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.fillRect(view.w - 5, barY, 3, barH);
+  }
 }
 
 // [좌타 | 우타] 고르기. cy는 버튼 세로 가운데
@@ -6254,7 +6422,7 @@ function primaryAction(eventTime, x, y) {
   else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime);
   else if (game.state === 'calib') calibTap(eventTime);
   else if (game.state === 'records' && x == null) goTitle();
-  else if (game.state === 'news' && x == null) game.state = 'menu';
+  else if (game.state === 'news' && x == null) openMenu();
   else if (game.state === 'ranking' && x == null) closeRanking();
   else if (canSkip()) skipToBeat();   // 건너뛰게 한 탭은 다음 공으로 넘어가지 않는다
   else if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) next();
@@ -6266,12 +6434,26 @@ function primaryAction(eventTime, x, y) {
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
+  // 넘치는 메뉴(낮은 화면)는 뗄 때 누른다. 끌어 넘기다 손가락 밑의 줄이 눌리지 않게
+  if (game.state === 'menu' && menu.max > 0) { menu.drag = { x: e.clientX, y: e.clientY, s: menu.scroll, t: e.timeStamp, moved: false }; canvas.setPointerCapture?.(e.pointerId); return; }
   primaryAction(e.timeStamp, e.clientX, e.clientY);
 });
-// 새 소식 넘기기: 끌어 올리기와 휠
-canvas.addEventListener('pointermove', (e) => { if (game.state === 'news' && news.drag) news.scroll = clamp(news.drag.s - (e.clientY - news.drag.y), 0, news.max); });
-addEventListener('pointerup', () => { news.drag = null; });
-canvas.addEventListener('wheel', (e) => { if (game.state !== 'news') return; e.preventDefault(); news.scroll = clamp(news.scroll + e.deltaY, 0, news.max); }, { passive: false });
+// 새 소식·메뉴 넘기기: 끌어 올리기와 휠
+canvas.addEventListener('pointermove', (e) => {
+  if (game.state === 'news' && news.drag) news.scroll = clamp(news.drag.s - (e.clientY - news.drag.y), 0, news.max);
+  const d = menu.drag;
+  if (game.state === 'menu' && d) { d.moved ||= Math.abs(e.clientY - d.y) > 8; menu.scroll = clamp(d.s - (e.clientY - d.y), 0, menu.max); }
+});
+addEventListener('pointerup', () => {
+  news.drag = null;
+  const d = menu.drag;
+  menu.drag = null;
+  if (d && !d.moved && game.state === 'menu') primaryAction(d.t, d.x, d.y);
+});
+canvas.addEventListener('wheel', (e) => {
+  if (game.state === 'news') { e.preventDefault(); news.scroll = clamp(news.scroll + e.deltaY, 0, news.max); }
+  else if (game.state === 'menu' && menu.max > 0) { e.preventDefault(); menu.scroll = clamp(menu.scroll + e.deltaY, 0, menu.max); }
+}, { passive: false });
 window.addEventListener('keydown', (e) => {
   if (e.target === noInput) {   // 등번호를 입력하는 중에도 게임 키를 쓰지 않는다. 엔터는 달기
     if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ui.buttons.find((b) => b.label === '달기')?.onTap(); }
@@ -6412,5 +6594,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };
