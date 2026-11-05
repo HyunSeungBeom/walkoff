@@ -8,7 +8,7 @@ import {
   computeRace, DIVE_GLOVE, diveShort, FIELD_REACT, FIELD_SPEED, GRASS_DECEL, groundPath, interceptGround, PCOVER, PCOVER_LEN, PLAY_EX, reachGround,
   RUN_REACH, RUN_TO_1B, SET_REACH, smoothRoute, sprintDist, sprintTime, TOSS_STEP,
 } from './core/race.js';
-import { FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
+import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, HOME_PLATE, HOME_THROW, leadAt, makeScenario as makeScenarioIn, RUN_JUMP, SCENARIOS, RUN_TAU, RUNNER_ROUTES, scenarioPitch, scenarioPoints, SLIDE_BRAKE as BASE_SLIDE, TAG_TIME } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos, hrExtra, hrLiftK, interceptRoll, rollPath, THROW_OUT } from './core/flight.js';
 import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
@@ -19,11 +19,11 @@ import { goKakaoLogin, readLoginReturn } from './infra/auth.js';
 import { onSeedExpired, prefetchSeed, SEED_WAIT_MS, seedTicket, takeSeedTicket, urlSeed } from './infra/seeds.js';
 import { canShareFiles, canShareSheet, copyText, pngFile, shareSheet } from './infra/share.js';
 import { Sound } from './infra/sound.js';
-import { track } from './infra/stats.js';
+import { track, trackSwing } from './infra/stats.js';
 import { ensurePlayerId, store } from './infra/store.js';
 import { canVibrate, vibrate } from './infra/vibrate.js';
-// 규칙은 게임 상태를 모르니 여기서 이어 준다. 판정 결과의 이름·이유 글은 view/text.js가 붙인다
-const judgeSwing = (p, dt, bats) => labelSwing(judgeSwingIn(p, dt, bats), p);
+// 규칙은 게임 상태를 모르니 여기서 이어 준다. 판정 결과의 이름·이유 글은 view/text.js가 붙인다. 조준 판은 조준(aim)을 결과에 같이 남겨 이유 글·다시 보기에 쓴다
+const judgeSwing = (p, dt, bats, aim = null) => labelSwing(Object.assign(judgeSwingIn(p, dt, bats, aim), aim ? { aim } : {}), p);
 const judgeTake = (p, bats = settings.bats) => labelTake(judgeTakeIn(p), p, bats);
 const hrStreakBefore = (i) => hrStreakIn(game.results, i);
 const hitStreakBefore = (i) => hitStreakIn(game.results, i);
@@ -3892,7 +3892,7 @@ const scnDecided = () => game.mode !== 'scenario' || !game.outcome?.scnPlay || g
 function boardView() {
   const early = game.state === 'result' && (game.resultT <= game.revealAt || !scnDecided()), playing = game.state !== 'over' && game.state !== 'title';
   const mode = game.mode === 'scenario' && game.scn ? 'scenario' : game.mode === 'practice' && game.practice ? 'practice' : 'challenge';
-  const v = { mode, label: { challenge: '10구 도전', scenario: '끝내기 상황', practice: '연습' }[game.mode] ?? '', now: playing ? game.i : -1 };
+  const v = { mode, label: game.aim ? '조준 실험' : { challenge: '10구 도전', scenario: '끝내기 상황', practice: '연습' }[game.mode] ?? '', now: playing ? game.i : -1 };
   if (mode === 'scenario') {
     const s = early && game.scnBefore ? game.scnBefore : game.scn, [away, home] = sideNames(), first = game.i === 0 && (game.state === 'windup' || game.state === 'pitch');
     return { ...v, away, home, sa: s.away, sh: s.home, b: s.count.b, s: s.count.s, o: s.outs, bases: s.bases.map(Boolean), note: first ? `${s.label}. 역전하면 끝내기!` : '' };
@@ -4100,7 +4100,9 @@ function drawResultCard() {
   const chips = [];
   if (!r.took) {
     // 정타가 아닌데 ±15ms 안이면 존 밖 공이다. 그냥 '타이밍 정확'이라 쓰면 정타로 읽혀서, 잡혔을 때 '정타인데 아웃'으로 들렸다
-    const label = r.perfect ? '정타!' : Math.abs(r.dt) <= PERFECT_MS ? '타이밍 정확 · 존 밖 공' : `${Math.abs(r.dt)}ms ${r.dt < 0 ? '빠름' : '늦음'}`;
+    // 조준 판은 과녁을 벗어나도 정타가 아니다(그때 '존 밖 공'이라 쓰면 틀린 말이다)
+    const why = r.aimZone === 'miss' ? '과녁 밖' : r.aimZone === 'edge' ? '과녁 가장자리' : '존 밖 공';
+    const label = r.perfect ? '정타!' : Math.abs(r.dt) <= PERFECT_MS ? `타이밍 정확 · ${why}` : `${Math.abs(r.dt)}ms ${r.dt < 0 ? '빠름' : '늦음'}`;
     chips.push(r.perfect ? [label, '#f2c94c', '#1b1405'] : [label, 'rgba(0,0,0,0.5)', '#fff']);
   }
   if (r.streakBonus) chips.push([`연속 홈런 +${r.streakBonus.toLocaleString()}`, 'rgba(255,90,40,0.85)', '#ffffff']);
@@ -5955,6 +5957,7 @@ const circlePath = (cx, cy, r) => `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a$
 const MENU_ICONS = Object.fromEntries(Object.entries({
   scn: 'M6 5h12v8l-6 6-6-6z',
   practice: `M5 19L16 8M14 6l4 4${circlePath(18.5, 17.5, 2.5)}`,
+  aim: `${circlePath(12, 12, 7)}M12 2v5M12 17v5M2 12h5M17 12h5`,
   rec: 'M8 4h8v5a4 4 0 0 1-8 0zM12 13v4M8 20h8M16 6h3a3 3 0 0 1-3 3M8 6H5a3 3 0 0 0 3 3',
   rank: 'M4 20v-6h5v6M9 20V9h6v11M15 20v-8h5v8',
   team: 'M8 4l-5 3 2 4 3-1v10h8V10l3 1 2-4-5-3a4 4 0 0 1-8 0z',
@@ -6035,15 +6038,22 @@ function menuLayout(groups) {
   const W = Math.min(L.c.w, view.w - 2 * L.c.side), height = L.fixed + rows * (L.rowH + L.c.gap);
   return { ...L, cols, W, x0: (view.w - W) / 2, max: Math.max(0, height - view.h) };
 }
-// 메뉴 한 줄: 아이콘 칸 + 이름 + 오른쪽 값(넘치면 …)
-function drawMenuRow(r, icon, name, value, c) {
+// 메뉴 한 줄: 아이콘 칸 + 이름(+ 파란 꼬리표 tag) + 오른쪽 값(넘치면 …)
+function drawMenuRow(r, icon, name, value, c, tag = '') {
   roundRect(r.x, r.y, r.w, r.h, 12); ctx.fillStyle = 'rgba(10,16,28,0.8)'; ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,0.065)'; ctx.fill();   // 뒤의 경기장이 줄 글자 밑으로 비치지 않게 어두운 바탕부터
   ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1; ctx.stroke();
   const is = Math.min(c.icon, r.h - 8), ix = r.x + c.rowPad, iy = r.y + (r.h - is) / 2, lx = ix + is + (view.mobile ? 10 : 12), mid = r.y + r.h / 2 + 0.5;
   roundRect(ix, iy, is, is, is * 0.3); ctx.fillStyle = 'rgba(242,201,76,0.14)'; ctx.fill();
   menuIcon(icon, ix + is * 0.2, iy + is * 0.2, is * 0.6);   // 34px 칸에 20px 아이콘
   text(name, lx, mid, { size: c.label, weight: 800, align: 'left' });
-  const lw = ctx.measureText(name).width;
+  let lw = ctx.measureText(name).width;
+  if (tag) {   // 꼬리표('실험')
+    ctx.font = font(11, 800);
+    const tw = ctx.measureText(tag).width + 12, tx = lx + lw + 8;
+    roundRect(tx, mid - 9, tw, 18, 6); ctx.fillStyle = 'rgba(80,170,255,0.2)'; ctx.fill();
+    text(tag, tx + tw / 2, mid, { size: 11, weight: 800, color: '#8cc8ff' });
+    lw += 8 + tw;
+  }
   ctx.font = font(c.value, 500);
   text(fitText(value, r.x + r.w - c.rowPad - (lx + lw + 12)), r.x + r.w - c.rowPad, mid, { size: c.value, weight: 500, color: 'rgba(255,255,255,0.58)', align: 'right' });
 }
@@ -6059,9 +6069,10 @@ function drawMenuChip(x, cy, parts, size) {
 function drawMenu() {
   dim(0.9);   // 시안은 뒤를 흐리게 깔았다. 캔버스 흐림은 사파리에서 무거워서 더 어둡게만
   const m = view.mobile, best = Number(store.get('best', 0)) || 0, streak = playStreak(), coins = loggedIn() ? wallet.coins : null, t = teamById(settings.team), gold = '#f2c94c';
-  // 묶음: [제목, 줄들]. 줄은 [아이콘, 이름, 오른쪽 값, 누르면, 단추 이름(없으면 이름. 테스트가 이 이름으로 누른다)]
+  // 묶음: [제목, 줄들]. 줄은 [아이콘, 이름, 오른쪽 값, 누르면, 단추 이름(없으면 이름. 테스트가 이 이름으로 누른다), 꼬리표]
   const groups = [
-    ['놀기', [['scn', '끝내기 상황', '9회말 역전 승부', () => startGame('scenario')], ['practice', '연습', '구종 골라 치기', () => startGame('practice')]]],
+    ['놀기', [['scn', '끝내기 상황', '9회말 역전 승부', () => startGame('scenario')], ['practice', '연습', '구종 골라 치기', () => startGame('practice')],
+      ['aim', '조준 타격', '공을 겨눠 치기', () => startGame('challenge', false, { aim: true }), '조준 타격(실험)', '실험']]],
     ['기록', [['rec', '기록', best > 0 ? `최고 ${best.toLocaleString()}` : '아직 없음', () => { game.state = 'records'; }], ['rank', '이번 주 랭킹', '내 순위 보기', () => openRanking('title')]]],
     ['내 것', [['team', '팀·닉네임', `${t ? t.short : '팀 없음'} · ${settings.nick || '-'}`, () => openOnboard('menu')],
       ['shop', '상점 · 내 물건', coins != null ? `코인 ${coins.toLocaleString()}` : '물건 구경', () => openShop('shop')],
@@ -6117,9 +6128,9 @@ function drawMenu() {
       cy += c.h3Top;
       text(title, cx + 4, cy + c.h3Font / 2, { size: c.h3Font, weight: 800, color: gold, align: 'left' });
       cy += c.h3Font + c.h3Bottom;
-      for (const [icon, name, value, onTap, label = name] of rows) {
+      for (const [icon, name, value, onTap, label = name, tag] of rows) {
         const r = { x: cx, y: cy, w: colW, h: L.rowH };
-        drawMenuRow(r, icon, name, value, c);
+        drawMenuRow(r, icon, name, value, c, tag);
         ui.buttons.push({ r, label, onTap });
         cy += L.rowH + c.gap;
       }
@@ -6150,12 +6161,12 @@ function drawGameOver() {
   const m = view.mobile, cx = view.w / 2, s = game.summary;
   let y = view.h * 0.19;
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
-  text(`10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
+  text(game.aim ? '조준 타격(실험)' : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
   y += m ? 54 : 70;
   text(s.score.toLocaleString(), cx, y, { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
   y += m ? 50 : 64;
-  const best = game.mode === 'challenge';
-  text((best ? (game.newBest ? '새 최고 기록!' : `최고 기록 ${game.best.toLocaleString()}점`) : rankOf(s.score)) + coinNote(), cx, y,
+  const best = game.mode === 'challenge', kind = game.aim ? '조준 최고 기록' : '최고 기록';   // 조준 판은 이 기기 조준 최고 기록(walkoff.aimBest)
+  text((best ? (game.newBest ? `새 ${kind}!` : `${kind} ${game.best.toLocaleString()}점`) : rankOf(s.score)) + coinNote(), cx, y,
     { size: m ? 18 : 22, color: best && game.newBest ? '#f2c94c' : '#fff' });
   y += m ? 40 : 50;
   const lights = s.lights.split(''), lg = Math.min(m ? 30 : 36, (m ? view.w - 70 : 520) / Math.max(1, lights.length - 1));
@@ -6164,14 +6175,18 @@ function drawGameOver() {
   text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
   y += m ? 38 : 48;
   const bw = m ? view.w - 48 : 340;
-  if (game.mode === 'challenge' && settings.team) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인)
+  if (game.aim) { text('실험판이라 랭킹·코인·연속 기록에는 안 올라가요', cx, y, { size: m ? 13 : 15, weight: 600, color: 'rgba(255,255,255,0.6)' }); y += m ? 30 : 36; }
+  else if (game.mode === 'challenge' && settings.team) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인)
     const lw = Math.min(view.w - 32, 420);
     addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
     y += m ? 30 : 36;
   }
   drawBatsToggle(y + 19);
   y += 38 + 18;
-  drawRetryShareButtons(y, bw, () => startGame(game.mode));
+  if (game.aim) {   // 조준 판은 공유하지 않는다
+    addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '다시 하기', 'primary', restartGame);
+    addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
+  } else drawRetryShareButtons(y, bw, restartGame);
 }
 
 // ===== 게임 진행 =====
@@ -6180,10 +6195,11 @@ function drawGameOver() {
 // 주소 끝 ?seed=숫자(infra/seeds.js의 urlSeed)가 있으면 그 시드, 없으면 지금 시각으로
 const seedFromUrl = () => urlSeed() ?? (Date.now() % 2147483647);
 
-// mode: 'challenge'(10구 도전, 매번 다른 공) | 'scenario'(끝내기 상황) | 'practice'(연습)
+// mode: 'challenge'(10구 도전, 매번 다른 공) | 'scenario'(끝내기 상황) | 'practice'(연습). opts.aim이면 10구 규칙의 조준 타격(실험)
 // 로그인한 10구 도전은 서버가 내준 시드로 친다. 받아 둔 것이 없으면(막 열었을 때) 받을 때까지 잠깐 기다리고, 그동안 누른 것은 받지 않는다
-function startGame(mode, waited = false) {
-  const ranked = (mode === 'challenge' || mode === 'scenario') && loggedIn() && urlSeed() == null;   // 끝내기 상황도 서버 시드로 쳐야 코인을 받는다(2026-11-04)
+function startGame(mode, waited = false, opts = {}) {
+  const aim = mode === 'challenge' && !!opts.aim;   // 조준 판은 랭킹에 안 올라가서 서버 시드가 필요 없다
+  const ranked = (mode === 'challenge' || mode === 'scenario') && loggedIn() && urlSeed() == null && !aim;   // 끝내기 상황도 서버 시드로 쳐야 코인을 받는다(2026-11-04)
   if (ranked && !waited && prefetchSeed() && !seedTicket.ready) {   // prefetchSeed는 받아 둔 것이 없거나 오래됐으면 새로 받기 시작한다
     const from = game.state, slow = setTimeout(() => toast('공을 받는 중…'), 400);
     game.waitingSeed = true;
@@ -6191,11 +6207,12 @@ function startGame(mode, waited = false) {
       clearTimeout(slow);
       game.waitingSeed = false;
       if (game.toast?.text === '공을 받는 중…') game.toast = null;
-      if (game.state === from) startGame(mode, true);   // 기다리는 동안 다른 화면으로 갔으면 시작하지 않는다
+      if (game.state === from) startGame(mode, true, opts);   // 기다리는 동안 다른 화면으로 갔으면 시작하지 않는다
     });
     return;
   }
   game.mode = mode;
+  game.aim = aim; game.aims = [];
   game.ticket = ranked ? takeSeedTicket() : null;
   game.fixedSeed = mode === 'challenge' && urlSeed() != null;
   game.seed = game.ticket?.seed ?? seedFromUrl();
@@ -6218,8 +6235,10 @@ function startGame(mode, waited = false) {
     game.seq.push(nextPracticePitch());
   } else game.seq = makeSequence(game.seed, game.throws === 'L');
   startPitch();
-  track('start', game.mode);
+  track('start', game.aim ? 'aim' : game.mode);
 }
+// 지금 판과 같은 모드로 처음부터(조준 판이면 조준 판으로)
+const restartGame = () => startGame(game.mode, false, { aim: game.aim });
 
 function startPitch() {
   Object.assign(game, { state: 'windup', t: -0.5, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false });
@@ -6230,13 +6249,64 @@ function goTitle() { Object.assign(game, { state: 'title', t: 0, resultT: 0, out
 
 const ballTime = () => game.t - WINDUP;
 
-function swing(eventTime) {
+// ===== 조준 타격(실험, 2026-11-05 사용자 아이디어·결정, 계획 ~/.claude/plans/piped-bouncing-bird.md) =====
+// 메뉴 '조준 타격(실험)'은 10구 도전과 같은 규칙인데(game.mode 'challenge', game.aim) 타이밍과 함께 공이 지나는 자리를 겨눠야 한다.
+// PC는 마우스로 겨누고 클릭(스페이스바는 마지막 마우스 자리, 움직인 적이 없으면 존 가운데)으로, 폰은 누르면 손가락 AIM_LIFT px 위에 커서가 뜨고
+// 끌어 맞춘 뒤 떼는 순간 친다(손가락 하나만, 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공). 과녁은 가로로 긴 타원(m, 판정은 core AIM).
+// 랭킹·서버 시드·연속 기록·최고 기록·코인·공유에는 넣지 않고 이 기기 조준 최고 기록(walkoff.aimBest)만 남긴다. 통계는 모드 'aim'으로 센다
+const AIM_RADIUS = { mouse: { x: 0.10, y: 0.06 }, touch: { x: 0.10, y: 0.06 } };   // 마우스·터치를 따로 맞출 수 있게 나눠 둔다(처음엔 같다)
+const AIM_LIFT = 80;
+const aimPointer = { x: 0, y: 0, moved: false, touch: null };   // 마우스가 있는 자리, 누르고 있는 손가락 { id, x, y }
+// 지금 커서 자리(화면 px)와 과녁 종류(touch면 터치 과녁)
+function aimCursor() {
+  if (aimPointer.touch) return { x: aimPointer.touch.x, y: aimPointer.touch.y - AIM_LIFT, kind: 'touch' };
+  if (aimPointer.moved) return { x: aimPointer.x, y: aimPointer.y, kind: 'mouse' };
+  const c = project(0, (ZONE.top + ZONE.bottom) / 2, 0);
+  return { x: c.x, y: c.y, kind: 'mouse' };
+}
+// 커서와 공이 지나는 자리(홈플레이트 앞면의 p.tx·p.ty, 지금 화면 밀기 그대로)의 차이를 그 깊이의 m로 바꿔 과녁 반지름으로 나눈다.
+// x·y는 판정에 넘길 과녁 비율(오른쪽·위가 +), dx·dy는 m, wx·wy는 겨눈 자리(다시 보기·결과 화면에 그린다)
+function aimFrom(at, p) {
+  const c = project(p.tx, p.ty, 0), R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'];
+  const dx = (at.x - c.x) / c.s, dy = (c.y - at.y) / c.s;
+  return { x: dx / R.x, y: dy / R.y, dx, dy, wx: p.tx + dx, wy: p.ty + dy, kind: at.kind };
+}
+
+// 과녁: 가로로 긴 타원(AIM_RADIUS, 홈플레이트 앞면 깊이로 잰 px)과 가운데 sweet(정타가 나는 곳), 가운데 점. at은 화면 px
+function drawAimCursor(at, alpha = 1) {
+  const z = project(0, 0.8, 0);
+  if (!z) return;
+  const R = AIM_RADIUS[at.kind === 'touch' ? 'touch' : 'mouse'], rx = R.x * z.s, ry = R.y * z.s;
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.beginPath(); ctx.ellipse(at.x, at.y, rx * AIM.sweet, ry * AIM.sweet, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(127,227,255,0.22)'; ctx.fill();
+  ctx.beginPath(); ctx.ellipse(at.x, at.y, rx, ry, 0, 0, Math.PI * 2); ctx.strokeStyle = '#7fe3ff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.arc(at.x, at.y, 2.5, 0, Math.PI * 2); ctx.fillStyle = '#7fe3ff'; ctx.fill();
+  ctx.restore();
+}
+// 조준 판: 투구 중에는 커서(PC는 마우스 자리, 폰은 누르고 있을 때만), 결과·다시 보기에서는 겨눈 자리와 공이 지난 자리를 점선으로 잇는다
+const finePointer = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
+function drawAimLayer(p) {
+  if (camMoved() || !p) return;
+  if (game.state === 'windup' || game.state === 'pitch') { if (aimPointer.touch || finePointer) drawAimCursor(aimCursor()); return; }
+  const a = game.aims[game.i], at = a && game.state === 'result' ? project(a.wx, a.wy, 0) : null, c = at && project(p.tx, p.ty, 0);
+  if (!c) return;
+  ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(at.x, at.y); ctx.lineTo(c.x, c.y); ctx.stroke(); ctx.restore();
+  drawAimCursor({ x: at.x, y: at.y, kind: a.kind }, 0.85);
+  ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(3, BALL_R * c.s), 0, Math.PI * 2); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke();   // 공이 지난 자리
+}
+
+// input: 무엇으로 쳤는지('mouse'·'touch'·'key', 스윙 통계). at: 조준 판에서 휘두른 자리(화면 px, 없으면 지금 커서)
+function swing(eventTime, input = 'key', at = null) {
   const p = game.seq[game.i];
   const bt = ballTime() + Math.max(0, (eventTime - game.clockAt) / 1000);
   game.swingAt = bt;
   const dtMs = Math.round((bt - p.T) * 1000 - settings.offset);
   if (game.mode === 'scenario') game.moves[game.i] = dtMs;
-  const r = judgeSwing(p, dtMs, settings.bats);
+  const aim = game.aim ? aimFrom(at ?? aimCursor(), p) : null;
+  if (aim) game.aims[game.i] = aim;
+  const r = judgeSwing(p, dtMs, settings.bats, aim);
+  if (game.mode === 'challenge') trackSwing(game.aim ? 'aim' : 'challenge', input, r);   // 10구는 지금 조작의 기준선
   if (game.mode === 'challenge' && r.hit) {   // 연속 홈런·연속 안타 보너스 중 큰 쪽 하나
     const hits = hitStreakBefore(game.i) + 1, hb = hitStreakBonus(hits);
     if (r.kind === 'hr') { r.streak = hrStreakBefore(game.i) + 1; r.streakBonus = hrStreakBonus(r.streak); }
@@ -6265,7 +6335,7 @@ function celebrate(r) {
 }
 
 function finish(r) {
-  if (game.mode !== 'practice') recordPitch(game.seq[game.i], r);
+  if (game.mode !== 'practice' && !game.aim) recordPitch(game.seq[game.i], r);   // 조준 판(실험)은 기록 화면의 구종별 기록에 섞지 않는다
   if (game.mode === 'practice') {
     game.gained = 0;
     const pr = game.practice;
@@ -6324,7 +6394,12 @@ function recordGame() {
   if (game.recorded) return;
   game.recorded = true;
   game.summary = { ...gameSummary(), bats: settings.bats, date: today() };
-  if (game.mode === 'challenge') {
+  if (game.aim) {   // 조준 타격(실험): 연속 기록·최고 기록·랭킹·코인에 넣지 않고 이 기기 조준 최고 기록만
+    const best = store.get('aimBest', 0);
+    game.newBest = game.score > best;
+    game.best = Math.max(best, game.score);
+    if (game.newBest) store.set('aimBest', game.score);
+  } else if (game.mode === 'challenge') {
     store.set('played.' + today(), 1);   // 끝까지 친 날(연속 기록)
     const best = store.get('best', 0);
     game.newBest = game.score > best;
@@ -6333,13 +6408,13 @@ function recordGame() {
     if (game.newBest) store.set('best', game.score);
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
-  track('end', game.mode);
+  track('end', game.aim ? 'aim' : game.mode);
 }
 
 function finishGame() {
   recordGame();
   Object.assign(game, { state: 'over', t: 0, resultT: 0, outcome: null, swingAt: null, replay: null });
-  prepareShareCard();
+  if (!game.aim) prepareShareCard();   // 조준 판은 공유하지 않는다
 }
 
 // 다시 보기는 타석 시점에서 본다. 전에는 파울공을 따라 돌아간 화면 그대로 재생해서 공이 안 보였다(2026-10-29 사용자 제보).
@@ -6411,7 +6486,7 @@ function takeSkipHint() {
   return Number(store.get('skipHint', 0)) === n + 1;
 }
 // 버튼 위를 누르면 그 버튼, 아니면 화면마다 정한 기본 동작(시작, 스윙, 다음 공)을 한다
-function primaryAction(eventTime, x, y) {
+function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(pointerType). x가 없으면 키
   Sound.init();
   if (game.waitingSeed) return;   // 서버 시드를 받는 중(startGame)
   if (x != null && game.state !== 'pitch' && game.state !== 'windup') {
@@ -6419,7 +6494,7 @@ function primaryAction(eventTime, x, y) {
     if (b) { b.onTap(); return; }
   }
   if (game.state === 'title') startDefault();   // 버튼이 아닌 빈 곳을 누르면 시작
-  else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime);
+  else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime, x == null ? 'key' : kind, game.aim && x != null ? { x, y, kind: 'mouse' } : null);   // 조준 판의 클릭은 그 자리로
   else if (game.state === 'calib') calibTap(eventTime);
   else if (game.state === 'records' && x == null) goTitle();
   else if (game.state === 'news' && x == null) openMenu();
@@ -6427,7 +6502,7 @@ function primaryAction(eventTime, x, y) {
   else if (canSkip()) skipToBeat();   // 건너뛰게 한 탭은 다음 공으로 넘어가지 않는다
   else if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) next();
   else if (game.state === 'over' && game.resultT > 0.6 && x == null) {
-    startGame(game.mode);
+    restartGame();
   }
 }
 
@@ -6436,20 +6511,35 @@ canvas.addEventListener('pointerdown', (e) => {
   if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
   // 넘치는 메뉴(낮은 화면)는 뗄 때 누른다. 끌어 넘기다 손가락 밑의 줄이 눌리지 않게
   if (game.state === 'menu' && menu.max > 0) { menu.drag = { x: e.clientX, y: e.clientY, s: menu.scroll, t: e.timeStamp, moved: false }; canvas.setPointerCapture?.(e.pointerId); return; }
-  primaryAction(e.timeStamp, e.clientX, e.clientY);
+  // 조준 판(폰·펜): 와인드업·투구 중에 누르면 손가락 위에 커서를 띄우고 뗄 때 친다(손가락 하나만)
+  if (game.aim && e.pointerType !== 'mouse' && (game.state === 'windup' || game.state === 'pitch')) {
+    Sound.init();
+    if (!aimPointer.touch) { aimPointer.touch = { id: e.pointerId, x: e.clientX, y: e.clientY }; try { canvas.setPointerCapture(e.pointerId); } catch { /* 이미 뗀 손가락 */ } }
+    return;
+  }
+  primaryAction(e.timeStamp, e.clientX, e.clientY, e.pointerType || 'mouse');
 });
 // 새 소식·메뉴 넘기기: 끌어 올리기와 휠
 canvas.addEventListener('pointermove', (e) => {
   if (game.state === 'news' && news.drag) news.scroll = clamp(news.drag.s - (e.clientY - news.drag.y), 0, news.max);
   const d = menu.drag;
   if (game.state === 'menu' && d) { d.moved ||= Math.abs(e.clientY - d.y) > 8; menu.scroll = clamp(d.s - (e.clientY - d.y), 0, menu.max); }
+  if (e.pointerType === 'mouse') Object.assign(aimPointer, { x: e.clientX, y: e.clientY, moved: true });   // 조준 판(PC) 커서
+  const t = aimPointer.touch;
+  if (t && e.pointerId === t.id) { t.x = e.clientX; t.y = e.clientY; }
 });
-addEventListener('pointerup', () => {
+addEventListener('pointerup', (e) => {
   news.drag = null;
   const d = menu.drag;
   menu.drag = null;
   if (d && !d.moved && game.state === 'menu') primaryAction(d.t, d.x, d.y);
+  const t = aimPointer.touch;
+  if (t && e.pointerId === t.id) {   // 조준 판(폰): 떼는 순간 친다. 와인드업 중이거나 지켜본 공 판정이 났으면 아무 일도 없다
+    aimPointer.touch = null;
+    if (game.aim && game.state === 'pitch' && game.swingAt == null) swing(e.timeStamp, 'touch', { x: e.clientX, y: e.clientY - AIM_LIFT, kind: 'touch' });
+  }
 });
+addEventListener('pointercancel', (e) => { if (aimPointer.touch?.id === e.pointerId) aimPointer.touch = null; });
 canvas.addEventListener('wheel', (e) => {
   if (game.state === 'news') { e.preventDefault(); news.scroll = clamp(news.scroll + e.deltaY, 0, news.max); }
   else if (game.state === 'menu' && menu.max > 0) { e.preventDefault(); menu.scroll = clamp(menu.scroll + e.deltaY, 0, menu.max); }
@@ -6526,6 +6616,7 @@ function render(time) {
     const u = game.flightT - c.t, q = u >= 0 && u < 1.4 ? project(c.at[0], 2.7, c.at[1]) : null;
     if (q) { ctx.save(); ctx.globalAlpha = clamp(Math.min(u / 0.12, (1.4 - u) / 0.3), 0, 1); pill(c.text, q.x, q.y, { size: view.mobile ? 15 : 20, bg: c.text === '세이프' ? 'rgba(22,130,70,0.9)' : 'rgba(190,40,40,0.9)' }); ctx.restore(); }
   }
+  if (game.aim) drawAimLayer(p);
   if (game.flash > 0 && game.contactPos) {
     const c = project(game.contactPos.x, game.contactPos.y, game.contactPos.z);
     if (c) {
@@ -6555,7 +6646,7 @@ function render(time) {
   drawTopBar();
   const L = hudLayout();
   if (game.i === 0 && game.state !== 'result') {
-    text(view.mobile ? '공이 존에 올 때 탭' : '공이 존에 올 때 스페이스바 · 클릭', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 15 : 17, color: 'rgba(255,255,255,0.75)', shadow: true });
+    text(game.aim ? (finePointer ? '마우스로 겨누고 클릭 · 랭킹에는 안 올라가요' : '끌어서 겨누고 떼면 스윙 · 랭킹에는 안 올라가요') : view.mobile ? '공이 존에 올 때 탭' : '공이 존에 올 때 스페이스바 · 클릭', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 15 : 17, color: 'rgba(255,255,255,0.75)', shadow: true });
   }
   if (game.state === 'result') {
     drawResultCard();
@@ -6570,7 +6661,7 @@ function render(time) {
       addButton(L.next, last ? '결과 보기' : m ? '다음 공' : '다음 공 (Space)', 'primary', next);
       // 10구 도전은 공을 보고 마음에 안 들면 처음부터 다시 한다(2026-10-29 사용자 피드백). 판마다 공이 달라 새 판과 같고,
       // 끝내지 않은 판은 랭킹에 보내지 않는다. 마지막 기회 뒤에는 판이 이미 기록돼서(recordGame) '다시 하기'다(2026-10-30 사용자 결정)
-      if (L.restart) addButton(L.restart, last ? '다시 하기' : '처음부터', 'dark', () => startGame('challenge'));
+      if (L.restart) addButton(L.restart, last ? '다시 하기' : '처음부터', 'dark', restartGame);
       if (game.mode === 'practice') drawPracticeControls(L);
     }
   }
@@ -6594,5 +6685,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, tap: primaryAction, paused: false };

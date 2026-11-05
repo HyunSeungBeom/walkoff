@@ -42,6 +42,20 @@ CREATE TABLE IF NOT EXISTS play_devices (
   events INTEGER NOT NULL DEFAULT 0,             -- 그날 받은 신호 수(EVENT_CAP까지만 센다)
   PRIMARY KEY (day, device)
 );
+-- 스윙 결과 수(2026-11-05 조준 타격 실험, src/stats.js). 이미 있던 DB에는 migrations/0006_swing_stats.sql로 더했다
+CREATE TABLE IF NOT EXISTS swing_stats (
+  day TEXT NOT NULL,                             -- 한국 시간 날짜 YYYY-MM-DD
+  mode TEXT NOT NULL,                            -- challenge(10구, 기준선), aim(조준 실험)
+  input TEXT NOT NULL,                           -- mouse, touch, key(스페이스바)
+  swings INTEGER NOT NULL DEFAULT 0,             -- 휘두른 수
+  contacts INTEGER NOT NULL DEFAULT 0,           -- 맞힌 수(파울 포함)
+  hits INTEGER NOT NULL DEFAULT 0,               -- 안타
+  perfect INTEGER NOT NULL DEFAULT 0,            -- 정타
+  near INTEGER NOT NULL DEFAULT 0,               -- 조준: 과녁 가운데
+  edge INTEGER NOT NULL DEFAULT 0,               -- 조준: 과녁 가장자리
+  miss INTEGER NOT NULL DEFAULT 0,               -- 조준: 과녁 밖
+  PRIMARY KEY (day, mode, input)
+);
 
 -- 10구 도전 시드 표(2026-10-30, src/seeds.js). 서버가 판마다 내주고 점수와 함께 한 번만 받는다. 이미 있던 DB에는 migrations/0004_seed_tokens.sql로 더했다
 CREATE TABLE IF NOT EXISTS seed_tokens (

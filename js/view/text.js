@@ -1,7 +1,7 @@
 // 화면 글: 판정 결과 이름('좌중간 2루타')과 이유 문장, 존 밖 문구, 조사, 구종 이름·색, 끝내기 상황 글.
 // 판정 규칙(core)은 결과 코드만 돌려주고 글은 여기서 붙인다. 문구를 바꿔도 서버와 같이 쓰는 규칙 파일은 그대로다(2026-11-03 코드 나누기 2단계)
 import { REACH_M, zoneMiss, zoneOff } from '../core/pitches.js';
-import { PERFECT_MS } from '../core/judge.js';
+import { AIM, PERFECT_MS } from '../core/judge.js';
 import { hrExtra } from '../core/flight.js';
 
 export const PITCH_NAMES = { fastball: '직구', slider: '슬라이더', curve: '커브', change: '체인지업', fork: '포크' };
@@ -17,6 +17,9 @@ export const eun = (word) => word + (hasBatchim(word) ? '은' : '는');
 const SIDE_TEXT = { low: '아래', high: '위', in: '몸쪽', out: '바깥쪽' };
 export const zoneOffText = (p, bats) => { const o = zoneOff(p, bats); return { dir: SIDE_TEXT[o.side], cm: o.cm }; };
 export const offText = (p, bats) => { const o = zoneOffText(p, bats); return `존 ${o.dir}${/[래위]$/.test(o.dir) ? '로' : '으로'} ${o.cm}cm`; };
+// 조준 타격(실험): 커서가 공에서 벗어난 쪽과 거리. aim.dx·dy는 m(오른쪽·위가 +, main.js aimFrom). '공 아래 4cm'
+const aimSide = (a) => (Math.abs(a.dy) >= Math.abs(a.dx) ? (a.dy > 0 ? '위' : '아래') : a.dx > 0 ? '오른쪽' : '왼쪽');
+export const aimText = (a) => `공 ${aimSide(a)} ${Math.round(Math.hypot(a.dx, a.dy) * 100)}cm`;
 
 export function fieldArea(spray) {
   if (spray < -20) return '좌';
@@ -45,6 +48,11 @@ export function resultName(r) {
 export function reasonFor(r, p, miss) {
   if (r.kind === 'hr') return r.perfect ? '완벽한 타이밍이에요' : `${Math.round(r.dist + hrExtra(r.ev))}m 날아갔어요`;
   if (r.split) return '정타라 수비 사이로 빠졌어요';
+  if (r.aim && r.aimZone === 'edge') {   // 조준 타격: 과녁 가장자리
+    if (r.aim.y > AIM.sweet && r.type === 'ground') return '공 위를 쳐 땅볼이 됐어요';
+    if (r.aim.y < -AIM.sweet && (r.type === 'fly' || r.type === 'pop')) return '공 아래를 쳐 떴어요';
+    return `${aimText(r.aim)} 가장자리에 맞아 약했어요`;
+  }
   if (miss > 0) return `${offText(p, r.bats)} 빠진 공이라 힘이 덜 실렸어요`;
   if (p.type === 'fork' && r.type === 'ground') return '포크는 끝에서 떨어져서 공 윗부분을 치기 쉬워요';
   if (r.kind === 'triple') return '담장을 맞고 외야수 사이로 빠졌어요';
@@ -60,6 +68,7 @@ export function reasonFor(r, p, miss) {
 export function swingReason(r, p) {
   const miss = zoneMiss(p), slow = p.type === 'curve' || p.type === 'change', name = PITCH_NAMES[p.type];
   if (r.kind === 'whiff') {
+    if (r.aimMiss && r.aim) return `${aimText(r.aim)}로 헛스윙`;   // 조준 타격: 타이밍은 맞았는데 과녁 밖
     if (miss > REACH_M) return `${offText(p, r.bats)} 빠진 공이었어요`;
     return r.dt < 0 ? (slow ? `${eun(name)} 느려요. 더 기다렸다 치세요` : '너무 빨리 휘둘렀어요') : '너무 늦게 휘둘렀어요';
   }

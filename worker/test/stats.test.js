@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { kstDay, addDays } from '../src/rules.js';
-import { BATCH_MAX, EVENT_CAP, LATE_DAYS, STATS_SQL } from '../src/stats.js';
+import { BATCH_MAX, EVENT_CAP, LATE_DAYS, STATS_SQL, SWING_SQL } from '../src/stats.js';
 import { memoryD1 } from './d1.js';
 
 // 게임이 sendBeacon으로 보내는 것처럼 text/plain 본문으로 보낸다
@@ -66,7 +66,7 @@ test('npm run stats 표: 최근 7일만, 날짜마다 한 줄', async () => {
   await env.DB.prepare("INSERT INTO play_stats (day, mode, starts, ends) VALUES (?, 'daily', 5, 5)").bind(old).run();
   assert.deepEqual(env.DB.rows(STATS_SQL), [{
     날짜: today, 기기: 2, '터치 기기': 1, '시작한 판': 3, '끝낸 판': 1,
-    '10구 도전': 1, '끝내기 상황': 1, 연습: 0,
+    '10구 도전': 1, '끝내기 상황': 1, 연습: 0, '조준 실험': 0,
   }]);
 });
 
@@ -123,4 +123,47 @@ test(`이용 통계 묶음: 그날 ${EVENT_CAP}번을 넘긴 기기의 묶음은
   await env.DB.prepare('UPDATE play_devices SET events = ?').bind(EVENT_CAP).run();
   assert.equal((await send(env, batch())).status, 204);
   assert.deepEqual(env.DB.rows('SELECT mode, starts FROM play_stats ORDER BY mode'), [{ mode: 'challenge', starts: 12 }, { mode: 'scenario', starts: 2 }]);
+});
+
+// 스윙 결과 수(2026-11-05 조준 타격 실험): 묶음에 swings: { '모드|입력': { swings, contacts, hits, perfect, near, edge, miss } }
+const sw = (patch) => ({ swings: 10, contacts: 7, hits: 3, perfect: 1, near: 4, edge: 3, miss: 3, ...patch });
+test('스윙 묶음: 모드·입력마다 더하고(같은 날·모드·입력은 합친다), 스윙도 기기의 그날 신호 수에 든다. swings가 없는 예전 묶음도 그대로 받는다', async () => {
+  const env = { DB: memoryD1() }, day = kstDay(Date.now());
+  assert.equal((await send(env, batch({ swings: { 'aim|touch': sw(), 'challenge|key': sw({ near: 0, edge: 0, miss: 0 }) } }))).status, 204);
+  assert.equal((await send(env, batch({ counts: {}, swings: { 'aim|touch': sw({ swings: 2, contacts: 1, hits: 1, perfect: 0, near: 1, edge: 0, miss: 1 }) } }))).status, 204);   // 스윙만 있는 묶음
+  assert.equal((await send(env, batch())).status, 204);   // 예전 묶음(swings 없음)
+  assert.deepEqual(env.DB.rows('SELECT day, mode, input, swings, contacts, hits, perfect, near, edge, miss FROM swing_stats ORDER BY mode, input'), [
+    { day, mode: 'aim', input: 'touch', swings: 12, contacts: 8, hits: 4, perfect: 1, near: 5, edge: 3, miss: 4 },
+    { day, mode: 'challenge', input: 'key', swings: 10, contacts: 7, hits: 3, perfect: 1, near: 0, edge: 0, miss: 0 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT mode, starts FROM play_stats ORDER BY mode'), [{ mode: 'challenge', starts: 24 }, { mode: 'scenario', starts: 4 }]);
+  assert.deepEqual(env.DB.rows('SELECT events FROM play_devices'), [{ events: (18 + 20) + 2 + 18 }]);   // 판 시작·끝 + 스윙
+  const t = env.DB.rows(SWING_SQL);   // npm run stats 둘째 표
+  assert.deepEqual(t.map((x) => [x['모드'], x['입력'], x['스윙'], x['맞힘%'], x['과녁 밖%']]), [['조준 실험', 'touch', 12, 66.7, 33.3], ['10구', 'key', 10, 70, null]]);
+  assert.equal(env.DB.rows(STATS_SQL)[0]['조준 실험'], 0);
+});
+
+test('스윙 묶음: 규칙에 없는 값(음수, 맞힘 > 스윙, 안타 > 맞힘, 조준 합 > 스윙, 모르는 모드·입력)은 묶음째 거절한다', async () => {
+  const env = { DB: memoryD1() };
+  const bad = [
+    { 'aim|touch': sw({ swings: -1 }) }, { 'aim|touch': sw({ contacts: 11 }) }, { 'aim|touch': sw({ hits: 8 }) }, { 'aim|touch': sw({ perfect: 8 }) },
+    { 'aim|touch': sw({ near: 5, edge: 5, miss: 1 }) }, { 'aim|touch': sw({ hits: 1.5 }) }, { 'aim|touch': sw({ hits: '3' }) }, { 'aim|thumb': sw() },
+    { 'practice|key': sw() }, { 'aim|touch|x': sw() }, { aim: sw() }, [sw()], null,
+  ];
+  for (const swings of bad) {
+    const r = await send(env, batch({ swings }));
+    assert.deepEqual([r.status, (await r.json()).error], [400, 'bad_swings'], JSON.stringify(swings));
+  }
+  assert.equal(env.DB.rows('SELECT * FROM swing_stats').length, 0);
+  assert.equal(env.DB.rows('SELECT * FROM play_stats').length, 0);
+  assert.equal((await send(env, batch({ counts: { aim: { starts: 1, ends: 1 } } }))).status, 204);   // 조준 실험 판 수
+  assert.deepEqual(env.DB.rows('SELECT mode, starts, ends FROM play_stats'), [{ mode: 'aim', starts: 1, ends: 1 }]);
+});
+
+test(`스윙 묶음: 그날 ${EVENT_CAP}번을 넘긴 기기의 스윙은 세지 않는다`, async () => {
+  const env = { DB: memoryD1() };
+  await send(env, batch({ swings: { 'aim|mouse': sw() } }));
+  await env.DB.prepare('UPDATE play_devices SET events = ?').bind(EVENT_CAP).run();
+  assert.equal((await send(env, batch({ swings: { 'aim|mouse': sw() } }))).status, 204);
+  assert.deepEqual(env.DB.rows('SELECT swings FROM swing_stats'), [{ swings: 10 }]);
 });

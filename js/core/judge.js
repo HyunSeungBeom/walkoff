@@ -26,25 +26,36 @@ export function carry(ev, la) {
   return Math.max(0, 1.07 * ev - 54) * g;   // 177km/h·30도면 135m쯤
 }
 
-// 스윙 판정. dt는 스윙 시각 - 공 도착 시각(ms), 음수면 빠름. 무작위 없이 계산한다
-export function judgeSwing(p, dt, bats = 'R') {
+// 조준 타격(실험, 2026-11-05 사용자 아이디어·결정): aim = { x, y }는 커서에서 공이 지나는 자리를 뺀 값을 과녁 반지름으로 나눈 것(x 오른쪽 +, y 위쪽 +).
+// d = hypot(x, y)가 1보다 크면 과녁 밖이라 헛스윙(aimMiss), sweet를 넘으면 가장자리라 타구 질(q)을 최대 AIM.q만큼 줄이고, 정타는 sweet 안에서만 나온다.
+// 공 위를 치면(y > 0) 발사각이 AIM.la × y만큼 깔리고 아래를 치면 뜬다. 숫자는 쳐 보며 맞춘다. aim이 없으면 지금 판정 그대로다(10구·끝내기 서버 다시 돌리기)
+export const AIM = { sweet: 0.35, la: 18, q: 0.5 };
+export const aimZoneOf = (aim) => { const d = Math.hypot(aim.x, aim.y); return d > 1 ? 'miss' : d > AIM.sweet ? 'edge' : 'near'; };
+
+// 스윙 판정. dt는 스윙 시각 - 공 도착 시각(ms), 음수면 빠름. aim은 조준 타격(위). 무작위 없이 계산한다
+export function judgeSwing(p, dt, bats = 'R', aim = null) {
   const def = PITCHES[p.type];
   const miss = zoneMiss(p);
   const adt = Math.abs(dt);
   const r = { kind: 'whiff', hit: false, points: 0, dt, ev: 0, la: 0, spray: 0, dist: 0, perfect: false, bats };
+  const d = aim ? Math.hypot(aim.x, aim.y) : 0;
+  if (aim) r.aimZone = aimZoneOf(aim);
 
   if (miss > REACH_M) return r;   // 배트가 닿지 않는 공
   if (adt > FOUL_MS) return r;    // 너무 빠르거나 늦게 휘둘렀다
+  if (d > 1) { r.aimMiss = true; return r; }   // 과녁 밖(타이밍은 맞았다)
 
   const tq = 1 - Math.pow(Math.min(adt, FAIR_MS) / FAIR_MS, 1.6);
   const reach = 1 - miss / REACH_M;
-  const q = tq * (0.35 + 0.65 * reach);
+  const edge = d > AIM.sweet ? 1 - AIM.q * (d - AIM.sweet) / (1 - AIM.sweet) : 1;   // 과녁 가장자리일수록 약하게
+  const q = tq * (0.35 + 0.65 * reach) * edge;
   r.ev = Math.round(75 + 100 * Math.pow(q, 1.2) + (p.kmh - 135) * 0.25);
   // 높은 공은 뜨고, 빠르면 덮어 친다. 커브·체인지업·포크는 잘 맞힐수록(tq의 세제곱) lift만큼 덜 깔린다(2026-11-03 유저 목소리 '포크·체인지업은 홈런이 안 나온다', 커브는 사용자 결정.
   // 전에는 정타여도 포크 홈런 0%, 체인지업 4%, 커브 3%였다. 세제곱이라 빗맞은 포크는 그대로 땅볼이 많다(45% → 38%))
   // 빨리 쳐도 세게 맞은 공은 덜 덮어 친다(타구 속도 140→160km/h에 걸쳐 1ms에 0.2도 → 0.05도). 전에는 빨리 칠수록 깔려서 당겨 친 뜬공·홈런이 거의 없었다
   // (2026-11-03 유저 목소리 '당겨 치는·밀어 치는 홈런이 없다'). 약하게 빨리 친 공은 그대로 땅볼이 되어 1루 승부·내야 안타는 그대로다(모두 덜 깔리게 하면 땅볼이 13% → 9%)
-  r.la = Math.round(24 + (p.ty - 0.8) * 40 + def.la + (def.lift ?? 0) * tq * tq * tq + dt * (dt < 0 ? lerp(0.2, 0.05, clamp((r.ev - 140) / 20, 0, 1)) : 0.2));
+  r.la = Math.round(24 + (p.ty - 0.8) * 40 + def.la + (def.lift ?? 0) * tq * tq * tq + dt * (dt < 0 ? lerp(0.2, 0.05, clamp((r.ev - 140) / 20, 0, 1)) : 0.2)
+    - (aim ? AIM.la * aim.y : 0));   // 조준: 공 위를 치면 깔리고 아래를 치면 뜬다
   // 빠르면 당겨치고 늦으면 밀어친다. 당기는 쪽이 우타는 3루 쪽(음수), 좌타는 1루 쪽(양수).
   // 세게 뜬 공(타구 속도 140→160km/h, 발사각 18→26도에 걸쳐 섞는다)은 좌·우익수 쪽까지 넓게 가고(당긴 쪽이 더 넓다) ±44도 안에서 부드럽게 멈춘다.
   // 전에는 홈런의 94%가 가운데 ±15도로 가고 좌·우익수 쪽 홈런은 0%였다(2026-11-03 유저 목소리). 땅볼·약한 타구는 그대로라 수비 사이로 빠지는 안타는 그대로다
@@ -61,7 +72,7 @@ export function judgeSwing(p, dt, bats = 'R') {
     return r;
   }
 
-  r.perfect = adt <= PERFECT_MS && miss === 0;
+  r.perfect = adt <= PERFECT_MS && miss === 0 && d <= AIM.sweet;
   r.dist = carry(r.ev, r.la);
   classify(r);
   if (r.perfect && r.kind === 'out') throughGap(r);

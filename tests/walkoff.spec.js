@@ -2400,6 +2400,166 @@ test.describe('이용 통계', () => {
     expect(await beacons(page)).toEqual([]);
     expect(await page.evaluate(() => localStorage.getItem('walkoff.statsQueue'))).toBe(null);
   });
+
+  test('스윙 결과 수: 10구(기준선)와 조준 실험의 스윙을 모드·입력별로 묶음에 더하고(맞힘·안타·정타·조준 자리), 조준 판 수는 aim으로 센다. 서버가 그대로 받는 모양이다', async ({ page }) => {
+    const { validateEvent } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
+    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
+    await catchBeacons(page, { human: true });
+    const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    await page.evaluate(() => walkoff.startGame('challenge'));   // 10구: 스페이스바로 정확히(seed 42 첫 공은 홈런)
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    await page.evaluate(() => walkoff.startGame('challenge', false, { aim: true }));   // 조준: 마우스를 공이 지날 자리에 두고 스페이스바
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    const c = await page.evaluate(() => { const p = walkoff.game.seq[walkoff.game.i], q = walkoff.project(p.tx, p.ty, 0); return { x: q.x, y: q.y }; });
+    await page.mouse.move(c.x, c.y);
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    await leave(page);
+    const body = (await beacons(page))[0].body, today = kstDay(Date.now());
+    expect(body.counts).toEqual({ challenge: { starts: 1, ends: 0 }, aim: { starts: 1, ends: 0 } });
+    expect(body.swings).toEqual({ 'challenge|key': { swings: 1, contacts: 1, hits: 1, perfect: 1, near: 0, edge: 0, miss: 0 }, 'aim|key': { swings: 1, contacts: 1, hits: 1, perfect: 1, near: 1, edge: 0, miss: 0 } });
+    expect(validateEvent(body, today)).toMatchObject({ ok: true, value: { n: 4 } });
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('조준 타격(실험)', () => {
+  // 공이 홈플레이트 앞면을 지나는 자리(화면 px). 투구 중에는 화면을 밀지 않아 그대로 쓴다
+  const crossAt = (page) => page.evaluate(() => { const p = walkoff.game.seq[walkoff.game.i], c = walkoff.project(p.tx, p.ty, 0); return { x: c.x, y: c.y }; });
+  // 지금 공이 닿는 시각보다 dt(ms) 늦게 캔버스에 포인터 이벤트를 보낸다(pressAt과 같은 방식)
+  const fireAt = (page, dt, ev) => page.evaluate(({ dt, ev }) => new Promise((resolve) => {
+    const g = walkoff.game, target = g.seq[g.i].T + dt / 1000;
+    const tick = () => {
+      if (walkoff.ballTime() < target - 0.08) { requestAnimationFrame(tick); return; }
+      const at = g.clockAt + (target - walkoff.ballTime()) * 1000;
+      while (performance.now() < at) { /* 보낼 시각까지 기다린다 */ }
+      document.querySelector('canvas').dispatchEvent(new PointerEvent(ev.type, { bubbles: true, pointerId: ev.id ?? 7, pointerType: ev.pointerType, clientX: ev.x, clientY: ev.y }));
+      resolve();
+    };
+    requestAnimationFrame(tick);
+  }), { dt, ev });
+  const touch = (page, type, x, y, id = 7) => page.evaluate(({ type, x, y, id }) => document.querySelector('canvas').dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, pointerType: 'touch', clientX: x, clientY: y })), { type, x, y, id });
+  const outcome = (page) => page.evaluate(() => { const g = walkoff.game, r = g.outcome; return { state: g.state, kind: r?.kind, took: !!r?.took, zone: r?.aimZone ?? null, miss: !!r?.aimMiss, reason: r?.reason, aim: g.aims[g.i] ?? null, swingAt: g.swingAt }; });
+  const nextPitch = async (page) => {   // 결과를 건너뛰고 다음 공
+    await page.evaluate(() => { const g = walkoff.game; g.resultT = Math.max(g.resultT, g.revealAt) + 1; walkoff.tap(g.clockAt); });
+    await page.waitForFunction(() => ['windup', 'over'].includes(walkoff.game.state));
+  };
+
+  test('PC: 메뉴에서 시작하면 10구 규칙의 조준 판이고, 마우스를 공이 지날 자리에 두고 제때 치면 맞고 멀면 헛스윙이며 클릭은 누른 자리로 친다. 끝까지 쳐도 랭킹·최고·연속 기록에 안 들어가고 조준 최고 기록만 남는다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '마우스는 PC에서 본다');
+    const errors = await open(page, '?seed=42', { login: true });
+    await tap(page, '메뉴');
+    await tap(page, '조준 타격(실험)');
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect(await page.evaluate(() => ({ mode: walkoff.game.mode, aim: walkoff.game.aim, ticket: walkoff.game.ticket, left: walkoff.game.left }))).toEqual({ mode: 'challenge', aim: true, ticket: null, left: 10 });
+    expect(await page.evaluate(() => walkoff.boardView().label)).toBe('조준 실험');   // 위 전광판 모드 이름(전광판은 미리 그려 둔 그림이라 값으로 본다)
+    expect(await drawnTexts(page)).toContain('마우스로 겨누고 클릭 · 랭킹에는 안 올라가요');
+    // 1구: 공이 지날 자리에 마우스를 두고 제때 스페이스바
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    let c = await crossAt(page);
+    await page.mouse.move(c.x, c.y);
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    let o = await outcome(page);
+    expect(o.kind).not.toBe('whiff');
+    expect(o.zone).toBe('near');
+    expect(Math.hypot(o.aim.x, o.aim.y)).toBeLessThan(0.1);
+    // 2구: 마우스가 공에서 멀면 타이밍이 맞아도 헛스윙
+    await nextPitch(page);
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    c = await crossAt(page);
+    await page.mouse.move(c.x + 200, c.y);
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    o = await outcome(page);
+    expect(o).toMatchObject({ kind: 'whiff', zone: 'miss', miss: true });
+    expect(o.reason).toMatch(/^공 오른쪽 \d+cm로 헛스윙$/);
+    await page.waitForFunction(() => walkoff.game.resultT > walkoff.game.revealAt + 0.3);
+    expect(await drawnTexts(page)).toContain('타이밍 정확 · 과녁 밖');   // 공은 존 안이라 '존 밖 공'이 아니다
+    // 3구: 마우스는 멀리 있어도 공이 지날 자리를 제때 클릭하면 그 자리로 친다
+    await nextPitch(page);
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    c = await crossAt(page);
+    await page.mouse.move(c.x - 300, c.y);
+    await fireAt(page, 0, { type: 'pointerdown', pointerType: 'mouse', x: c.x, y: c.y });
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    o = await outcome(page);
+    expect(o.kind).not.toBe('whiff');
+    expect(o.aim.kind).toBe('mouse');
+    // 끝까지: 랭킹·최고 기록·연속 기록·기록 화면에 안 들어가고 조준 최고 기록만
+    await page.evaluate(() => { walkoff.game.left = 0; });
+    await nextPitch(page);
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    const saved = await page.evaluate(() => ({ score: walkoff.game.summary.score, aimBest: walkoff.store.get('aimBest', null), best: walkoff.store.get('best', null), played: walkoff.store.get('played.' + walkoff.today(), null), stats: walkoff.store.get('stats', null) }));
+    expect(saved.score).toBeGreaterThan(0);
+    expect(saved).toEqual({ score: saved.score, aimBest: saved.score, best: null, played: null, stats: null });
+    expect(errors.calls.filter((x) => x.path === '/scores')).toEqual([]);
+    const texts = await drawnTexts(page), labels = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
+    expect(texts).toEqual(expect.arrayContaining(['조준 타격(실험)', '실험판이라 랭킹·코인·연속 기록에는 안 올라가요']));
+    expect(labels).toEqual(expect.arrayContaining(['다시 하기', '처음으로']));
+    expect(labels).not.toContain('결과 공유하기');
+    await tap(page, '다시 하기');
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.aim])).toEqual(['windup', true]);   // 다시 해도 조준 판
+    expect(errors).toEqual([]);
+  });
+
+  test('폰: 누르면 손가락 위에 커서가 뜨고 끌어 맞춘 뒤 제때 떼면 맞는다. 와인드업 중에 떼면 아무 일도 없고, 안 떼면 지켜본 공이며, 손가락은 하나만 받는다', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '터치는 폰에서 본다');
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge', false, { aim: true }));
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect(await drawnTexts(page)).toContain('끌어서 겨누고 떼면 스윙 · 랭킹에는 안 올라가요');
+    // 1구: 와인드업 중에 누르고, 다른 손가락은 받지 않고, 끌어 커서(손가락 80px 위)를 맞춘 뒤 제때 뗀다
+    let c = await crossAt(page);
+    await touch(page, 'pointerdown', c.x - 60, c.y + 150);
+    await touch(page, 'pointerdown', c.x + 90, c.y + 220, 8);
+    await touch(page, 'pointermove', c.x + 90, c.y + 220, 8);
+    await touch(page, 'pointermove', c.x, c.y + 80);
+    const cur = await page.evaluate(() => walkoff.aimCursor());
+    expect(cur).toMatchObject({ kind: 'touch' });
+    expect(Math.hypot(cur.x - c.x, cur.y - c.y)).toBeLessThan(0.5);
+    expect((await outcome(page)).swingAt).toBe(null);   // 누르기만 해서는 휘두르지 않는다
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await fireAt(page, 0, { type: 'pointerup', pointerType: 'touch', x: c.x, y: c.y + 80 });
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    let o = await outcome(page);
+    expect(o.kind).not.toBe('whiff');
+    expect(o).toMatchObject({ zone: 'near' });
+    expect(o.aim.kind).toBe('touch');
+    // 2구: 와인드업 중에 눌렀다 떼면 아무 일도 없고, 그대로 두면 지켜본 공
+    await nextPitch(page);
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    await touch(page, 'pointerdown', 120, 500);
+    await touch(page, 'pointerup', 120, 500);
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.swingAt])).toEqual(['windup', null]);
+    await page.waitForFunction(() => walkoff.game.state === 'result', null, { timeout: 10_000 });
+    expect(await outcome(page)).toMatchObject({ took: true, swingAt: null });
+    // 3구: 누른 채로 지켜본 공 판정이 나면 지켜본 공이고, 그 뒤에 떼도 휘두르지 않는다
+    await nextPitch(page);
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    c = await crossAt(page);
+    await touch(page, 'pointerdown', c.x, c.y + 80);
+    await page.waitForFunction(() => walkoff.game.state === 'result', null, { timeout: 10_000 });
+    await touch(page, 'pointerup', c.x, c.y + 80);
+    expect(await outcome(page)).toMatchObject({ took: true, swingAt: null });
+    expect(await page.evaluate(() => walkoff.aimPointer.touch)).toBe(null);
+    expect(errors).toEqual([]);
+  });
+
+  test('조준이 아닌 10구는 지금과 같다: 커서 없이 판정하고(aimZone 없음) 클릭한 자리와 상관없이 타이밍만 본다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '마우스는 PC에서 본다');
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await fireAt(page, 0, { type: 'pointerdown', pointerType: 'mouse', x: 5, y: 5 });   // 화면 구석을 눌러도
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    const o = await outcome(page);
+    expect(o).toMatchObject({ zone: null, miss: false, aim: null });
+    expect(o.kind).toBe('hr');   // seed 42 첫 공은 정확히 치면 홈런
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('따라가는 카메라', () => {

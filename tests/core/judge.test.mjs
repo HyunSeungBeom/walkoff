@@ -1,7 +1,7 @@
 // 판정 규칙(js/core)과 화면 글(js/view/text.js)을 브라우저 없이 본다(2026-11-03 코드 나누기 2단계). 실행: node --test 'tests/core/*.test.mjs'
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { airCatcher, judgeSwing, judgeTake, PERFECT_MS } from '../../js/core/judge.js';
+import { AIM, airCatcher, judgeSwing, judgeTake, PERFECT_MS } from '../../js/core/judge.js';
 import { OUTFIELDERS } from '../../js/core/field.js';
 import { makeSequence, pitcherHand, zoneMiss, zoneOff } from '../../js/core/pitches.js';
 import { makeScenario, applyScenario } from '../../js/core/scenario.js';
@@ -82,4 +82,31 @@ test('외야 판정은 수비수가 닿는지로 정한다(2026-11-04 사용자 
     else if (r.hit && r.kind !== 'hr' && r.dist >= 45) { hits++; assert.equal(airCatcher(r), null, `${r.kind} ${r.dist}m ${r.spray}도: 안타면 아무도 못 닿는다`); }
   }
   assert.ok(caught > 1000 && hits > 1000, `${caught} ${hits}`);
+});
+
+test('조준 타격: aim이 없거나 {0,0}이면 지금과 같고, 과녁 밖은 헛스윙, 공 위를 치면 깔리고 아래를 치면 뜨며, 가장자리는 약하고, 정타는 과녁 가운데(sweet)에서만 나온다', () => {
+  const strip = ({ aimZone, ...rest }) => rest;
+  let fair = 0, weaker = 0, edgePerfect = 0, nearPerfect = 0, perfect = 0;
+  for (const { p, dt, bats } of grid()) {
+    const r0 = judgeSwing(p, dt, bats), z = judgeSwing(p, dt, bats, { x: 0, y: 0 });
+    assert.deepEqual(strip(z), r0);   // {0,0}은 지금과 같다(조준 자리 'near'만 붙는다)
+    assert.equal(z.aimZone, 'near');
+    if (r0.kind === 'whiff') continue;
+    const out = judgeSwing(p, dt, bats, { x: 0.8, y: 0.7 });   // d 1.06
+    assert.deepEqual([out.kind, out.aimMiss, out.aimZone], ['whiff', true, 'miss']);   // 타이밍이 맞아도 과녁 밖은 헛스윙
+    if (r0.kind === 'foul') continue;
+    fair++;
+    const top = judgeSwing(p, dt, bats, { x: 0, y: 0.3 }), low = judgeSwing(p, dt, bats, { x: 0, y: -0.3 });
+    assert.ok(top.la < r0.la && low.la > r0.la, `위를 치면 깔리고 아래를 치면 뜬다 ${r0.la} ${top.la} ${low.la}`);
+    const edge = judgeSwing(p, dt, bats, { x: 0.9, y: 0 });
+    assert.equal(edge.aimZone, 'edge');
+    assert.ok(edge.ev <= r0.ev);
+    if (edge.ev < r0.ev) weaker++;
+    if (r0.perfect) { perfect++; if (judgeSwing(p, dt, bats, { x: AIM.sweet * 0.9, y: 0 }).perfect) nearPerfect++; }
+    if (judgeSwing(p, dt, bats, { x: AIM.sweet * 1.1, y: 0 }).perfect) edgePerfect++;
+  }
+  assert.ok(fair > 1000, `앞으로 간 타구 ${fair}`);
+  assert.ok(weaker / fair > 0.9, `가장자리는 거의 늘 약하다 ${weaker}/${fair}`);
+  assert.ok(perfect > 0 && nearPerfect === perfect, '과녁 가운데 안이면 정타는 그대로');
+  assert.equal(edgePerfect, 0, 'sweet 밖에서는 정타가 없다');
 });
