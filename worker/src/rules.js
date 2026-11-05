@@ -1,10 +1,10 @@
 // 랭킹 규칙. 공 순서·점수 상한(maxScoreFor)·팀 목록은 게임과 같은 파일(js/core)을 그대로 가져다 쓴다(2026-11-03 코드 나누기.
 // 전에는 worker/src/pitches.js와 이 파일에 복사본을 두고 테스트로 둘이 같은지 맞춰 봤다). 주 계산은 게임도 같은 규칙이라 테스트가 맞춰 본다
 import { makeSequence, pitcherHand, dailySeed } from '../../js/core/pitches.js';
-import { maxScoreFor } from '../../js/core/score.js';
+import { maxScoreFor, scoreRange } from '../../js/core/score.js';
 import { TEAM_IDS } from '../../js/core/catalog.js';
 import { ticketError } from './seeds.js';
-export { TEAM_IDS, maxScoreFor };   // 서버 테스트와 게임 테스트가 여기서 가져간다
+export { TEAM_IDS, maxScoreFor, scoreRange };   // 서버 테스트와 게임 테스트가 여기서 가져간다
 const DAY_MS = 864e5;
 export const DAILY_LAST_DAY = '2026-10-30';   // 오늘의 10구가 없어진 날. 그날까지 친 판만 받는다
 
@@ -40,6 +40,8 @@ export function validateProfile(b) {
 }
 
 // 10구 판 점수 한 건을 검사한다. 그 판의 공 순서로 나올 수 없는 전광판과, 그 전광판으로 낼 수 없는 점수를 거른다.
+// 전광판은 공마다 S 단타·D 2루타·T 3루타·H 홈런·Y 볼·R 그 밖이고(2026-11-05, 칭호를 정하려고 안타 종류를 받는다), 예전 게임은 안타가 모두 G다.
+// 한 판에 G와 종류를 섞지는 않는다. 종류를 알면 점수가 정타 보너스만큼만 열려 하한·상한을 다 보고, G는 지금까지처럼 상한만 본다(scoreRange).
 // 타이밍은 게임이 재서 보내므로 사람이 친 것인지까지는 가릴 수 없다(정타만 쳤다고 꾸민 점수는 막지 못한다).
 // 사람 ID는 보낸 내용이 아니라 로그인 표에서 꺼낸 값을 받는다. ticket은 10구 도전 점수와 함께 온 표를 DB에서 꺼낸 줄(없으면 null)
 export function validateSubmission(b, nowMs, playerId, ticket = null) {
@@ -51,12 +53,12 @@ export function validateSubmission(b, nowMs, playerId, ticket = null) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, error: 'bad_day' };
   const today = kstDay(nowMs);
   if (day < addDays(today, -2) || day > addDays(today, 1)) return { ok: false, error: 'stale_day' };   // 늦게 보낸 기록은 이틀까지 받는다
-  if (!/^[GYR]{1,40}$/.test(lights)) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
+  if (!/^[GSDTHYR]{1,40}$/.test(lights) || (lights.includes('G') && /[SDTH]/.test(lights))) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
   const found = seedsFor(b, day, ticket, playerId, lights.length, nowMs);
   if (found.error) return { ok: false, error: found.error };
-  const maxes = found.seeds.map((s) => maxScoreFor(lights, seqOf(s))).filter((m) => m !== null);
-  if (!maxes.length) return { ok: false, error: 'bad_lights' };
-  if (!Number.isInteger(score) || score < 0 || score > Math.max(...maxes)) return { ok: false, error: 'bad_score' };
+  const ranges = found.seeds.map((s) => scoreRange(lights, seqOf(s))).filter(Boolean);
+  if (!ranges.length) return { ok: false, error: 'bad_lights' };
+  if (!Number.isInteger(score) || score < 0 || !ranges.some((r) => score >= r.min && score <= r.max)) return { ok: false, error: 'bad_score' };
   return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights } };
 }
 

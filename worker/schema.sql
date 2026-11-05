@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS daily_scores (
   nick TEXT NOT NULL,
   team TEXT NOT NULL,
   score INTEGER NOT NULL,
-  lights TEXT NOT NULL,                          -- 전광판 G(안타) Y(볼) R(나머지)
+  lights TEXT NOT NULL,                          -- 전광판 공마다 S 단타·D 2루타·T 3루타·H 홈런·Y 볼·R 나머지(2026-11-05까지의 판은 안타가 모두 G)
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (player_id, day)
 );
@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   owned TEXT NOT NULL DEFAULT '[]',              -- 산 물건 id(JSON 배열)
   equipped TEXT NOT NULL DEFAULT '{}',           -- 종류별 착용 물건 id와 등번호 no(JSON)
   coin_at INTEGER NOT NULL DEFAULT 0,            -- 마지막으로 코인을 준 시각(ms)
-  daily_bonus_day TEXT NOT NULL DEFAULT ''       -- 오늘의 10구 2배를 준 날(하루 한 번). 2026-10-30 2배를 없애서 더 쓰지 않는다
+  daily_bonus_day TEXT NOT NULL DEFAULT '',      -- 오늘의 10구 2배를 준 날(하루 한 번). 2026-10-30 2배를 없애서 더 쓰지 않는다
+  -- 칭호·업적(2026-11-05, js/core/titles.js). 이미 있던 DB에는 migrations/0007_titles.sql로 더했다
+  titles TEXT NOT NULL DEFAULT '[]'              -- 받은 칭호 id(JSON 배열)
 );
 
 -- 하루 이용 통계(2026-10-29, src/stats.js). 이미 있던 DB에는 migrations/0003_stats.sql로 더했다

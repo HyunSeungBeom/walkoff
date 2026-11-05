@@ -12,6 +12,7 @@ import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTa
 import { applyScenario as applyScenarioIn, HOME_PLATE, HOME_THROW, leadAt, makeScenario as makeScenarioIn, RUN_JUMP, SCENARIOS, RUN_TAU, RUNNER_ROUTES, scenarioPitch, scenarioPoints, SLIDE_BRAKE as BASE_SLIDE, TAG_TIME } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos, hrExtra, hrLiftK, interceptRoll, rollPath, THROW_OUT } from './core/flight.js';
 import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
+import { TITLES, titleById, titlesOf, topTitle } from './core/titles.js';
 import { labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, zoneOffText } from './view/text.js';
 import { game, settings } from './game/state.js';
 import { api, auth, fetchRanking, loggedIn, postScenario, postScore, RANKING_API } from './infra/api.js';
@@ -4432,7 +4433,6 @@ function playStreak(day = today()) {
 }
 
 const SHARE_EMOJI = { S: '🟢', D: '🟢', T: '🟢', G: '🟢', H: '⭐', Y: '🟡', R: '🔴' };
-const serverLights = (codes) => codes.replace(/[SDTH]/g, 'G');
 const rankOf = (score) => (score >= 4000 ? '끝내기 영웅' : score >= 2500 ? '클러치 히터' : score >= 1200 ? '주전 타자' : '내일 다시 도전');
 
 function gameSummary() {
@@ -4689,6 +4689,58 @@ function drawRecords() {
   addButton({ x: cx - 90, y, w: 180, h: 48 }, '처음으로', 'primary', goTitle);
 }
 
+// ===== 칭호·업적(2026-11-05 유저 피드백, 규칙은 core/titles.js) =====
+// 10구 도전(조준 판 빼고)을 끝내면 그 판의 전광판으로 칭호를 정한다. 로그인했으면 서버(/scores)가 정해 계정에 남기고, 답의 newTitles(이 판으로 처음 받은 것)·
+// titles(받은 것 모두)를 쓴다(게임이 '받았다'고 알리는 방식은 꾸미기 쉬워서). 로그인 안 했으면 이 기기에서 정해 이 브라우저에 남기고(walkoff.titles)
+// 칭호 화면에만 보인다. 랭킹에는 계정 칭호만 나온다(메뉴 '역대'와 같은 계정 기준). 계정 칭호는 /me와 /scores 답으로 남겨 둔다(walkoff.accountTitles)
+const myTitles = () => (loggedIn() ? store.get('accountTitles', []) : store.get('titles', []));
+const titleNames = (ids) => ids.map((id) => titleById(id)?.name).filter(Boolean);
+function startTitles() {   // recordGame. 로그인했으면 서버 답(settleTitles)을 기다린다
+  game.newTitles = [];
+  if (loggedIn()) return;
+  const have = store.get('titles', []), got = titlesOf(game.summary.lights).filter((id) => !have.includes(id));
+  if (!got.length) return;
+  store.set('titles', TITLES.map((t) => t.id).filter((id) => have.includes(id) || got.includes(id)));
+  game.newTitles = got;
+}
+// 칭호 배지: 금색 테두리 알약(왼쪽 끝 x, 가운데 높이 y). 메뉴 카드의 닉네임 옆·랭킹 줄에 쓴다. 폭을 돌려준다
+function titleBadge(x, y, label, size) {
+  ctx.font = font(size, 800);
+  const w = ctx.measureText(label).width + 14, h = size + 8;
+  roundRect(x, y - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(242,201,76,0.16)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(242,201,76,0.8)'; ctx.lineWidth = 1; ctx.stroke();
+  text(label, x + w / 2, y + 0.5, { size, weight: 800, color: '#f2c94c' });
+  return w;
+}
+const titleBadgeW = (label, size) => { ctx.font = font(size, 800); return ctx.measureText(label).width + 14; };
+function settleTitles(s, data) {   // /scores·/me 답(옛 서버는 칭호가 없어 그대로)
+  if (Array.isArray(data?.titles)) store.set('accountTitles', data.titles.filter((id) => titleById(id)));
+  if (s && game.summary === s && Array.isArray(data?.newTitles)) game.newTitles = data.newTitles.filter((id) => titleById(id));
+}
+// 칭호 화면(메뉴 '기록' 묶음): 칭호마다 받았는지와 조건. 받은 것은 금색 표시. 작은 폰(375×548)에서도 들어가게 한 줄에 이름·조건을 둔다
+function drawTitles() {
+  dim(0.84);
+  const m = view.mobile, cx = view.w / 2, w = m ? view.w - 40 : 480, x0 = cx - w / 2, have = myTitles(), gold = '#f2c94c';
+  let y = view.h * (m ? 0.09 : 0.11);
+  text('칭호', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 32 : 40;
+  text(`${have.length} / ${TITLES.length} · ${loggedIn() ? '받은 칭호 가운데 가장 높은 것이 랭킹에 보여요' : '로그인하면 칭호가 랭킹에 보여요'}`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.6)' });
+  y += m ? 34 : 42;
+  const rowH = m ? 46 : 52;
+  for (const t of TITLES) {
+    const got = have.includes(t.id);
+    roundRect(x0, y - rowH / 2 + 3, w, rowH - 6, 12); ctx.fillStyle = got ? 'rgba(242,201,76,0.14)' : 'rgba(255,255,255,0.05)'; ctx.fill();
+    if (got) { ctx.strokeStyle = 'rgba(242,201,76,0.55)'; ctx.lineWidth = 1; ctx.stroke(); }
+    ctx.beginPath(); ctx.arc(x0 + 20, y, m ? 7 : 8, 0, Math.PI * 2);
+    if (got) { ctx.fillStyle = gold; ctx.fill(); } else { ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke(); }
+    text(t.name, x0 + 38, y, { size: m ? 15 : 17, weight: 800, color: got ? gold : 'rgba(255,255,255,0.8)', align: 'left' });
+    text(t.desc, x0 + w - 14, y, { size: m ? 12 : 14, weight: 600, color: got ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.5)', align: 'right' });
+    y += rowH;
+  }
+  y += m ? 18 : 24;
+  addButton({ x: cx - 90, y, w: 180, h: 48 }, '처음으로', 'primary', goTitle);
+}
+
 // ===== 팀 고르기 =====
 // 처음 온 사람은 열자마자 팀과 닉네임을 고른다(2026-10-28 사용자 결정). 카카오로 시작하면 랭킹에 오르고,
 // 로그인 없이도 할 수 있다. 메뉴에서 다시 바꿀 수 있다.
@@ -4849,8 +4901,8 @@ async function submitScore(s, mode) {
   if (game.fixedSeed) { game.rankInfo = { status: 'unranked' }; return; }   // 주소에 ?seed=를 붙여 공 순서를 정한 판
   // 서버는 자기가 내준 시드(token)로 공 순서를 다시 만들어 전광판·점수를 맞춰 본다. 시드를 못 받은 판은 token 없이 가서 거절된다.
   // seed는 시드를 내주기 전의 서버가 보던 값이다
-  // 서버(cd492b29)는 불을 G·Y·R로만 받아서 안타 종류(S·D·T·H)는 G로 보낸다. 칭호·업적 서버가 종류를 받기 시작하면 그대로 보낸다
-  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: serverLights(s.lights), mode, seed: game.seed, ...(game.ticket ? { token: game.ticket.token } : {}) };
+  // 불은 안타 종류(S·D·T·H)를 담아 보내고 서버가 그것으로 칭호를 정하고 점수 하한·상한을 본다(2026-11-05 칭호 서버부터. 그 전 서버는 G·Y·R만 받았다)
+  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, seed: game.seed, ...(game.ticket ? { token: game.ticket.token } : {}) };
   keepPending(body);
   game.rankInfo = { status: 'sending' };
   let res;
@@ -4863,6 +4915,7 @@ async function submitScore(s, mode) {
     setAccountBest(weekStartOf(s.date), data.me?.best, data.allTime);   // 메뉴 '이번 주'·'역대'를 계정 기록으로(랭킹과 같은 숫자)
     game.rankInfo = { status: 'ok', me: data.me, myTeam: data.myTeam, newBest: data.accepted && data.me?.best === s.score, earned: data.earned ?? 0 };
     settleBest(s, data);   // 끝 화면 '최고 기록'도 계정 역대 최고로
+    settleTitles(s, data);   // 이 판으로 처음 받은 칭호(서버가 정한다)
   } else { game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error }; settleBest(s, null); }
 }
 
@@ -4917,7 +4970,7 @@ function closeRanking() {
   if (game.rankBack === 'over') game.state = 'over'; else goTitle();
 }
 // 다른 사람 옷 보기(2026-11-03 사용자 결정, 랭킹 서버가 줄마다 그 사람이 입은 물건(look)을 보낸다). 계정이 없는 예전 기록은 null이라 기본 모습이다
-function openRankLook(row) { game.rankView = { nick: row.nick, team: row.team, rank: row.rank, best: row.best ?? row.total ?? 0, look: cleanLook(row.look) }; }
+function openRankLook(row) { game.rankView = { nick: row.nick, team: row.team, rank: row.rank, best: row.best ?? row.total ?? 0, look: cleanLook(row.look), title: titleById(row.title)?.name ?? null }; }
 // 그 사람의 타자 모습(팀 색 + 입은 물건)을 상점 미리 보기처럼 크게, 3초마다 한 번 휘두른다(등번호는 휘두르면 보인다). 아래에 입은 물건 이름
 function drawRankLook() {
   dim(0.86);
@@ -4925,7 +4978,7 @@ function drawRankLook() {
   let y = view.h * (m ? 0.07 : 0.08);
   text(v.nick, cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 26 : 32;
-  text(`${t?.name ?? ''} · 이번 주 ${v.rank}위 · ${v.best.toLocaleString()}점`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
+  text(`${v.title ? `${v.title} · ` : ''}${t?.name ?? ''} · 이번 주 ${v.rank}위 · ${v.best.toLocaleString()}점`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });   // 대표 칭호가 있으면 맨 앞
   y += m ? 18 : 22;
   const bw = m ? view.w - 40 : 420, bh = Math.min(m ? 360 : 420, view.h - y - (m ? 190 : 200)), box = { x: cx - bw / 2, y, w: bw, h: bh };
   drawLookFigure(box, v.look, v.team);
@@ -4979,11 +5032,17 @@ function rankLine() {
 function drawRankRow(y, x0, w, cells, highlight) {
   const m = view.mobile, h = m ? 28 : 32;
   if (highlight) { roundRect(x0 - 8, y - h / 2, w + 16, h, 8); ctx.fillStyle = 'rgba(242,201,76,0.2)'; ctx.fill(); }
-  const [rank, team, name, sub, total] = cells, t = teamById(team);
+  const [rank, team, name, sub, total, badge] = cells, t = teamById(team), subX = x0 + w * (m ? 0.66 : 0.64);
   text(rank, x0 + 18, y, { size: m ? 13 : 15, weight: 800, color: '#f2c94c' });
   if (t) { ctx.beginPath(); ctx.arc(x0 + 46, y, 6, 0, Math.PI * 2); ctx.fillStyle = t.main; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = t.accent; ctx.stroke(); }
   text(name, x0 + 60, y, { size: m ? 13 : 15, weight: 700, align: 'left' });
-  text(sub, x0 + w * (m ? 0.66 : 0.64), y, { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
+  if (badge) {   // 대표 칭호 배지(2~4글자): 이름 뒤에 들어갈 자리가 있을 때만(폰은 줄이 좁다)
+    ctx.font = font(m ? 13 : 15, 700);
+    const bx = x0 + 60 + ctx.measureText(name).width + 6, bs = m ? 10 : 11;
+    ctx.font = font(m ? 11 : 13, 600);
+    if (bx + titleBadgeW(badge, bs) <= subX - ctx.measureText(sub).width / 2 - 6) titleBadge(bx, y, badge, bs);
+  }
+  text(sub, subX, y, { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
   text(total, x0 + w, y, { size: m ? 13 : 15, weight: 800, align: 'right' });
 }
 
@@ -5021,7 +5080,7 @@ function drawRanking() {
       if (!row) { text('…', cx, y, { size: 14, color: 'rgba(255,255,255,0.5)' }); y += step; continue; }
       const total = `${((players ? row.best : null) ?? row.total ?? 0).toLocaleString()}점`;   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
       if (players) {
-        drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total], row.me);
+        drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total, titleById(row.title)?.short], row.me);
         const h = m ? 28 : 32;
         addButton({ x: x0 - 8, y: y - h / 2, w: w + 16, h }, `랭킹 줄 ${row.rank}`, 'none', () => openRankLook(row));
       }
@@ -5061,9 +5120,10 @@ async function syncAccount() {
     if (res.status === 401) { logout('expired'); return; }
     if (!res.ok) return;
     const acct = await res.json();
-    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
+    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); store.remove('accountTitles'); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
     settings.playerId = acct.playerId; store.set('playerId', acct.playerId);
     setWallet(acct);
+    settleTitles(null, acct);
     let msg = '카카오로 로그인했어요';
     if (store.get('profileDirty', 0) && teamById(settings.team)) await pushProfile();   // 지난번에 바꾼 팀을 못 적었으면 서버의 옛 팀으로 덮지 않고 다시 보낸다
     else if (teamById(acct.team)) {
@@ -5099,7 +5159,7 @@ async function pushProfile() {
 function logout(reason) {
   Object.assign(auth, { token: null, fresh: false });
   seedTicket.ready = null;   // 받아 둔 시드는 그 계정 것이다
-  store.remove('session'); store.remove('accountBest'); accountBestAt = 0;   // 메뉴 최고 기록은 다시 이 기기 값으로
+  store.remove('session'); store.remove('accountBest'); store.remove('accountTitles'); accountBestAt = 0;   // 메뉴 최고 기록·칭호는 다시 이 기기 값으로
   resetWallet();   // 코인과 꾸미기는 계정에 남는다. 이 브라우저는 기본 모습으로
   toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
 }
@@ -5112,7 +5172,7 @@ async function deleteAccount() {
     if (!res.ok && res.status !== 401) throw new Error(`delete ${res.status}`);
     Object.assign(auth, { token: null, fresh: false });
     seedTicket.ready = null;
-    ['session', 'pending', 'playerId', 'accountBest'].forEach((k) => store.remove(k));
+    ['session', 'pending', 'playerId', 'accountBest', 'accountTitles'].forEach((k) => store.remove(k));
     resetWallet();
     settings.playerId = ensurePlayerId();
     goTitle();
@@ -6012,6 +6072,11 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 여러 번이면 a·b·c), label은 화면 머리
+  { id: '2026-11-06a', label: '11/6', items: [
+    '의견 보내기에 올라온 제안으로 칭호가 생겼어요: 사이클링 히트·홈런왕·끝내기 홈런·선구안·첫 홈런·아웃왕',
+    "10구 도전에서 조건을 채우면 받고, 끝 화면에 금색 띠로 알려 줘요. 메뉴 '칭호'에서 조건을 볼 수 있어요",
+    '로그인했으면 랭킹과 메뉴 카드에 내 대표 칭호가 보여요',
+  ] },
   { id: '2026-11-05f', label: '11/5 저녁', items: [   // 2026-11-05f: 조준 배트 굵게 줄을 더하며 id를 올려 이미 읽은 사람에게도 다시 NEW가 뜬다(조준을 해 본 사람이 다시 쳐 보게)
     '홈런은 전광판과 결과에 초록 별로 표시돼요(공유 글에는 ⭐)',
     '1루 승부가 아슬아슬하면 주자가 머리부터 슬라이딩해요',
@@ -6158,6 +6223,7 @@ const MENU_ICONS = Object.fromEntries(Object.entries({
   aim: `${circlePath(12, 12, 7)}M12 2v5M12 17v5M2 12h5M17 12h5`,
   rec: 'M8 4h8v5a4 4 0 0 1-8 0zM12 13v4M8 20h8M16 6h3a3 3 0 0 1-3 3M8 6H5a3 3 0 0 0 3 3',
   rank: 'M4 20v-6h5v6M9 20V9h6v11M15 20v-8h5v8',
+  titles: `M8 3l3.5 7M16 3l-3.5 7${circlePath(12, 15, 5)}`,   // 메달
   team: 'M8 4l-5 3 2 4 3-1v10h8V10l3 1 2-4-5-3a4 4 0 0 1-8 0z',
   shop: circlePath(12, 12, 8) + circlePath(12, 12, 4.5),
   me: `${circlePath(12, 8, 4)}M4 21a8 8 0 0 1 16 0`,
@@ -6274,7 +6340,8 @@ function drawMenu() {
   const groups = [
     ['놀기', [['scn', '끝내기 상황', '9회말 역전 승부', () => startGame('scenario')], ['practice', '연습', '구종 골라 치기', () => startGame('practice')],
       ['aim', '조준 타격', '공을 겨눠 치기', () => startGame('challenge', false, { aim: true }), '조준 타격(실험)', '실험']]],
-    ['기록', [['rec', '기록', best > 0 ? `역대 최고 ${best.toLocaleString()}` : '아직 없음', () => { game.state = 'records'; }], ['rank', '이번 주 랭킹', '내 순위 보기', () => openRanking('title')]]],
+    ['기록', [['rec', '기록', best > 0 ? `역대 최고 ${best.toLocaleString()}` : '아직 없음', () => { game.state = 'records'; }],
+      ['titles', '칭호', `${myTitles().length} / ${TITLES.length}`, () => { game.state = 'titles'; }, '칭호'], ['rank', '이번 주 랭킹', '내 순위 보기', () => openRanking('title')]]],
     ['내 것', [['team', '팀·닉네임', `${t ? t.short : '팀 없음'} · ${settings.nick || '-'}`, () => openOnboard('menu')],
       ['shop', '상점 · 내 물건', coins != null ? `코인 ${coins.toLocaleString()}` : '물건 구경', () => openShop('shop')],
       loggedIn() ? ['me', '내 계정', '카카오 로그인됨', openAccount] : ['me', '카카오 로그인', '랭킹에 이름 올리기', openAccount]]],
@@ -6298,8 +6365,11 @@ function drawMenu() {
   if (best > 0) chips.push([['역대 ', soft], [best.toLocaleString(), gold]]);
   if (streak >= 2) chips.push([[String(streak), gold], ['일 연속', soft]]);
   if (coins != null) chips.push([['코인 ', soft], [coins.toLocaleString(), gold]]);
+  const top = titleById(topTitle(myTitles())), bw = top ? titleBadgeW(top.short, c.chip) + 8 : 0;   // 대표 칭호는 닉네임 옆 금색 배지(닉네임이 길면 줄인다)
   ctx.font = font(c.nick, 800);
-  text(fitText(settings.nick || '-', close.x - 10 - tx), tx, chips.length ? by + c.badge * 0.3 : by + c.badge / 2, { size: c.nick, weight: 800, align: 'left' });
+  const nick = fitText(settings.nick || '-', close.x - 10 - tx - bw), nickY = chips.length ? by + c.badge * 0.3 : by + c.badge / 2;
+  text(nick, tx, nickY, { size: c.nick, weight: 800, align: 'left' });
+  if (top) { ctx.font = font(c.nick, 800); titleBadge(tx + ctx.measureText(nick).width + 8, nickY, top.short, c.chip); }
   ctx.font = font(c.chip, 700);
   const chipW = (parts) => parts.reduce((s, [str]) => s + ctx.measureText(str).width, 0) + (c.chip > 11 ? 18 : 14) + 6;
   const si = chips.findIndex((x) => x[1][0] === '일 연속');
@@ -6393,10 +6463,24 @@ function drawBatsToggle(cy) {
   });
 }
 
+// 끝 화면의 '새 칭호' 띠: 위 전광판 바로 아래에 띄워 끝 화면 줄들을 밀지 않는다(로그인했으면 서버 답 뒤에 떠서, 줄을 끼우면 아래 단추가 늦게 밀렸다.
+// 작은 폰은 끝 화면 아래가 주소와 6px뿐이라 줄을 더할 자리도 없다)
+function drawNewTitles() {
+  const names = titleNames(game.newTitles ?? []);
+  if (!names.length) return;
+  // 폰은 작은 화면(375×548)에서 끝 화면 머리 글자와 닿지 않게 조금 작게, 전광판에 붙여 둔다
+  const m = view.mobile, L = boardLayout(), y = L.py + L.ph + (m ? 18 : 28), str = `새 칭호: ${names.join(' · ')}!`, size = m ? 13 : 17;
+  ctx.font = font(size, 800);
+  const w = Math.min(view.w - 24, ctx.measureText(str).width + 30), h = size + (m ? 11 : 14);
+  roundRect(view.w / 2 - w / 2, y - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(28,22,6,0.88)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(242,201,76,0.85)'; ctx.lineWidth = 1.5; ctx.stroke();
+  text(str, view.w / 2, y + 1, { size, weight: 800, color: '#f2c94c' });
+}
 function drawGameOver() {
   dim(0.72);
   drawSiteMark();
   if (game.mode === 'scenario') { drawScenarioOver(); return; }
+  if (!game.aim) drawNewTitles();
   const m = view.mobile, cx = view.w / 2, s = game.summary;
   let y = view.h * 0.19;
   // 조준 판은 의견 보내기 줄만큼 길어서, 낮은 화면(사파리 375×548)에서는 '처음으로' 밑줄이 아래 주소(drawSiteMark)와 8px 떨어지게 30px까지 당겨 올린다
@@ -6719,6 +6803,7 @@ function recordGame() {
     const best = store.get('best', 0);   // 이 기기 최고(로그아웃했을 때 메뉴·끝 화면이 쓴다)
     if (game.score > best) store.set('best', game.score);
     startBest(best);
+    startTitles();
     if (!loggedIn() && !game.fixedSeed) setWeekBest(weekStartOf(game.summary.date), game.score);   // 로그인했으면 서버 답으로(submitScore)
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
@@ -6836,7 +6921,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
   if (game.state === 'title') startDefault();   // 버튼이 아닌 빈 곳을 누르면 시작
   else if (game.state === 'pitch' && game.swingAt == null) swing(eventTime, x == null ? 'key' : kind, game.aim && x != null ? gripSpot(x, y, 'mouse') : null);   // 조준 판의 클릭은 그 자리를 손잡이로
   else if (game.state === 'calib') calibTap(eventTime);
-  else if (game.state === 'records' && x == null) goTitle();
+  else if ((game.state === 'records' || game.state === 'titles') && x == null) goTitle();
   else if (game.state === 'news' && x == null) openMenu();
   else if (game.state === 'ranking' && x == null) closeRanking();
   else if (canSkip()) skipToBeat();   // 건너뛰게 한 탭은 다음 공으로 넘어가지 않는다
@@ -6914,7 +6999,7 @@ window.addEventListener('keydown', (e) => {
   } else if (e.code === 'KeyR' && game.state === 'result') startReplay();
   else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && (game.state === 'title' || game.state === 'over')) setBats(e.code === 'ArrowLeft' ? 'L' : 'R');
   else if (e.code === 'Escape' && game.state !== 'title') goTitle();
-  else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'news', 'calib'].includes(game.state)) {
+  else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'titles', 'news', 'calib'].includes(game.state)) {
     if (/^Digit[1-6]$/.test(e.code)) setPractice({ type: PRACTICE_TYPES[Number(e.code.slice(5)) - 1] });
     else if (e.code === 'KeyS') setPractice({ slow: !game.practice.slow });
     else if (e.code === 'KeyL') setPractice({ throws: game.practice.throws === 'L' ? 'R' : 'L' });
@@ -6986,6 +7071,7 @@ function render(time) {
   if (game.state === 'title') { drawTitle(time); drawToast(); return; }
   if (game.state === 'calib') { drawCalib(); drawToast(); return; }
   if (game.state === 'records') { drawRecords(); drawToast(); return; }
+  if (game.state === 'titles') { drawTitles(); drawToast(); return; }
   if (game.state === 'news') { drawNews(); drawToast(); return; }
   if (game.state === 'onboard') { drawOnboard(); drawToast(); return; }
   if (game.state === 'ranking') { drawRanking(); drawToast(); return; }

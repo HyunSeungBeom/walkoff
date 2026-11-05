@@ -5,6 +5,7 @@ import { sign, verify, allowedReturn } from '../src/auth.js';
 import { kstDay, weekStart, addDays, maxScoreFor } from '../src/rules.js';
 import { DEFAULTS } from '../src/shop.js';
 import { makeSequence, pitcherHand, zoneMiss } from '../../js/core/pitches.js';
+import { scoreRange } from '../../js/core/score.js';
 import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
 import { memoryD1 } from './d1.js';
 import { perfectBatter, playScenario, randomBatter, whiffBatter } from './scenario-play.js';
@@ -61,6 +62,9 @@ async function seeded(token) {
   return t;
 }
 const score = (t, patch = {}) => ({ nick: '민성', team: 'lg', day: kstDay(Date.now()), mode: 'challenge', token: t.token, seed: t.seed, lights: played(t.seed), score: 3000, ...patch });
+// 2026-11-05부터 게임이 보내는 전광판: 안타 종류(S 단타·D 2루타·T 3루타·H 홈런)를 담는다. 존 안 공을 모두 code 안타로 친 판과, 그 판으로 낼 수 있는 점수 범위
+const playedAs = (seed, code) => played(seed).replace(/G/g, code);
+const rangeOf = (seed, lights) => scoreRange(lights, makeSequence(seed, pitcherHand(seed) === 'L'));
 const NO_TICKET = { token: 'no-such-token', seed: 42 };   // 로그인부터 막히는 요청에 넣는 아무 표
 
 test('로그인 시작: 카카오로 보내고, 허용하지 않은 돌아갈 주소는 거절한다', async () => {
@@ -326,4 +330,40 @@ test('로그인 표: 서명, 종류, 기한을 모두 본다', async () => {
   assert.equal(await verify('s2', t, 's', 1000), null);    // 다른 비밀값
   assert.equal(await verify('s1', 'abc', 's', 1000), null);
   assert.equal(await verify('s1', `${t}x`, 's', 1000), null);
+});
+
+test('점수 검사(2026-11-05): 안타 종류를 담은 전광판은 점수 하한·상한을 모두 본다. 예전 G 전광판은 그대로(상한만) 받고, G와 종류를 섞으면 거절한다', async () => {
+  const a = (await login('c1', 'p-device-0001')).hash.login;
+  const send = async (patch) => { const t = await seeded(a), lights = patch.lights?.(t.seed) ?? playedAs(t.seed, 'S'), r = rangeOf(t.seed, lights); return [r, await call('POST', '/scores', { token: a, body: score(t, { lights, score: patch.score(r) }) })]; };
+  const [r, ok] = await send({ score: (x) => x.min });
+  assert.ok(r.max > r.min);   // 존 안 공 안타마다 정타 +100만 모른다
+  assert.equal(ok.status, 200);
+  assert.equal((await send({ score: (x) => x.max }))[1].status, 200);
+  for (const bad of [(x) => x.min - 100, (x) => x.max + 100]) {
+    const [, res] = await send({ score: bad });
+    assert.deepEqual([res.status, (await res.json()).error], [400, 'bad_score']);
+  }
+  const [, mixed] = await send({ lights: (seed) => playedAs(seed, 'S').replace('S', 'G'), score: () => 3000 });
+  assert.deepEqual([mixed.status, (await mixed.json()).error], [400, 'bad_lights']);
+  const legacy = await call('POST', '/scores', { token: a, body: score(await seeded(a)) });   // 예전 게임(G, 상한만 본다)
+  assert.equal(legacy.status, 200);
+});
+
+test('칭호(2026-11-05): 10구 판을 받을 때 그 판의 전광판으로 칭호를 정해 계정에 남기고(같은 칭호는 한 번), /me와 /rankings(대표 칭호 하나)에 보인다', async () => {
+  const a = (await login('c1', 'p-device-0001')).hash.login, b = (await login('c3', 'p-device-0002')).hash.login;
+  const hit = async (token, code, nick) => { const t = await seeded(token), lights = playedAs(t.seed, code); return (await call('POST', '/scores', { token, body: score(t, { nick, lights, score: rangeOf(t.seed, lights).min }) })).json(); };
+  const first = await hit(a, 'H', '가람');   // 존 안 공을 모두 홈런: 연속 홈런 10번, 마지막 기회도 홈런
+  assert.equal(first.ok, true);
+  for (const id of ['hrking', 'walkoff', 'firsthr']) assert.ok(first.newTitles.includes(id), `${id}를 받는다`);
+  assert.deepEqual(first.titles, first.newTitles);
+  const again = await hit(a, 'H', '가람');   // 이미 받은 칭호는 다시 주지 않는다(다른 판이라 볼 5개면 선구안은 새로 받을 수 있다)
+  assert.deepEqual([again.ok, again.newTitles.filter((id) => first.titles.includes(id))], [true, []]);
+  assert.ok(first.titles.every((id) => again.titles.includes(id)));
+  assert.deepEqual((await me(a)).titles, again.titles);
+  const plain = await hit(b, 'S', '나래');   // 단타만 친 사람은 안타 종류 칭호가 없다(볼 5개면 선구안)
+  assert.deepEqual(plain.newTitles.filter((id) => id !== 'eye'), []);
+  const ranking = await (await call('GET', '/rankings')).json();
+  const titleOf = (nick) => ranking.players.find((p) => p.nick === nick).title;
+  assert.equal(titleOf('가람'), 'hrking');   // 대표 칭호는 받은 것 가운데 우선순위가 가장 높은 것(사이클링 다음 홈런왕)
+  assert.equal(titleOf('나래'), plain.titles.includes('eye') ? 'eye' : null);
 });
