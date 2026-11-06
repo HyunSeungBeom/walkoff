@@ -2,7 +2,7 @@
 // 층 검사(2026-11-03 코드 나누기). 게임 모듈(js/)이 정한 방향으로만 서로 가져오는지 본다. 어기면 1로 끝나서 CI가 배포를 멈춘다.
 //  층: core(규칙) ← sim(장면 일정) ← game(판 진행) ← view(그리기), infra(바깥 연결) ← core, main.js → 모두.
 //      아래 층으로 건너뛰어 가져오는 것은 되고, 위 층에서 가져오기와 파일끼리 빙 도는 것은 안 된다. game은 infra를 가져오지 않는다.
-//  core·game에는 화면·저장소·시간·무작위(window, document, localStorage, navigator, performance, Date, Math.random 등)가 없다(game은 포트로 받는다).
+//  core·sim·game에는 화면·저장소·시간·무작위(window, document, localStorage, navigator, performance, Date, Math.random 등)가 없다(sim·game은 포트로 받는다).
 //  core는 랭킹 서버(wrangler)와 node도 읽어서 같은 폴더의 './x.js'처럼 확장자까지 쓴 경로만 가져온다.
 //  view는 판 상태(game·settings)에 값을 넣지 않는다(바꾸는 것은 game 함수로).
 const fs = require('fs');
@@ -10,7 +10,7 @@ const path = require('path');
 
 const JS = path.join(__dirname, '..', 'js');
 const ALLOW = { core: ['core'], sim: ['core', 'sim'], game: ['core', 'sim', 'game'], view: ['core', 'sim', 'game', 'view'], infra: ['core', 'infra'] };
-const PURE = ['core', 'game'];
+const PURE = ['core', 'sim', 'game'];
 const BANNED = /\b(window|document|localStorage|sessionStorage|navigator|performance|globalThis|requestAnimationFrame|setTimeout|setInterval|fetch|Date)\b|\bMath\.random\b/;
 
 // 주석과 글자를 빈칸으로 바꾼 코드(줄 수는 그대로, 템플릿 글자 안 ${…}는 코드로 남긴다)
