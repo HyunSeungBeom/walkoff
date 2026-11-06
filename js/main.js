@@ -3220,13 +3220,23 @@ function startTitles() {   // recordGame. 로그인했으면 서버 답(settleTi
   store.set('titles', TITLES.map((t) => t.id).filter((id) => have.includes(id) || got.includes(id)));
   game.newTitles = got;
 }
-// 칭호 배지: 금색 테두리 알약(왼쪽 끝 x, 가운데 높이 y). 메뉴 카드의 닉네임 옆·랭킹 줄에 쓴다. 폭을 돌려준다
-function titleBadge(x, y, label, size) {
+// 칭호 등급 색(2026-11-06 사용자 '야구의신만 칭호색을 다르게, 어려운 것들은 칭호색을 다르게'): 보통 은색·희귀 파랑·전설 금색·웃음 연두이고,
+// ⭐야구의신⭐만 무지개가 천천히 흐른다. 랭킹 줄·메뉴 카드 배지, 칭호 화면, 끝 화면 '새 칭호' 띠가 같은 색을 쓴다
+const TIER_COLOR = { legend: '#f2c94c', rare: '#5ab0ff', normal: '#d9dde3', fun: '#8bd450' };
+function titleInk(t, x = 0, w = 100) {   // 칭호 t의 색. 야구의신은 x에서 폭 w에 걸친 무지개
+  if (t?.id !== 'god') return TIER_COLOR[t?.tier] ?? TIER_COLOR.legend;
+  const g = ctx.createLinearGradient(x, 0, x + w, 0), shift = (performance.now() / 2400) % 1;
+  for (let i = 0; i <= 6; i++) g.addColorStop(i / 6, `hsl(${Math.round(((i / 6 + shift) % 1) * 360)}, 95%, 68%)`);
+  return g;
+}
+const tintOf = (t, a) => (t?.id === 'god' ? `rgba(255,255,255,${a})` : hexAlpha(titleInk(t), a));   // 등급 색 바탕(야구의신은 흰빛)
+// 칭호 배지: 등급 색 테두리 알약(왼쪽 끝 x, 가운데 높이 y, t는 TITLES 한 줄). 메뉴 카드의 닉네임 옆·랭킹 줄에 쓴다. 폭을 돌려준다
+function titleBadge(x, y, t, size) {
   ctx.font = font(size, 800);
-  const w = ctx.measureText(label).width + 14, h = size + 8;
-  roundRect(x, y - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(242,201,76,0.16)'; ctx.fill();
-  ctx.strokeStyle = 'rgba(242,201,76,0.8)'; ctx.lineWidth = 1; ctx.stroke();
-  text(label, x + w / 2, y + 0.5, { size, weight: 800, color: '#f2c94c' });
+  const w = ctx.measureText(t.short).width + 14, h = size + 8, ink = titleInk(t, x, w), god = t.id === 'god';
+  roundRect(x, y - h / 2, w, h, h / 2); ctx.fillStyle = tintOf(t, god ? 0.12 : 0.16); ctx.fill();
+  ctx.strokeStyle = god ? ink : tintOf(t, 0.8); ctx.lineWidth = god ? 1.5 : 1; ctx.stroke();
+  text(t.short, x + w / 2, y + 0.5, { size, weight: 800, color: ink });
   return w;
 }
 const titleBadgeW = (label, size) => { ctx.font = font(size, 800); return ctx.measureText(label).width + 14; };
@@ -3235,10 +3245,10 @@ function settleTitles(s, data) {   // /scores·/me 답(옛 서버는 칭호가 �
   if (data?.counts && typeof data.counts === 'object') store.set('accountCounts', cleanCounts(data.counts));
   if (s && game.summary === s && Array.isArray(data?.newTitles)) game.newTitles = data.newTitles.filter((id) => titleById(id));
 }
-// 칭호 화면(메뉴 '기록' 묶음): 등급(전설·희귀·보통·웃음)마다 칭호와 조건, 쌓은 수(12 / 30)를 보이고 받은 것은 금색이다. 50개라 넘치면 끌어 넘긴다(titleList)
+// 칭호 화면(메뉴 '기록' 묶음): 등급(전설·희귀·보통·웃음)마다 칭호와 조건, 쌓은 수(12 / 30)를 보이고 받은 것은 등급 색이다. 50개라 넘치면 끌어 넘긴다(titleList)
 function drawTitles() {
   dim(0.84);
-  const m = view.mobile, cx = view.w / 2, w = m ? view.w - 40 : 520, x0 = cx - w / 2, have = myTitles(), counts = myCounts(), gold = '#f2c94c';
+  const m = view.mobile, cx = view.w / 2, w = m ? view.w - 40 : 520, x0 = cx - w / 2, have = myTitles(), counts = myCounts();
   let y = view.h * (m ? 0.07 : 0.09);
   text('칭호', cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 30 : 38;
@@ -3247,16 +3257,16 @@ function drawTitles() {
   y = beginScroll(titleList, 'titles', y + (m ? 16 : 20), view.h - (m ? 110 : 120));
   for (const [tier, label] of TIERS) {
     const list = TITLES.filter((t) => t.tier === tier);
-    text(`${label} · ${list.filter((t) => have.includes(t.id)).length} / ${list.length}`, x0 + 4, y + headH * 0.6, { size: m ? 13 : 14, weight: 800, color: gold, align: 'left' });
+    text(`${label} · ${list.filter((t) => have.includes(t.id)).length} / ${list.length}`, x0 + 4, y + headH * 0.6, { size: m ? 13 : 14, weight: 800, color: TIER_COLOR[tier], align: 'left' });
     y += headH;
     for (const t of list) {
-      const got = have.includes(t.id), n = Math.min(counts[t.key] ?? 0, t.need);
-      roundRect(x0, y + 3, w, rowH - 6, 12); ctx.fillStyle = got ? 'rgba(242,201,76,0.14)' : 'rgba(255,255,255,0.05)'; ctx.fill();
-      if (got) { ctx.strokeStyle = 'rgba(242,201,76,0.55)'; ctx.lineWidth = 1; ctx.stroke(); }
+      const got = have.includes(t.id), n = Math.min(counts[t.key] ?? 0, t.need), ink = titleInk(t, x0, w);
+      roundRect(x0, y + 3, w, rowH - 6, 12); ctx.fillStyle = got ? tintOf(t, 0.14) : 'rgba(255,255,255,0.05)'; ctx.fill();
+      if (got) { ctx.strokeStyle = t.id === 'god' ? ink : tintOf(t, 0.55); ctx.lineWidth = t.id === 'god' ? 1.5 : 1; ctx.stroke(); }
       ctx.beginPath(); ctx.arc(x0 + 20, y + rowH / 2, m ? 7 : 8, 0, Math.PI * 2);
-      if (got) { ctx.fillStyle = gold; ctx.fill(); } else { ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke(); }
-      text(t.name, x0 + 38, y + rowH * 0.36, { size: m ? 15 : 16, weight: 800, color: got ? gold : 'rgba(255,255,255,0.85)', align: 'left' });
-      text(got ? '받음' : `${n.toLocaleString()} / ${t.need.toLocaleString()}`, x0 + w - 14, y + rowH * 0.36, { size: m ? 12 : 13, weight: 700, color: got ? gold : 'rgba(255,255,255,0.6)', align: 'right' });
+      if (got) { ctx.fillStyle = ink; ctx.fill(); } else { ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke(); }
+      text(t.name, x0 + 38, y + rowH * 0.36, { size: m ? 15 : 16, weight: 800, color: got ? ink : 'rgba(255,255,255,0.85)', align: 'left' });
+      text(got ? '받음' : `${n.toLocaleString()} / ${t.need.toLocaleString()}`, x0 + w - 14, y + rowH * 0.36, { size: m ? 12 : 13, weight: 700, color: got ? ink : 'rgba(255,255,255,0.6)', align: 'right' });
       ctx.font = font(ds, 600);   // 작은 폰에서 긴 조건은 끝을 줄인다
       text(fitText(t.desc, w - 52), x0 + 38, y + rowH * 0.7, { size: ds, weight: 600, color: got ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.5)', align: 'left' });
       y += rowH;
@@ -3564,11 +3574,11 @@ function drawRankRow(y, x0, w, cells, highlight) {
   text(rank, x0 + 18, y, { size: m ? 13 : 15, weight: 800, color: '#f2c94c' });
   if (t) { ctx.beginPath(); ctx.arc(x0 + 46, y, 6, 0, Math.PI * 2); ctx.fillStyle = t.main; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = t.accent; ctx.stroke(); }
   text(name, x0 + 60, y, { size: m ? 13 : 15, weight: 700, align: 'left' });
-  if (badge) {   // 대표 칭호 배지(2~4글자): 이름 뒤에 들어갈 자리가 있을 때만(폰은 줄이 좁다)
+  if (badge) {   // 대표 칭호 배지(2~4글자, 등급 색. badge는 TITLES 한 줄): 이름 뒤에 들어갈 자리가 있을 때만(폰은 줄이 좁다)
     ctx.font = font(m ? 13 : 15, 700);
     const bx = x0 + 60 + ctx.measureText(name).width + 6, bs = m ? 10 : 11;
     ctx.font = font(m ? 11 : 13, 600);
-    if (bx + titleBadgeW(badge, bs) <= subX - ctx.measureText(sub).width / 2 - 6) titleBadge(bx, y, badge, bs);
+    if (bx + titleBadgeW(badge.short, bs) <= subX - ctx.measureText(sub).width / 2 - 6) titleBadge(bx, y, badge, bs);
   }
   text(sub, subX, y, { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
   text(total, x0 + w, y, { size: m ? 13 : 15, weight: 800, align: 'right' });
@@ -3650,7 +3660,7 @@ function drawRanking() {
         if (!row) { text('…', cx, y, { size: 14, color: 'rgba(255,255,255,0.5)' }); y += step; continue; }
         const total = `${((players ? row.best : null) ?? row.total ?? 0).toLocaleString()}점`, r = { x: x0 - 8, y: y - step / 2, w: w + 16, h: step };   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
         if (players) {
-          drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total, titleById(row.title)?.short], row.me);
+          drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total, titleById(row.title)], row.me);
           scrollButton(rankList, r, `랭킹 줄 ${row.rank}`, () => openRankLook(row));
         } else {
           drawRankRow(y, x0, w, [String(row.rank), row.team, teamById(row.team)?.name ?? row.team, `${row.players}명`, total], row === mine);
@@ -3710,7 +3720,7 @@ function drawRankTeam() {
   const step = m ? 44 : 40;   // 폰 줄은 44px(누르는 자리)
   y = beginScroll(rankList, `team:${t.team}`, y + (m ? 14 : 18), view.h - (m ? 124 : 134)) + step / 2;
   rows.forEach((p, i) => {
-    drawRankRow(y, x0, w, [p.teamRank == null ? '-' : String(p.teamRank), p.team, p.nick, `${p.days}일`, `${p.pts.toLocaleString()}점`, titleById(p.title)?.short], p.me);
+    drawRankRow(y, x0, w, [p.teamRank == null ? '-' : String(p.teamRank), p.team, p.nick, `${p.days}일`, `${p.pts.toLocaleString()}점`, titleById(p.title)], p.me);
     scrollButton(rankList, { x: x0 - 8, y: y - step / 2, w: w + 16, h: step }, `팀원 줄 ${i + 1}`, () => openRankLook(p));
     y += step;
   });
@@ -4694,10 +4704,10 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 줄을 더하면 끝 글자를 올려 읽은 사람에게도 NEW를 다시 띄운다), label은 화면 머리
-  { id: '2026-11-06b', label: '11/6', items: [
+  { id: '2026-11-06c', label: '11/6', items: [
     '랭킹에서 팀을 누르면 팀원마다 팀 점수를 얼마나 보탰는지 나와요. 우리 팀 에이스가 누군지 이제 숨길 수 없어요.',
-    '패들렛에 올라온 의견대로 칭호를 넣어 봤어요. 홈런왕부터 아웃왕까지 6개예요.',
-    "아웃왕은 받고 싶진 않겠지만… 조건은 메뉴 '칭호'에서 볼 수 있고, 로그인하면 랭킹에도 붙어요.",
+    '칭호를 50개로 늘리고, 한 판에 받던 것을 여러 판 쌓아야 받게 바꿨어요. 그래서 전에 받은 칭호는 첫 홈런만 남았어요.',
+    "어려운 칭호일수록 배지 색이 달라요. 기회 10번을 모두 홈런으로 치면 무지개빛 '야구의신'이에요.",
   ] },
   { id: '2026-11-05f', label: '11/5', items: [   // 11/5에 네 번(a·c·d·f) 낸 소식을 한 항목으로 합치며 가장 늦은 id를 뒀다(읽은 사람에게 NEW를 다시 띄우지 않는다)
     "메뉴를 새로 꾸미고 '조준 타격(실험)'을 넣었어요. 배트로 공이 올 자리를 겨눠 치는 모드예요.",
@@ -4943,11 +4953,11 @@ function drawMenu() {
   if (best > 0) chips.push([['역대 ', soft], [best.toLocaleString(), gold]]);
   if (streak >= 2) chips.push([[String(streak), gold], ['일 연속', soft]]);
   if (coins != null) chips.push([['코인 ', soft], [coins.toLocaleString(), gold]]);
-  const top = titleById(topTitle(myTitles())), bw = top ? titleBadgeW(top.short, c.chip) + 8 : 0;   // 대표 칭호는 닉네임 옆 금색 배지(닉네임이 길면 줄인다)
+  const top = titleById(topTitle(myTitles())), bw = top ? titleBadgeW(top.short, c.chip) + 8 : 0;   // 대표 칭호는 닉네임 옆 등급 색 배지(닉네임이 길면 줄인다)
   ctx.font = font(c.nick, 800);
   const nick = fitText(settings.nick || '-', close.x - 10 - tx - bw), nickY = chips.length ? by + c.badge * 0.3 : by + c.badge / 2;
   text(nick, tx, nickY, { size: c.nick, weight: 800, align: 'left' });
-  if (top) { ctx.font = font(c.nick, 800); titleBadge(tx + ctx.measureText(nick).width + 8, nickY, top.short, c.chip); }
+  if (top) { ctx.font = font(c.nick, 800); titleBadge(tx + ctx.measureText(nick).width + 8, nickY, top, c.chip); }
   ctx.font = font(c.chip, 700);
   const chipW = (parts) => parts.reduce((s, [str]) => s + ctx.measureText(str).width, 0) + (c.chip > 11 ? 18 : 14) + 6;
   const si = chips.findIndex((x) => x[1][0] === '일 연속');
@@ -5057,10 +5067,10 @@ function drawNewTitles() {
   // 폰은 작은 화면(375×548)에서 끝 화면 머리 글자와 닿지 않게 조금 작게, 전광판에 붙여 둔다
   const m = view.mobile, L = boardLayout(), y = L.py + L.ph + (m ? 18 : 28), str = `새 칭호: ${names.join(' · ')}!`, size = m ? 13 : 17;
   ctx.font = font(size, 800);
-  const w = Math.min(view.w - 24, ctx.measureText(str).width + 30), h = size + (m ? 11 : 14);
-  roundRect(view.w / 2 - w / 2, y - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(28,22,6,0.88)'; ctx.fill();
-  ctx.strokeStyle = 'rgba(242,201,76,0.85)'; ctx.lineWidth = 1.5; ctx.stroke();
-  text(str, view.w / 2, y + 1, { size, weight: 800, color: '#f2c94c' });
+  const w = Math.min(view.w - 24, ctx.measureText(str).width + 30), h = size + (m ? 11 : 14), top = titleById(game.newTitles[0]), ink = titleInk(top, view.w / 2 - w / 2, w);   // 가장 높은 새 칭호의 등급 색
+  roundRect(view.w / 2 - w / 2, y - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(14,16,24,0.9)'; ctx.fill();
+  ctx.strokeStyle = ink; ctx.lineWidth = 1.5; ctx.stroke();
+  text(str, view.w / 2, y + 1, { size, weight: 800, color: ink });
 }
 function drawGameOver() {
   dim(0.72);
