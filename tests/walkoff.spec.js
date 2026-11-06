@@ -20,6 +20,15 @@ const SAMPLE_RANKING = {
   count: 2, me: { rank: 2, best: 9100, days: 2, team: 'lg' }, myTeam: { rank: 2, total: 9100, team: 'lg' },
   lastWeek: { player: { rank: 1, nick: '명은', team: 'lotte', best: 11800, days: 7, me: false }, team: { rank: 1, team: 'lotte', total: 20000, players: 1 } },
 };
+// 이번 주 랭킹 답을 실제 서버의 순위 계산(worker/src/rules.js rankSummary)으로 만든다. rows: [닉네임, 팀, 점수, 대표 칭호?], mine: 내 닉네임.
+// 실제 /rankings(worker/src/index.js)처럼 사람은 상위 50명만 오고 total·look·title이 붙으며, 팀 합계·인원은 50위 밖까지 모두로 센다
+async function rankingOf(rows, mine = null) {
+  const { rankSummary } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
+  const list = rows.map(([nick, team, best], i) => ({ id: `p-${i}`, best, team, days: 1 + (i % 3), last: '2026-10-28', nick }));
+  const me = rows.findIndex((r) => r[0] === mine), { ids, ...cur } = rankSummary(list, me >= 0 ? `p-${me}` : null, { withIds: true });
+  const titles = new Map(rows.map((r, i) => [`p-${i}`, r[3] ?? null]));
+  return { ...EMPTY_RANKING, ...cur, players: cur.players.map((p, i) => ({ ...p, total: p.best, look: null, title: titles.get(ids[i]) })), me: cur.me && { ...cur.me, total: cur.me.best } };
+}
 
 // 테스트가 실제 랭킹 서버에 닿지 않도록 서버 주소를 가로채 가짜로 답한다. 받은 요청은 돌려주는 배열에 쌓인다.
 // account: 로그인한 계정에 이미 있는 팀·닉네임(다른 기기에서 쓰던 계정을 흉내 낸다).
@@ -179,6 +188,25 @@ const drawnTexts = (page) => page.evaluate(() => new Promise((resolve) => {
   const next = () => { if (++k < 3) requestAnimationFrame(next); else { proto.fillText = fill; resolve([...seen]); } };
   requestAnimationFrame(next);
 }));
+// 지금 화면을 한 번 그리며 칠한 둥근 네모(색·자리)와 쓴 글자(자리)를 그린 차례대로 모은다. 막대 길이·금색 줄처럼 글자만으로는 못 보는 것을 본다.
+// 둥근 네모는 moveTo·arcTo로 그려서 그 점들의 테두리가 네모 자리다. 색은 캔버스가 바꿔 적는 꼴(#a1b2c3, rgba(1, 2, 3, 0.5))이라 norm으로 맞춘다
+const drawnOps = (page) => page.evaluate(() => {
+  const proto = CanvasRenderingContext2D.prototype, keep = {}, ops = [];
+  let pts = [];
+  const hook = (name, fn) => { keep[name] = proto[name]; proto[name] = function (...a) { fn.call(this, ...a); return keep[name].apply(this, a); }; };
+  hook('beginPath', () => { pts = []; });
+  hook('moveTo', (x, y) => pts.push([x, y]));
+  hook('arcTo', (x1, y1, x2, y2) => pts.push([x1, y1], [x2, y2]));
+  hook('fill', function () {
+    if (!pts.length || typeof this.fillStyle !== 'string') return;
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]), x = Math.min(...xs), y = Math.min(...ys);
+    ops.push({ t: 'fill', style: this.fillStyle, x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y });
+  });
+  hook('fillText', (s, x, y) => ops.push({ t: 'text', s: String(s), x, y }));
+  try { walkoff.render(performance.now() / 1000); } finally { Object.assign(proto, keep); }
+  return ops;
+});
+const norm = (page, color) => page.evaluate((c) => { const g = document.createElement('canvas').getContext('2d'); g.fillStyle = c; return g.fillStyle; }, color);
 // 메뉴 의견 띠의 만든 사람 한마디가 잘리지 않고 다 보이는지(PC는 한 줄, 폰은 두 줄로 나눠 그린다. 줄은 그린 차례대로 모인다)
 const NOTE = '만든 사람이 의견을 하나하나 읽고 고쳐요. 패들렛에 남겨 주세요!';
 const noteShown = (texts) => texts.includes(NOTE) || texts.some((s, i) => `${s} ${texts[i + 1]}` === NOTE);
@@ -2003,6 +2031,191 @@ test.describe('화면', () => {
     await mockApi(page, { rankings: SAMPLE_RANKING });
     await tap(page, '다시 시도');
     await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
+    expect(errors).toEqual([]);
+  });
+
+  // 팀 창(2026-11-06 사용자 '랭킹에서 팀 누르면 누구누구 속해 있는지'): 팀원은 랭킹 서버가 보내는 상위 50명에서 고른다(서버는 그대로)
+  const TEAM_ROWS = [['명은', 'lotte', 14800], ['홈런공장장', 'lg', 16200, 'hrking'], ['민성', 'lg', 12000], ['테스트', 'lg', 7200], ['곰돌이', 'doosan', 8700]];
+  const UNOFFICIAL_TEXT = 'KBO·각 구단과 관계없는 비공식 팬 게임이에요';
+  test('랭킹 팀 창: 팀 줄을 누르면 그 팀 사람만 점수 순으로 나오고, 막대 길이는 팀 점수에 보탠 몫(%)이며 내 줄이 금색이다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { api: { rankings: await rankingOf(TEAM_ROWS, '테스트') } });
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '팀');
+    expect(await drawnTexts(page)).toContain('팀원들의 이번 주 최고 기록을 더한 순위예요 · 누르면 팀원');
+    await tap(page, '팀 줄 lg');
+    expect(await page.evaluate(() => walkoff.game.rankTeam)).toBe('lg');
+    const ink = await norm(page, await page.evaluate(() => walkoff.teamInk(walkoff.teamById('lg')))), track = await norm(page, 'rgba(255,255,255,0.1)'), gold = await norm(page, 'rgba(242,201,76,0.2)');
+    let ops = await drawnOps(page);
+    const texts = ops.filter((o) => o.t === 'text'), fills = (style) => ops.filter((o) => o.t === 'fill' && o.style === style);
+    expect(texts.map((o) => o.s).filter((s) => TEAM_ROWS.some((r) => r[0] === s))).toEqual(['홈런공장장', '민성', '테스트']);   // 그 팀 사람만, 점수 순
+    expect(texts.map((o) => o.s)).toEqual(expect.arrayContaining(['LG 트윈스', '이번 주 1위 · 35,400점 · 3명', '1', '2', '3', '16,200점', '홈런왕', '46%', '34%', '20%']));
+    const tracks = fills(track), bars = fills(ink);   // 줄마다 바탕 줄과 팀 색 막대
+    expect(tracks).toHaveLength(3);
+    expect(bars.map((b, i) => (b.w / tracks[i].w).toFixed(3))).toEqual([16200, 12000, 7200].map((v) => (v / 35400).toFixed(3)));
+    const [mine] = fills(gold), inside = (o) => o.y > mine.y && o.y < mine.y + mine.h;
+    expect(fills(gold)).toHaveLength(1);
+    expect(texts.filter(inside).map((o) => o.s)).toEqual(expect.arrayContaining(['테스트', '7,200점', '20%']));   // 금색 줄은 내 줄
+    expect(texts.filter(inside).map((o) => o.s)).not.toContain('홈런공장장');
+    await tap(page, '‹ 랭킹으로');
+    await tap(page, '팀 줄 lotte');   // 내가 없는 팀은 금색 줄이 없다
+    ops = await drawnOps(page);
+    expect(ops.filter((o) => o.t === 'text').map((o) => o.s).filter((s) => TEAM_ROWS.some((r) => r[0] === s))).toEqual(['명은']);
+    expect(fills(gold)).toHaveLength(0);
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹 팀 창: 50명이 넘으면 상위 50명에 없는 팀원은 외 N명으로 묶고, 내가 50위 밖이면 내 줄을 붙인다(팀 안 순위를 모르면 -)', async ({ page }) => {
+    // 56명: lg는 1·20·40위와 50위 밖인 51·53(나)·55위, 나머지는 여섯 팀을 돌아가며
+    const others = ['lotte', 'doosan', 'kia', 'hanwha', 'ssg', 'nc'], lg = [0, 19, 39, 50, 52, 54];
+    const rows = Array.from({ length: 56 }, (_, i) => [i === 52 ? '테스트' : `타자${1000 + i}`, lg.includes(i) ? 'lg' : others[i % others.length], 30000 - i * 100]);
+    const rankings = await rankingOf(rows, '테스트'), lgTeam = rankings.teams.find((t) => t.team === 'lg');
+    expect([rankings.players.length, rankings.me.rank, lgTeam.players, lgTeam.total]).toEqual([50, 53, 6, 158600]);   // 서버처럼 사람은 50명만 온다
+    const errors = await open(page, '?seed=42', { api: { rankings } });
+    const shown = async () => (await drawnOps(page)).filter((o) => o.t === 'text').map((o) => o.s);
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '팀');
+    await tap(page, '팀 줄 lg');
+    let texts = await shown();
+    expect(texts).toEqual(expect.arrayContaining([`이번 주 ${lgTeam.rank}위 · 158,600점 · 6명`, '타자1000', '타자1019', '타자1039', '테스트', '24,800점', '-', '외 2명', '49,600점']));
+    expect(texts.filter((s) => ['타자1050', '타자1054'].includes(s))).toEqual([]);   // 50위 밖 다른 팀원은 이름을 모른다
+    expect(texts.indexOf('테스트')).toBeLessThan(texts.indexOf('외 2명'));
+    await tap(page, '팀원 줄 4');   // 붙인 내 줄도 누르면 입은 모습(전체 순위)
+    expect(await page.evaluate(() => { const v = walkoff.game.rankView; return [v.nick, v.rank, v.best]; })).toEqual(['테스트', 53, 24800]);
+    expect((await shown()).some((s) => s.includes('이번 주 53위 · 24,800점'))).toBe(true);
+    await tap(page, '‹ 팀으로');
+    await tap(page, '‹ 랭킹으로');
+    await tap(page, '팀 줄 lotte');   // 내가 없는 팀에는 내 줄을 안 붙인다
+    expect(await shown()).not.toContain('테스트');
+
+    await page.unroute(`${API}/**`);   // 50위 밖 팀원이 나뿐이면 팀 안 순위를 안다
+    await mockApi(page, { rankings: await rankingOf(rows.map((r, i) => (lg.includes(i) && i !== 0 && i !== 52 ? [r[0], 'kt', r[2]] : r)), '테스트') });
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '팀 줄 lg');
+    texts = await shown();
+    expect(texts).toEqual(expect.arrayContaining(['타자1000', '테스트', '1', '2']));
+    expect(texts.filter((s) => s === '-' || s.startsWith('외 '))).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹 팀 창: 팀원 → 입은 모습 → 뒤로 팀 창 → 뒤로 팀 탭, Esc·스페이스바도 한 단계씩이고 팀 창에서는 화살표로 탭이 안 바뀐다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { api: { rankings: await rankingOf(TEAM_ROWS, '테스트') } });
+    const where = () => page.evaluate(() => [walkoff.game.state, walkoff.game.rankTab, walkoff.game.rankTeam, walkoff.game.rankView?.nick ?? null]);
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '팀');
+    await tap(page, '팀 줄 lg');
+    await tap(page, '팀원 줄 2');
+    expect(await where()).toEqual(['ranking', 'teams', 'lg', '민성']);
+    await tap(page, '‹ 팀으로');
+    expect(await where()).toEqual(['ranking', 'teams', 'lg', null]);
+    await tap(page, '‹ 랭킹으로');
+    expect(await where()).toEqual(['ranking', 'teams', null, null]);
+
+    await tap(page, '팀 줄 lg');
+    await tap(page, '팀원 줄 1');
+    await page.keyboard.press('Escape');
+    expect(await where()).toEqual(['ranking', 'teams', 'lg', null]);
+    await page.keyboard.press('ArrowLeft');   // 팀 창 뒤의 탭은 그대로
+    expect(await where()).toEqual(['ranking', 'teams', 'lg', null]);
+    await page.keyboard.press('Escape');
+    expect(await where()).toEqual(['ranking', 'teams', null, null]);
+    await page.keyboard.press('ArrowLeft');   // 목록에서는 화살표로 탭을 바꾼다
+    expect(await where()).toEqual(['ranking', 'players', null, null]);
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Escape');      // 목록에서 Esc는 예전처럼 시작 화면으로
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '팀 줄 lg');
+    await tap(page, '팀원 줄 3');
+    expect(await where()).toEqual(['ranking', 'teams', 'lg', '테스트']);
+    await page.keyboard.press('Space');
+    expect(await where()).toEqual(['ranking', 'teams', 'lg', null]);
+    await page.keyboard.press('Space');
+    expect(await where()).toEqual(['ranking', 'teams', null, null]);
+    await page.keyboard.press('Space');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹 팀 창: 불러오는 중·서버 오류(429 포함)·이번 주 기록 없음에서는 팀 줄이 없어 눌러도 그대로고, 기록 없는 주의 지난주 1위 줄은 안내 글과 안 겹친다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { api: { rankings: await rankingOf(TEAM_ROWS, '테스트') } });
+    const vp = page.viewportSize();
+    const blocked = async (status) => {   // 팀 줄이 있었을 자리(다시 시도 단추 옆)를 눌러 본다
+      expect(await page.evaluate(() => walkoff.ui.buttons.filter((b) => b.label.startsWith('팀 줄')).length), status).toBe(0);
+      for (const f of [0.45, 0.55]) await page.mouse.click(vp.width / 2 - 120, vp.height * f);
+      expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.rankTeam, walkoff.game.ranking.status]), status).toEqual(['ranking', null, status]);
+    };
+    const held = [];
+    await page.route(`${API}/rankings**`, (route) => { held.push(route); });   // 답을 붙잡아 불러오는 중으로 둔다
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '팀');
+    await blocked('loading');
+    await Promise.all(held.map((r) => r.fulfill({ status: 500, headers: CORS, contentType: 'application/json', body: '{"ok":false}' })));
+    await page.unroute(`${API}/rankings**`);
+    await page.waitForFunction(() => walkoff.game.ranking.status === 'error');
+    await blocked('error');
+    await page.route(`${API}/rankings**`, (route) => route.fulfill({ status: 429, headers: CORS, contentType: 'application/json', body: '{"ok":false,"error":"rate_limited"}' }));
+    await tap(page, '다시 시도');
+    await page.waitForFunction(() => walkoff.game.ranking.status === 'error' && walkoff.game.ranking.busy);
+    await blocked('error');
+    await page.unroute(`${API}/rankings**`);
+
+    await page.unroute(`${API}/**`);   // 새 주 첫날: 이번 주는 비었고 지난주 1위는 있다
+    await mockApi(page, { rankings: { ...EMPTY_RANKING, lastWeek: SAMPLE_RANKING.lastWeek } });
+    await tap(page, '다시 시도');
+    await page.waitForFunction(() => walkoff.game.ranking.status === 'ok');
+    await blocked('ok');
+    const texts = (await drawnOps(page)).filter((o) => o.t === 'text');
+    const note = texts.find((o) => o.s.startsWith('아직 이번 주 기록이 없어요')), last = texts.find((o) => o.s.startsWith('지난주 1위'));
+    expect(last.y - note.y).toBeGreaterThanOrEqual(24);   // 전에는 지난주 줄이 안내 글 바로 위에 겹쳤다
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹 목록·팀 창이 작은 화면(320×568·375×667·1280×720)을 넘치면 끌어 넘기고(끄는 동안에는 줄이 안 눌린다), 줄 사이 전체가 누르는 자리(폰 36px·팀원 48px)이며 아래 단추·안내 글과 안 겹친다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '창 크기를 바꿔 가며 보므로 PC에서만 본다');
+    // 16명: 나는 12위, lg 팀원은 8명
+    const teams = ['lg', 'lotte', 'lg', 'doosan', 'lg', 'kia', 'lg', 'hanwha', 'lg', 'ssg', 'lg', 'lg', 'nc', 'lg', 'samsung', 'kt'];
+    const errors = await open(page, '?seed=42', { api: { rankings: await rankingOf(teams.map((team, i) => [i === 11 ? '테스트' : `타자${1000 + i}`, team, 16000 - i * 500, i % 4 ? null : 'hrking']), '테스트') } });
+    const buttons = () => page.evaluate(() => walkoff.ui.buttons.map((b) => ({ label: b.label, r: { ...b.r } })));
+    const list = () => page.evaluate(() => { const L = walkoff.rankList; return { top: L.top, bottom: L.bottom, scroll: L.scroll, max: L.max }; });
+    const wheelToEnd = () => page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 5000, cancelable: true })));
+    for (const [w, h] of [[320, 568], [375, 667], [1280, 720]]) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.evaluate(() => { walkoff.goTitle(); walkoff.openRanking('title'); walkoff.game.rankTab = 'players'; });
+      await page.waitForFunction((w) => walkoff.view.w === w && walkoff.ui.buttons.some((b) => b.label === '랭킹 줄 1'), w);
+      const L = await list(), bs = await buttons(), rows = bs.filter((b) => b.label.startsWith('랭킹 줄'));
+      const unofficial = (await drawnOps(page)).find((o) => o.t === 'text' && o.s === UNOFFICIAL_TEXT);
+      expect(L.max, `${w}×${h} 넘친다`).toBeGreaterThan(0);
+      expect(rows.filter((b) => b.r.y < L.top - 0.5 || b.r.y + b.r.h > L.bottom + 0.5).map((b) => b.label), `${w}×${h} 줄은 목록 안`).toEqual([]);
+      expect(bs.filter((b) => ['닫기', '카카오로 로그인하면 나도 올라가요 ›'].includes(b.label)).every((b) => b.r.y >= L.bottom), `${w}×${h} 아래 단추는 목록 밖`).toBe(true);
+      expect(unofficial.y - 7, `${w}×${h} 비공식 안내는 목록 밖`).toBeGreaterThanOrEqual(L.bottom);
+      expect(rows.slice(0, 3).map((b) => Math.round(b.r.h)), `${w}×${h} 줄 사이 전체`).toEqual(Array(3).fill(w < 640 ? 36 : 34));
+      expect(rows.map((b) => b.label), `${w}×${h} 내 줄은 아래에 가려져 있다`).not.toContain('랭킹 줄 12');
+      // 끌어 올리면 넘어가고 손가락 밑의 줄은 안 눌린다
+      const r0 = rows[rows.length - 1].r, box = await page.locator('canvas').boundingBox(), drag = Math.min(120, r0.y - L.top);
+      await page.mouse.move(box.x + r0.x + 60, box.y + r0.y + r0.h / 2); await page.mouse.down();
+      await page.mouse.move(box.x + r0.x + 60, box.y + r0.y + r0.h / 2 - drag, { steps: 6 }); await page.mouse.up();
+      expect(await page.evaluate(() => walkoff.game.rankView), `${w}×${h}`).toBe(null);
+      expect((await list()).scroll, `${w}×${h} 끈 만큼`).toBeCloseTo(Math.min(drag, L.max), 0);
+      await wheelToEnd();
+      await page.waitForTimeout(50);
+      expect((await list()).scroll, `${w}×${h} 휠로 끝까지`).toBe(L.max);
+      await tap(page, '랭킹 줄 12');   // 넘칠 때는 뗄 때 누른다
+      expect(await page.evaluate(() => walkoff.game.rankView?.nick), `${w}×${h}`).toBe('테스트');
+      await page.keyboard.press('Escape');
+      expect((await list()).scroll, `${w}×${h} 돌아오면 넘기던 자리`).toBe(L.max);
+    }
+    await page.setViewportSize({ width: 320, height: 568 });   // 팀원 8명은 320×568에 다 안 들어간다
+    await page.evaluate(() => { walkoff.openRanking('title'); walkoff.game.rankTab = 'teams'; });
+    await tap(page, '팀 줄 lg');
+    await page.waitForFunction(() => walkoff.rankList.key === 'team:lg' && walkoff.ui.buttons.some((b) => b.label === '팀원 줄 1'));   // 팀 창을 한 번 그린 뒤
+    const T = await list(), members = (await buttons()).filter((b) => b.label.startsWith('팀원 줄'));
+    expect(T.max).toBeGreaterThan(0);
+    expect(members.slice(0, 3).map((b) => Math.round(b.r.h))).toEqual([48, 48, 48]);
+    expect(members.map((b) => b.label)).not.toContain('팀원 줄 8');
+    await wheelToEnd();
+    await tap(page, '팀원 줄 8');
+    expect(await page.evaluate(() => walkoff.game.rankView?.nick)).toBe('타자1013');
     expect(errors).toEqual([]);
   });
 
