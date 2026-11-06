@@ -6,6 +6,8 @@ const { defineConfig, devices } = require('@playwright/test');
 // 다른 작업 폴더에서 동시에 테스트를 돌릴 때는 WALKOFF_PORT로 포트를 바꾼다. 로컬에서는 이미 떠 있는 서버를 그대로 쓰므로,
 // 같은 포트를 쓰면 다른 폴더의 게임을 테스트하게 된다(2026-10-29, 두 세션이 함께 작업하다 겪음)
 const PORT = Number(process.env.WALKOFF_PORT) || 4173;
+// WALKOFF_ROOT를 주면 그 폴더의 게임을 연다(CI가 배포처럼 줄인 js로 @min 테스트를 한 번 더 돌릴 때, scripts/minify.js)
+const ROOT = process.env.WALKOFF_ROOT ?? '';
 module.exports = defineConfig({
   testDir: './tests',
   testMatch: '**/*.spec.js',   // tests/core/*.test.mjs는 node --test로 돈다
@@ -13,7 +15,7 @@ module.exports = defineConfig({
   timeout: 120_000,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
   use: { trace: 'retain-on-failure' },
-  webServer: { command: `node scripts/serve.js ${PORT}`, url: `http://127.0.0.1:${PORT}/index.html`, reuseExistingServer: !process.env.CI },
+  webServer: { command: `node scripts/serve.js ${PORT} ${ROOT}`.trim(), url: `http://127.0.0.1:${PORT}/index.html`, reuseExistingServer: !process.env.CI },
   projects: [
     { name: 'pc', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
     { name: 'mo', use: { ...devices['Pixel 7'] } },

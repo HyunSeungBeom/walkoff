@@ -7,8 +7,11 @@ const fs = require('fs');
 const path = require('path');
 
 const [site = 'https://hyunseungbeom.github.io/walkoff/', out = '_site'] = process.argv.slice(2);
+// 모듈 하나가 가져오는 다른 모듈(상대 경로). 줄여 올린 판(scripts/minify.js)은 from"./x.js"처럼 큰따옴표에 빈칸이 없다
+const importsOf = (src) => [...src.matchAll(/\b(?:from|import)\s*["'](\.{1,2}\/[^"']+)["']/g)].map((m) => m[1]);
+module.exports = { importsOf };
 
-(async () => {
+if (require.main === module) (async () => {
   const html = await (await fetch(`${site}index.html?nocache=${Date.now()}`)).text();
   const dir = html.match(/src="(js-[0-9a-f]{7})\/main\.js"/)?.[1];
   if (!dir) { console.log('앞 판은 모듈 폴더가 없다(한 파일). 남길 것 없음'); return; }
@@ -24,7 +27,7 @@ const [site = 'https://hyunseungbeom.github.io/walkoff/', out = '_site'] = proce
     const src = await res.text();
     fs.mkdirSync(path.join(out, dir, path.dirname(file)), { recursive: true });
     fs.writeFileSync(path.join(out, dir, file), src);
-    for (const m of src.matchAll(/(?:from\s+|import\s+)'(\.{1,2}\/[^']+)'/g)) queue.push(path.posix.normalize(path.posix.join(path.posix.dirname(file), m[1])));
+    for (const m of importsOf(src)) queue.push(path.posix.normalize(path.posix.join(path.posix.dirname(file), m)));
   }
   console.log(`앞 판 ${dir}의 모듈 ${seen.size}개를 남김`);
 })().catch((e) => {

@@ -30,6 +30,11 @@ jobs:
           node --test 'tests/core/*.test.mjs'
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
+      - name: 줄인 js로 한 번 더 보기(배포 단계와 똑같이 줄여서 @min 테스트만)
+        run: |
+          mkdir _min && cp index.html og.png crowd.mp3 _min/ && cp -r js _min/
+          node scripts/minify.js _min/js
+          WALKOFF_ROOT=_min WALKOFF_PORT=4180 npx playwright test --grep @min
       - name: 실패하면 테스트 보고서 올리기
         if: failure()
         uses: actions/upload-artifact@v7
@@ -52,10 +57,16 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
-      - name: 배포할 파일만 모으고 커밋 번호 넣기
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci   # js를 줄이는 esbuild(scripts/minify.js)
+      - name: 배포할 파일만 모아 js를 줄이고 커밋 번호 넣기
         run: |
           mkdir _site && cp index.html og.png crowd.mp3 _site/
           cp -r js "_site/js-${GITHUB_SHA::7}"   # 게임 모듈은 커밋마다 다른 폴더라, Pages가 10분 캐시하는 동안 옛 index.html과 새 모듈이 섞이지 않는다
+          node scripts/minify.js "_site/js-${GITHUB_SHA::7}"   # 주석·빈칸을 빼고 줄인다(파일·import 경로는 그대로, 소스맵 없음)
           sed -i "s|<div id=\"build\">local</div>|<div id=\"build\">${GITHUB_SHA::7}</div>|" _site/index.html
           sed -i "s|\"js/|\"js-${GITHUB_SHA::7}/|g" _site/index.html   # script와 modulepreload 모두
           grep -q "<div id=\"build\">${GITHUB_SHA::7}</div>" _site/index.html

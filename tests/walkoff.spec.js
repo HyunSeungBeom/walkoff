@@ -360,7 +360,7 @@ test.describe('판정 계산', () => {
     expect(r).toEqual({ sameSeed: true, otherSeed: true, length: 40 });   // 볼은 기회를 안 써서 공을 40개 미리 만든다
   });
 
-  test('끝내기 상황: 밀어내기, 희생플라이, 2스트라이크 파울, 끝내기 홈런', async ({ page }) => {
+  test('끝내기 상황: 밀어내기, 희생플라이, 2스트라이크 파울, 끝내기 홈런', { tag: '@min' }, async ({ page }) => {
     await open(page);
     const r = await page.evaluate(() => {
       const mk = (outs, bases, away, home, b = 0, s = 0) => ({ outs, bases, away, home, count: { b, s }, pa: [], end: null });
@@ -432,7 +432,7 @@ test.describe('판정 계산', () => {
 test.describe('한 판 끝까지', () => {
   test.skip(({ isMobile }) => isMobile, '오래 걸려서 PC에서만 본다');
 
-  test('실제로 친 10구 도전은 서버 검사(서버가 내준 시드의 공 순서·점수 상한·한 판 칠 시간)를 통과한다', async ({ page }) => {
+  test('실제로 친 10구 도전은 서버 검사(서버가 내준 시드의 공 순서·점수 상한·한 판 칠 시간)를 통과한다', { tag: '@min' }, async ({ page }) => {
     test.slow();
     const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
     const errors = await open(page, '', { login: true, api: { seed: 7 } });
@@ -450,7 +450,7 @@ test.describe('한 판 끝까지', () => {
     expect(errors).toEqual([]);
   });
 
-  test('가장 빨리 친 판(공을 놓자마자 휘두르고 바로 다음 공)도 서버의 한 판 칠 시간 검사에 걸리지 않는다', async ({ page }) => {
+  test('가장 빨리 친 판(공을 놓자마자 휘두르고 바로 다음 공)도 서버의 한 판 칠 시간 검사에 걸리지 않는다', { tag: '@min' }, async ({ page }) => {
     test.slow();
     const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
     const { MIN_PITCH_MS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'seeds.js')).href);
@@ -921,7 +921,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test("새 소식: 처음 온 사람은 표시가 없고, 쳐 본 사람은 '≡ 메뉴'에 NEW가 떴다가 읽으면 사라지며, 더 새 소식이 오면 다시 뜬다", async ({ page }) => {
+  test("새 소식: 처음 온 사람은 표시가 없고, 쳐 본 사람은 '≡ 메뉴'에 NEW가 떴다가 읽으면 사라지며, 더 새 소식이 오면 다시 뜬다", { tag: '@min' }, async ({ page }) => {
     const errors = await open(page);   // 처음 온 사람(이 기기에 친 기록이 없음)
     expect(await page.evaluate(() => ({ unread: walkoff.newsUnread(), seen: localStorage.getItem('walkoff.newsSeen') === walkoff.NEWS[0].id }))).toEqual({ unread: false, seen: true });
     // 쳐 본 사람이 처음 이 기능을 만나면(읽은 기록 없음) 첫 소식부터 점이 뜬다
@@ -986,7 +986,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('메뉴 화면: 내 정보 카드(팀·닉네임·최고 기록·코인)와 새 소식 띠, 놀기·기록·내 것·설정 묶음의 줄마다 원래 화면으로 가고, 닫기(X)·Esc로 닫는다', async ({ page }) => {
+  test('메뉴 화면: 내 정보 카드(팀·닉네임·최고 기록·코인)와 새 소식 띠, 놀기·기록·내 것·설정 묶음의 줄마다 원래 화면으로 가고, 닫기(X)·Esc로 닫는다', { tag: '@min' }, async ({ page }) => {
     const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 1250, allTime: 17600 } } });   // 계정 역대 최고는 다른 기기에서 친 17,600
     await page.evaluate(() => localStorage.setItem('walkoff.best', '5200'));
     await page.waitForFunction(() => walkoff.wallet.coins === 1250);
@@ -1434,7 +1434,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('상점: 물건을 하나씩 골라 미리 입혀 봐도 오류가 없고, 물건이 가장 많은 탭도 닫기까지 화면에 들어간다(폰은 키가 작은 360×640)', async ({ page, isMobile }) => {
+  test('상점: 물건을 하나씩 골라 미리 입혀 봐도 오류가 없고, 물건이 가장 많은 탭도 닫기까지 화면에 들어간다(폰은 키가 작은 360×640)', { tag: '@min' }, async ({ page, isMobile }) => {
     if (isMobile) await page.setViewportSize({ width: 360, height: 640 });
     const errors = await open(page);
     await page.evaluate(() => walkoff.openShop('shop'));
@@ -1806,7 +1806,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('관중은 안타·홈런에 일어나 함성을 지르고(홈런이 더 크다), 파울에는 그대로다. 새 물건을 입고 쳐도 오류가 없다', async ({ page }) => {
+  test('관중은 안타·홈런에 일어나 함성을 지르고(홈런이 더 크다), 파울에는 그대로다. 새 물건을 입고 쳐도 오류가 없다', { tag: '@min' }, async ({ page }) => {
     const errors = await open(page);
     await page.evaluate(() => {
       // 불꽃 배트·호랑이 헬멧·오리발·번개 꼬리·폭탄 소리를 입고 친다(효과를 그리는 길에 오류가 없는지)
@@ -2797,7 +2797,7 @@ test.describe('조준 타격(실험)', () => {
     await page.waitForFunction(() => ['windup', 'over'].includes(walkoff.game.state));
   };
 
-  test('PC: 메뉴에서 시작하면 10구 규칙의 조준 판이고, 마우스(배트 손잡이)를 공이 지날 자리를 치는 곳에 두고 제때 치면 맞고 멀면 헛스윙이며 클릭은 누른 자리를 손잡이로 친다. 끝까지 쳐도 랭킹·최고·연속 기록에 안 들어가고 조준 최고 기록만 남는다', async ({ page, isMobile }) => {
+  test('PC: 메뉴에서 시작하면 10구 규칙의 조준 판이고, 마우스(배트 손잡이)를 공이 지날 자리를 치는 곳에 두고 제때 치면 맞고 멀면 헛스윙이며 클릭은 누른 자리를 손잡이로 친다. 끝까지 쳐도 랭킹·최고·연속 기록에 안 들어가고 조준 최고 기록만 남는다', { tag: '@min' }, async ({ page, isMobile }) => {
     test.skip(isMobile, '마우스는 PC에서 본다');
     const errors = await open(page, '?seed=42', { login: true });
     await tap(page, '메뉴');

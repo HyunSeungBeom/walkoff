@@ -65,9 +65,26 @@ test.describe('배포 파일', () => {
     for (const f of mods) expect(html, `${f}을 미리 받는다`).toContain(`<link rel="modulepreload" href="js/${f}">`);
     expect(html.match(/rel="modulepreload"/g)?.length, '안 쓰는 파일은 미리 받지 않는다').toBe(mods.length);
   });
+
+  test('배포 단계가 게임 모듈을 줄여 올린다: 주석이 빠지고 import는 그대로라, 앞 판 남기기(keep-prev)가 줄인 파일에서도 모듈을 모두 따라간다', () => {
+    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    expect(ci).toContain('node scripts/minify.js "_site/js-${GITHUB_SHA::7}"');
+    expect(ci).toContain('node scripts/minify.js _min/js');   // 테스트 단계도 똑같이 줄여 @min 테스트를 한 번 더 돌린다
+    const { minify } = require('../scripts/minify.js'), { importsOf } = require('../scripts/keep-prev.js');
+    const files = fs.readdirSync(path.join(ROOT, 'js'), { recursive: true }).map(String).filter((f) => f.endsWith('.js'));
+    let srcBytes = 0, minBytes = 0;
+    for (const f of files) {
+      const src = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8'), min = minify(src);
+      expect(importsOf(min), f).toEqual(importsOf(src));   // 줄인 파일은 from"./x.js"처럼 큰따옴표에 빈칸이 없다
+      expect(min, `${f} 주석이 빠진다`).not.toMatch(/(^|[^:])\/\/ |\/\*/);
+      srcBytes += src.length; minBytes += min.length;
+    }
+    expect(importsOf(fs.readFileSync(path.join(ROOT, 'js', 'main.js'), 'utf8')).length).toBeGreaterThan(5);
+    expect(minBytes / srcBytes, '절반쯤으로 준다').toBeLessThan(0.6);
+  });
 });
 
-test.describe('버전 표시', () => {
+test.describe('버전 표시', { tag: '@min' }, () => {
   test('오른쪽 아래 커밋 번호 위를 눌러도 캔버스가 받아 경기가 시작된다', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));

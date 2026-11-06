@@ -8,6 +8,7 @@
     "og": "node scripts/og-image.js"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1"
+    "@playwright/test": "1.62.1",
+    "esbuild": "0.28.2"
   }
 }
