@@ -179,6 +179,9 @@ const drawnTexts = (page) => page.evaluate(() => new Promise((resolve) => {
   const next = () => { if (++k < 3) requestAnimationFrame(next); else { proto.fillText = fill; resolve([...seen]); } };
   requestAnimationFrame(next);
 }));
+// 메뉴 의견 띠의 만든 사람 한마디가 잘리지 않고 다 보이는지(PC는 한 줄, 폰은 두 줄로 나눠 그린다. 줄은 그린 차례대로 모인다)
+const NOTE = '만든 사람이 의견을 하나하나 읽고 고쳐요. 패들렛에 남겨 주세요!';
+const noteShown = (texts) => texts.includes(NOTE) || texts.some((s, i) => `${s} ${texts[i + 1]}` === NOTE);
 
 // 가운데 전광판(투수판)은 바뀔 때만 작은 그림(scoreboardCache)에 다시 그려서, 한 번 다시 그리게 하고 그 그림에 쓴 글자와 크기(px)·좌우 끝을 모은다
 const boardGlyphs = (page) => page.evaluate(() => new Promise((resolve) => {
@@ -1040,10 +1043,10 @@ test.describe('화면', () => {
       expect(popups, label).toEqual([]);
       return opened(() => page.touchscreen.tap(r.x + r.w / 2, r.y + r.h / 2));
     };
-    // 메뉴: 새 소식 띠 바로 아래 '의견 보내기' 띠(설명과 바깥 화살표)
+    // 메뉴: 새 소식 띠 바로 아래 '의견 보내기' 띠(만든 사람 한마디와 바깥 화살표)
     await page.evaluate(() => walkoff.openMenu());
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '의견 보내기'));
-    expect(await drawnTexts(page)).toContain('좋았던 점·불편한 점');
+    expect(noteShown(await drawnTexts(page)), '만든 사람 한마디가 잘리지 않고 다 보인다').toBe(true);
     expect(await openLink('의견 보내기')).toBe(FEEDBACK);
     expect(await page.evaluate(() => walkoff.game.state)).toBe('menu');
     // 끝 화면: 10구에는 없고 조준 판에만 있다(공 하나로 끝나는 판)
@@ -1190,6 +1193,7 @@ test.describe('화면', () => {
       const list = await buttons(), rows = list.filter((b) => !['닫기', '새 소식', '의견 보내기'].includes(b.label)), fb = list.find((b) => b.label === '의견 보내기').r;
       expect(rows.every((b) => b.r.h >= 44), `${w}×${h}`).toBe(true);
       expect(fb.y >= 0 && fb.y + fb.h <= h - 40, `${w}×${h} 의견 보내기 띠는 끌지 않아도 다 보인다(아래 흐림 위)`).toBe(true);
+      if (w >= 360) expect(noteShown(await drawnTexts(page)), `${w}×${h} 만든 사람 한마디가 두 줄에 다 들어간다`).toBe(true);   // 320은 글꼴(CI 우분투)에 따라 끝이 줄어들 수 있다
       const m = await page.evaluate(() => ({ max: walkoff.menu.max, fade: walkoff.menu.fade }));
       if (m.max === 0) { expect(m.fade, `${w}×${h}`).toEqual({ top: false, bottom: false }); continue; }
       expect(m.fade, `${w}×${h} 처음`).toEqual({ top: false, bottom: true });
