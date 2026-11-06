@@ -3651,52 +3651,24 @@ function drawRanking() {
 
 // ===== 팀 창 =====
 // 2026-11-06 사용자 '랭킹에서 팀 누르면 누구누구 속해 있는지 모달 띄워서 보여 주는 건 어때?': 팀 탭에서 팀 줄을 누르면 뜬다. 팀 점수는
-// 팀원 최고 기록의 합이라서 누가 몇 점 보탰는지 보이게 한다. 위는 팀 색 띠(배지·이름·팀 순위·합계·인원), 아래는 팀원 줄(팀 안 순위·닉네임·
-// 대표 칭호·이번 주 최고 기록과 팀 점수에 보탠 몫을 팀 색 막대로)이고 내 줄은 금색이다. 팀원을 누르면 입은 모습, 뒤로 가면 팀 창 → 팀 탭.
-// 팀원은 랭킹 서버가 보내는 상위 50명에서 골라서 서버는 그대로다. 그 밖 팀원은 이름을 몰라 '외 N명'으로 묶는다
+// 팀원 최고 기록의 합이라서 누가 몇 점 보탰는지 보이게 한다. 위는 팀 색 띠(배지·이름·팀 순위·합계·인원), 아래는 개인 탭과 같은 팀원 줄(팀 안 순위·
+// 닉네임·대표 칭호·친 날·이번 주 최고 기록)이고 내 줄은 금색이다. 팀원을 누르면 입은 모습, 뒤로 가면 팀 창 → 팀 탭.
+// 처음에는 팀 점수에 보탠 몫을 막대·%로 그렸는데 뺐다(같은 날 사용자 '사람이 많아지면 1%·0.1%가 될 텐데 굳이').
+// 팀원은 랭킹 서버가 보내는 상위 50명에서 골라서 서버는 그대로다. 그 밖 팀원은 이름을 몰라 '외 N명'과 그들의 점수 합으로 묶는다
 // 내가 50위 밖이면 d.me로 내 줄을 붙인다(닉네임·모습·칭호는 이 기기 것). 다른 50위 밖 팀원이 있으면 팀 안 순위를 몰라 비운다(teamRank null)
 function teamBoard(d, team) {
   const t = d.teams.find((x) => x.team === team);
   if (!t) return null;
-  const pts = (p) => p.best ?? p.total ?? 0, share = (v) => (t.total > 0 ? clamp(v / t.total, 0, 1) : 0);   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
+  const pts = (p) => p.best ?? p.total ?? 0;   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
   const list = d.players.filter((p) => p.team === team);
   if (d.me?.team === team && !list.some((p) => p.me)) list.push({ rank: d.me.rank, nick: settings.nick || '-', team, best: pts(d.me), days: d.me.days, me: true, look: wallet.look, title: topTitle(myTitles()), outside: true });
   const rest = Math.max(0, t.players - list.length), restPts = Math.max(0, t.total - list.reduce((s, p) => s + pts(p), 0));
   let rank = 0;
   const rows = list.map((p, i) => {
     rank = i && pts(p) === pts(list[i - 1]) ? rank : i + 1;   // 같은 점수는 같은 순위
-    return { ...p, pts: pts(p), teamRank: p.outside && rest ? null : rank, share: share(pts(p)) };
+    return { ...p, pts: pts(p), teamRank: p.outside && rest ? null : rank };
   });
-  return { t, rows, rest, restPts, restShare: share(restPts) };
-}
-// 어두운 바탕에서 보이는 팀 색(팀 창 막대). 상의 색이 어두우면 같은 빛깔로 밝히고, 검정처럼 빛깔이 없으면 소매 색으로
-function teamInk(t) {
-  const n = parseInt(t.main.slice(1), 16), c = [16, 8, 0].map((s) => (n >> s) & 255), hi = Math.max(...c);
-  if (hi - Math.min(...c) < 24) return t.accent;
-  return hi >= 192 ? t.main : tint(t.main, 192 / hi);
-}
-// 팀 창 한 줄(r: 줄 자리): 윗줄은 순위·닉네임·칭호 배지·점수, 아랫줄은 팀 점수에 보탠 몫(막대·%). muted는 '외 N명' 줄
-function drawTeamRow(r, { rank, name, badge, score, share, color, mine = false, muted = false }) {
-  const m = view.mobile, x0 = r.x + 8, right = r.x + r.w - 8, nx = x0 + (m ? 32 : 40), y1 = r.y + r.h * 0.38, y2 = r.y + r.h * 0.74, size = m ? 14 : 15;
-  const fg = muted ? 'rgba(255,255,255,0.6)' : '#fff';
-  if (mine) { roundRect(r.x, r.y + 2, r.w, r.h - 4, 10); ctx.fillStyle = 'rgba(242,201,76,0.2)'; ctx.fill(); }
-  if (rank) text(rank, x0 + (m ? 12 : 16), r.y + r.h / 2, { size: m ? 15 : 17, weight: 800, color: '#f2c94c' });
-  const total = `${score.toLocaleString()}점`;
-  ctx.font = font(size, 800);
-  const room = right - ctx.measureText(total).width - 12;
-  ctx.font = font(size, 700);
-  const nm = fitText(name, room - nx);
-  text(nm, nx, y1, { size, weight: 700, color: fg, align: 'left' });
-  if (badge) {   // 이름 뒤에 들어갈 자리가 있을 때만
-    ctx.font = font(size, 700);
-    const bx = nx + ctx.measureText(nm).width + 6, bs = m ? 10 : 11;
-    if (bx + titleBadgeW(badge, bs) <= room) titleBadge(bx, y1, badge, bs);
-  }
-  text(total, right, y1, { size, weight: 800, color: fg, align: 'right' });
-  const bh = m ? 6 : 7, bw = right - (m ? 40 : 46) - nx;
-  roundRect(nx, y2 - bh / 2, bw, bh, bh / 2); ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fill();
-  if (share > 0) { roundRect(nx, y2 - bh / 2, Math.max(bh, bw * share), bh, bh / 2); ctx.fillStyle = color; ctx.fill(); }
-  text(`${Math.round(share * 100)}%`, right, y2, { size: m ? 11 : 12, weight: 700, color: 'rgba(255,255,255,0.6)', align: 'right' });
+  return { t, rows, rest, restPts };
 }
 // 팀 창을 그린다. 그 팀이 랭킹에 없으면(다시 불러와 바뀌었으면) 팀 탭으로 돌아가고 false
 function drawRankTeam() {
@@ -3715,17 +3687,16 @@ function drawRankTeam() {
   text(tm?.name ?? t.team, tx, band.y + band.h * 0.37, { size: m ? 18 : 22, weight: 800, align: 'left' });
   text(`이번 주 ${t.rank}위 · ${t.total.toLocaleString()}점 · ${t.players}명`, tx, band.y + band.h * 0.67, { size: m ? 12 : 14, weight: 700, color: 'rgba(255,255,255,0.82)', align: 'left' });
   let y = band.y + band.h + (m ? 20 : 26);
-  text('막대는 팀 점수에 보탠 몫이에요 · 누르면 입은 모습', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
-  const rowH = m ? 48 : 50, ink = tm ? teamInk(tm) : '#f2c94c';
-  y = beginRankList(`team:${t.team}`, y + (m ? 14 : 18), view.h - (m ? 124 : 134));
+  text('팀원 최고 기록의 합이 팀 점수예요 · 누르면 입은 모습', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  const step = m ? 44 : 40;   // 폰 줄은 44px(누르는 자리)
+  y = beginRankList(`team:${t.team}`, y + (m ? 14 : 18), view.h - (m ? 124 : 134)) + step / 2;
   rows.forEach((p, i) => {
-    const r = { x: x0 - 8, y, w: w + 16, h: rowH };
-    drawTeamRow(r, { rank: p.teamRank == null ? '-' : String(p.teamRank), name: p.nick, badge: titleById(p.title)?.short, score: p.pts, share: p.share, color: ink, mine: p.me });
-    rankRowButton(r, `팀원 줄 ${i + 1}`, () => openRankLook(p));
-    y += rowH;
+    drawRankRow(y, x0, w, [p.teamRank == null ? '-' : String(p.teamRank), p.team, p.nick, `${p.days}일`, `${p.pts.toLocaleString()}점`, titleById(p.title)?.short], p.me);
+    rankRowButton({ x: x0 - 8, y: y - step / 2, w: w + 16, h: step }, `팀원 줄 ${i + 1}`, () => openRankLook(p));
+    y += step;
   });
-  if (rest) { drawTeamRow({ x: x0 - 8, y, w: w + 16, h: rowH }, { name: `외 ${rest}명`, score: tb.restPts, share: tb.restShare, color: 'rgba(255,255,255,0.32)', muted: true }); y += rowH; }
-  endRankList(y, x0 + w + 12);
+  if (rest) { text(`외 ${rest}명 · ${tb.restPts.toLocaleString()}점`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.55)' }); y += step; }
+  endRankList(y - step / 2, x0 + w + 12);
   text(UNOFFICIAL, cx, view.h - (m ? 112 : 122), { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.5)' });
   addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, '‹ 랭킹으로', 'primary', closeRanking);
   return true;
@@ -5729,4 +5700,4 @@ prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
-  update, render, swing, followBall, CHASE, teamBoard, teamInk, rankList, tap: primaryAction, paused: false };
+  update, render, swing, followBall, CHASE, teamBoard, rankList, tap: primaryAction, paused: false };
