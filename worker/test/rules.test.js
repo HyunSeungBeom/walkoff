@@ -57,7 +57,7 @@ const ticket = (seed, patch = {}) => ({ id: 'tk', player_id: PID, seed, issued_a
 const challenge = (seed, patch = {}, tk = ticket(seed)) => validateSubmission({ ...base, mode: 'challenge', token: 'tk', lights: played(seed), ...patch }, NOW, PID, tk);
 
 test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
-  assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26' } });   // mode가 없는 예전 게임은 오늘의 10구로 본다
+  assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26', seed: dailySeed(DAY) } });   // mode가 없는 예전 게임은 오늘의 10구로 본다(seed는 맞은 공 순서의 시드)
   assert.equal(check({ mode: 'daily' }).ok, true);
   assert.equal(check({ playerId: 'someone-else' }).value.playerId, PID);   // 보낸 내용의 ID는 쓰지 않는다
   assert.equal(check({ day: '2026-10-26', lights: played(dailySeed('2026-10-26')) }).ok, true);   // 이틀 전까지 받는다

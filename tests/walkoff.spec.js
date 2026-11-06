@@ -39,15 +39,17 @@ async function rankingOf(rows, mine = null) {
 // /scores는 실제 서버처럼 10구 도전에 표가 없거나 모르는 표, 이미 쓴 표면 거절한다.
 // 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다.
 // account.allTime: 계정의 역대 최고(다른 기기에서 친 판 포함). 실제 서버처럼 /rankings?player=와 /scores 답에 allTime으로 주고, 받은 점수로 올린다
-// account.titles: 계정이 받은 칭호. 실제 서버처럼 /scores가 받은 전광판으로 칭호를 정해(core titlesOf) newTitles·titles로 주고, /me에도 titles를 준다
+// account.titles·counts: 계정이 받은 칭호와 쌓은 수. 실제 서버처럼 /scores가 받은 전광판·표의 공 순서·점수로 수를 쌓아(core countsOf) 닿은 칭호를
+// newTitles·titles·counts로 주고, /me에도 titles·counts를 준다
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
   const { replayScenario, WIN_BONUS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'scenario.js')).href);
-  const { TITLE_IDS, titlesOf } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'titles.js')).href);
+  const { TITLE_IDS, countsOf, addCounts, titlesFor } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'titles.js')).href);
+  const { makeSequence, pitcherHand } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'pitches.js')).href);
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
-  const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null, titles: [...(account.titles ?? [])] };
+  const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null, titles: [...(account.titles ?? [])], counts: { ...(account.counts ?? {}) } };
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
     const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
@@ -78,7 +80,7 @@ async function mockApi(page, opts = {}) {
       return (opts.seedHold ? new Promise((done) => heldSeeds.push(done)) : Promise.resolve()).then(() => reply({ ok: true, ...t }));
     }
     if (url.pathname === '/me' && req.method() === 'PUT' && opts.failProfile) return reply({ ok: false, error: 'server_error' }, 500);   // 팀·닉네임 저장 실패(테스트 중에 바꿀 수 있게 요청 때 읽는다)
-    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles] } : { ok: true });
+    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles], counts: { ...record.counts } } : { ok: true });
     if (url.pathname === '/scores') {
       if (opts.scoreFail) return reply({ ok: false, error: 'server_error' }, 500);
       const { score, mode, token, lights } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
@@ -89,9 +91,11 @@ async function mockApi(page, opts = {}) {
       const earned = opts.earned ?? Math.floor(score / 100), best = lower ? score + 1000 : score;
       shop.coins += earned;
       record.allTime = Math.max(record.allTime ?? 0, best);
-      const newTitles = titlesOf(lights).filter((id) => !record.titles.includes(id));
+      const lefty = !!ticket && pitcherHand(ticket.seed) === 'L', seq = ticket ? makeSequence(ticket.seed, lefty) : [];
+      record.counts = addCounts(record.counts, countsOf(lights, seq, lefty, score));
+      const newTitles = titlesFor(record.counts).filter((id) => !record.titles.includes(id));
       record.titles = TITLE_IDS.filter((id) => record.titles.includes(id) || newTitles.includes(id));
-      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles] });
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles], counts: { ...record.counts } });
     }
     if (url.pathname === '/shop/buy') {
       const it = ITEMS.find((i) => i.id === JSON.parse(req.postData() || '{}').item);
@@ -852,9 +856,10 @@ test.describe('화면', () => {
     expect(await drawnTexts(page)).toContain('새 칭호: 첫 홈런!');
     await page.evaluate(() => walkoff.openMenu());
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '칭호'));
-    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['첫 홈런', '1 / 6']));   // 닉네임 옆 배지와 '칭호' 줄의 값
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['첫 홈런', '1 / 50']));   // 닉네임 옆 배지와 '칭호' 줄의 값
     await tap(page, '칭호');
-    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['칭호', '1 / 6 · 받은 칭호 가운데 가장 높은 것이 랭킹에 보여요', '첫 홈런', '홈런 1번', '홈런왕', '한 판에 연속 홈런 5번', '끝내기 홈런', '아웃왕']));
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['칭호', '1 / 50 · 받은 칭호 가운데 등급이 가장 높은 것이 랭킹에 보여요', '전설 · 0 / 15', '보통 · 1 / 4', '첫 홈런', '홈런 1번', '받음',
+      '홈런왕', '홈런 2,000개', '1 / 2,000', '⭐야구의신⭐', '끝내기 홈런', '아웃왕', '0 / 200']));   // 서버가 쌓은 수(홈런 1개)로 얼마나 남았는지
     await page.keyboard.press('Escape');
     await seedReady(page);
     await endOnePitch(page);   // 같은 칭호는 다시 '새 칭호'로 띄우지 않는다
@@ -871,10 +876,34 @@ test.describe('화면', () => {
     expect(await page.evaluate(() => walkoff.store.get('titles', null))).toEqual(['firsthr']);
     await page.evaluate(() => walkoff.openMenu());
     await tap(page, '칭호');
-    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['1 / 6 · 로그인하면 칭호가 랭킹에 보여요', '첫 홈런']));
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['1 / 50 · 로그인하면 칭호가 랭킹에 보여요', '첫 홈런', '1 / 2,000']));
+    expect(await page.evaluate(() => walkoff.store.get('titleCounts', null))).toMatchObject({ hr: 1, firstHr: 1 });   // 이 기기에 쌓는다
     await page.evaluate(() => walkoff.goTitle());
     await endOnePitch(page);
     expect((await drawnTexts(page)).some((t) => t.startsWith('새 칭호'))).toBe(false);   // 이미 받은 칭호
+    expect(errors).toEqual([]);
+  });
+
+  test('칭호(2026-11-06 쌓아서 받기): 한 판으로 받던 옛 칭호는 한 번만 지우고(첫 홈런만 남김), 50개 칭호 화면은 넘치면 끌어 넘기며 쌓은 수가 정한 수에 닿으면 받는다', async ({ page }) => {
+    await page.addInitScript(() => { if (!localStorage.getItem('walkoff.titleRules')) localStorage.setItem('walkoff.titles', JSON.stringify(['cycle', 'firsthr', 'outking'])); });
+    const errors = await open(page, '?seed=42');
+    expect(await page.evaluate(() => [walkoff.store.get('titles', null), walkoff.store.get('titleRules', null)])).toEqual([['firsthr'], 2]);
+    await page.evaluate(() => walkoff.store.set('titles', ['firsthr', 'eye']));   // 지운 뒤에 받은 칭호는 다시 지우지 않는다
+    await reloadUntil(page, () => walkoff.store.get('titles', []).includes('eye'));
+    expect(await page.evaluate(() => walkoff.store.get('titles', null))).toEqual(['firsthr', 'eye']);
+    // 홈런 1,999개 쌓인 기기에서 홈런 한 판: 홈런 공장장(1,000)은 이미 닿았고 홈런왕(2,000)에 닿는다
+    await page.evaluate(() => walkoff.store.set('titleCounts', { hr: 1999 }));
+    await endOnePitch(page);
+    expect(await page.evaluate(() => walkoff.store.get('titles', null))).toEqual(['hrking', 'factory', 'eye', 'firsthr']);   // 등급 순서
+    expect((await drawnTexts(page)).some((t) => t.startsWith('새 칭호') && t.includes('홈런왕') && t.includes('홈런 공장장'))).toBe(true);
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
+    await tap(page, '칭호');
+    await page.waitForFunction(() => walkoff.game.state === 'titles' && walkoff.titleList.key === 'titles');
+    await expect.poll(() => page.evaluate(() => walkoff.titleList.max)).toBeGreaterThan(500);   // 50줄은 어느 화면에도 다 안 들어간다
+    await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 100000, cancelable: true })));
+    expect(await page.evaluate(() => walkoff.titleList.scroll === walkoff.titleList.max)).toBe(true);
+    await tap(page, '처음으로');   // 넘칠 때는 뗄 때 누른다
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
     expect(errors).toEqual([]);
   });
 

@@ -9,7 +9,7 @@ import { validateEvent, recordEvent } from './stats.js';
 import { issueSeed, findSeed, useSeed } from './seeds.js';
 import { checkScenario } from './scenario.js';
 import { readBoard, saveDaily, updateBoard, renameInBoards, removeFromBoards } from './board.js';
-import { grantTitles, titlesIn, topTitle } from './titles.js';
+import { grantTitles, titlesIn, countsIn, gameCounts, topTitle } from './titles.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -112,7 +112,7 @@ async function loginCallback(url, env, now) {
 }
 
 // 로그인 표의 계정. 기록을 지운 계정의 표는 받지 않는다
-const ACCOUNT_COLS = 'player_id, nick, team, coins, owned, equipped, titles';
+const ACCOUNT_COLS = 'player_id, nick, team, coins, owned, equipped, titles, counts';
 const accountById = (db, pid) => db.prepare(`SELECT ${ACCOUNT_COLS} FROM accounts WHERE player_id = ?`).bind(pid).first();
 async function account(request, env, now) {
   const pid = await sessionPlayer(env, request, now);
@@ -175,10 +175,10 @@ export default {
           ...(ticket ? [useSeed(env.DB, ticket, now)] : []),
         ]);
         const earned = await giveCoins(env.DB, s.playerId, coinsFor(s.score), now);
-        // 칭호는 그날 최고 기록이 아닌 판도 받는다(그 판에서 해낸 일이라서). newTitles는 이 판으로 처음 받은 것, titles는 받은 칭호 모두
-        const got = await grantTitles(env.DB, s.playerId, s.lights);
+        // 칭호 수는 그날 최고 기록이 아닌 판도 쌓는다(그 판에서 해낸 일이라서). newTitles는 이 판으로 처음 받은 것, titles는 받은 칭호 모두, counts는 쌓은 수
+        const got = await grantTitles(env.DB, s.playerId, gameCounts(s));
         const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId, now, { lastWeek: false }), accountById(env.DB, s.playerId)]);
-        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, allTime: r.allTime, coins: after.coins, earned, newTitles: got.added, titles: got.titles });
+        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, allTime: r.allTime, coins: after.coins, earned, newTitles: got.added, titles: got.titles, counts: got.counts });
       }
       // 끝내기 상황 한 판의 코인(scenario.js). 표는 10구 도전과 같은 /seeds 표이고, 서버가 그 시드로 판을 다시 돌려 끝·점수를 낸다.
       // 표를 먼저 쓴 것으로 적고 적은 요청만 코인을 준다(같은 표로 동시에 와도 한 번). 랭킹에는 올리지 않는다
@@ -196,7 +196,7 @@ export default {
       }
       if (url.pathname === '/me') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
-        if (method === 'GET') return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team, ...wallet(acct), titles: titlesIn(acct.titles) });
+        if (method === 'GET') return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team, ...wallet(acct), titles: titlesIn(acct.titles), counts: countsIn(acct.counts) });
         if (method === 'PUT') {   // 팀·닉네임 바꾸기. 닉네임은 랭킹에 바로 보이게 지난 기록에도 고쳐 쓴다(팀은 그날 팀 그대로)
           const checked = validateProfile(await request.json().catch(() => null));
           if (!checked.ok) return json({ ok: false, error: checked.error }, 400);

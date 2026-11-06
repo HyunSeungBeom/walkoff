@@ -2,34 +2,75 @@
 // 기대값은 규칙(연속은 볼이 안 끊음, 마지막 기회, 점수표)에서 손으로 낸 값이다. 실행: node --test 'tests/core/*.test.mjs'
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { TITLES, titlesOf, topTitle } from '../../js/core/titles.js';
+import { TITLES, TITLE_IDS, COUNT_KEYS, countsOf, addCounts, cleanCounts, titlesFor, topTitle } from '../../js/core/titles.js';
 import { maxScoreFor, scoreRange } from '../../js/core/score.js';
 
-test('칭호: 한 판의 전광판으로 정하고, 연속은 골라낸 볼(Y)이 끊지 않으며 다른 결과는 끊는다', () => {
-  const R9 = 'R'.repeat(9);
-  assert.deepEqual(titlesOf('SDTH' + 'RRRR' + 'SS'), ['cycle', 'firsthr']);                   // 단타·2루타·3루타·홈런(아웃은 4번 연속이라 아웃왕은 아니다)
-  assert.ok(titlesOf('HHYHHH' + 'R'.repeat(5)).includes('hrking'));                         // 볼을 사이에 둬도 연속 홈런 5번
-  assert.ok(!titlesOf('HHHHSH' + 'R'.repeat(4)).includes('hrking'));                         // 단타가 끊어 가장 긴 연속은 4번
-  assert.ok(titlesOf(R9 + 'H').includes('walkoff'));                                          // 남은 기회 1번(끝내기 찬스)에 홈런
-  assert.ok(titlesOf(R9 + 'YYH').includes('walkoff'));                                        // 볼은 기회를 안 써서 그 뒤 공도 끝내기 찬스
-  assert.ok(!titlesOf('H' + R9).includes('walkoff'));                                         // 첫 공 홈런은 끝내기가 아니다
-  assert.deepEqual(titlesOf('YYYYY' + 'S'.repeat(10)), ['eye']);                              // 볼 5개
-  assert.ok(!titlesOf('YYYY' + 'S'.repeat(10)).includes('eye'));
-  assert.deepEqual(titlesOf('RRYRRR' + 'SSSS'), ['outking']);                                // 볼을 사이에 둬도 연속 아웃 5번
-  assert.ok(!titlesOf('RRRRSR' + 'SSSS').includes('outking'));
-  assert.deepEqual(titlesOf('S'.repeat(10)), []);
-  // 예전 게임의 G(어떤 안타인지 모름)로는 안타 종류가 드는 칭호를 못 받는다
-  assert.deepEqual(titlesOf('GGGGGGGGGG'), []);
-  assert.deepEqual(titlesOf('YYYYY' + 'RRRRR' + 'GGGGG'), ['eye', 'outking']);
+// 가짜 공: 존 안 직구(기본), 존 밖(0.35m 옆), 구종만 바꾼 공
+const P = (type = 'fastball', more = {}) => ({ type, kmh: 148, tx: 0, ty: 0.8, ...more });
+const seqOf = (types) => types.map((t) => (typeof t === 'string' ? P(t) : t));
+
+test('칭호: 한 판에서 쌓는 수(개수와 그 일이 일어난 판)를 내고, 연속은 골라낸 볼(Y)이 끊지 않으며 다른 결과는 끊는다', () => {
+  const R = (n) => 'R'.repeat(n);
+  assert.deepEqual(countsOf('H' + R(9)), { hr: 1, hit: 1, xbh: 1, firstHr: 1, g_out5: 1, g_choke: 1 });   // 아웃 9번 연속은 연속 아웃 5번·새가슴에도 든다
+  assert.deepEqual(countsOf(R(9) + 'H'), { hr: 1, hit: 1, xbh: 1, lastHr: 1, lastHit: 1, g_out5: 1 });   // 남은 기회 1번(끝내기 찬스)
+  assert.equal(countsOf(R(9) + 'YYH').lastHr, 1);                                             // 볼은 기회를 안 써서 그 뒤 공도 마지막 기회
+  assert.equal(countsOf('HHYHHH' + R(5)).g_hr3run, 1);                                         // 볼을 사이에 둬도 연속 홈런
+  assert.equal(countsOf('HHSHH' + R(5)).g_hr3run, undefined);                                  // 단타가 끊는다
+  const c = countsOf('SDTH' + 'RRRRR' + 'S');
+  assert.deepEqual([c.g_cycle, c.g_natural, c.g_out5, c.g_choke, c.hit, c.xbh, c.d2, c.t3], [1, 1, 1, undefined, 5, 3, 1, 1]);
+  assert.equal(countsOf('HTDS' + R(6)).g_natural, undefined);                                  // 내추럴은 단타 → 2루타 → 3루타 → 홈런 순서
+  assert.equal(countsOf('HTDS' + R(6)).g_cycle, 1);
+  assert.deepEqual([countsOf('YYY' + 'S'.repeat(10)).g_ball3, countsOf('YYRY' + 'S'.repeat(9)).g_ball3], [1, undefined]);   // 볼 3개를 잇달아
+  assert.equal(countsOf('H'.repeat(10)).g_hr10, 1);                                            // 야구의신
+  assert.equal(countsOf('H'.repeat(9) + 'S').g_hr10, undefined);
+  assert.deepEqual([countsOf('S'.repeat(10)).g_hit10, countsOf('S'.repeat(10)).g_singles], [1, 1]);
+  assert.deepEqual([countsOf('HRHR' + R(6)).g_coaster, countsOf('HRRH' + R(6)).g_coaster], [1, undefined]);
+  assert.deepEqual([countsOf(R(5) + 'SSSSR').g_late, countsOf('SSSSR' + R(5)).g_fade], [1, 1]);
+  assert.deepEqual([countsOf('HH' + R(8)).g_boom, countsOf('HHS' + R(7)).g_boom], [1, undefined]);
+  assert.deepEqual([countsOf(R(10)).g_zero, countsOf('YYYYY' + R(10)).g_watch], [1, 1]);
+  assert.equal(countsOf(R(9)).g_zero, undefined);                                              // 기회를 다 쓰지 않은 판은 안 센다
+  assert.equal(countsOf('S' + R(9), [], false, 5000).g_5k, 1);
+  assert.equal(countsOf('S' + R(9), [], false, 4999).g_5k, undefined);
+  // 예전 게임의 G(어떤 안타인지 모름)는 쌓지 않는다
+  assert.deepEqual(countsOf('GGGGGGGGGG'), {});
+  assert.deepEqual(countsOf(''), {});
 });
 
-test('대표 칭호는 목록 순서(사이클링 > 홈런왕 > 끝내기 홈런 > 선구안 > 첫 홈런 > 아웃왕)로 가장 높은 것 하나', () => {
-  assert.deepEqual(TITLES.map((t) => t.id), ['cycle', 'hrking', 'walkoff', 'eye', 'firsthr', 'outking']);
+test('칭호: 공 순서로 구종·존 밖 공·빠른 직구·좌완 판을 센다(볼과 아웃은 안 센다)', () => {
+  const far = P('fastball', { tx: 0.35 }), fast = P('fastball', { kmh: 152 });
+  const c = countsOf('YHHSDTSR' + 'RR', seqOf([far, 'curve', 'fork', 'slider', 'change', fast, 'curve', 'fork', 'fastball', 'fastball']), true);
+  assert.deepEqual([c.curveHr, c.forkHr, c.breakHit, c.fbHr, c.fastHr, c.badHr, c.leftyHr], [1, 1, 5, undefined, undefined, undefined, 2]);
+  assert.equal(c.g_five, 1);                                                                   // 커브·포크·슬라이더·체인지업·직구(152km 단타)
+  const d = countsOf('HH' + 'R'.repeat(8), seqOf([far, fast]));
+  assert.deepEqual([d.badHr, d.fbHr, d.fastHr, d.leftyHr, d.g_five], [1, 2, 1, undefined, undefined]);
+});
+
+test('칭호: 쌓인 수가 정한 수에 닿으면 받고, 대표 칭호는 등급 순서(⭐야구의신⭐이 맨 위)로 가장 높은 것 하나', () => {
+  assert.equal(TITLES.length, 50);
+  assert.equal(new Set(TITLE_IDS).size, 50);
+  for (const t of TITLES) {
+    assert.ok([...t.short].length >= 2 && [...t.short].length <= 4, `${t.id} 배지는 2~4글자`);
+    assert.ok(COUNT_KEYS.includes(t.key) && Number.isInteger(t.need) && t.need >= 1, t.id);
+  }
+  const order = ['legend', 'rare', 'normal', 'fun'];
+  assert.deepEqual(TITLES.map((t) => order.indexOf(t.tier)), TITLES.map((t) => order.indexOf(t.tier)).sort((a, b) => a - b));   // 등급 순서
+  assert.equal(TITLES[0].id, 'god');
+  assert.deepEqual(titlesFor({ hr: 1 }), ['firsthr']);
+  assert.deepEqual(titlesFor({ hr: 999 }), ['firsthr']);
+  assert.deepEqual(titlesFor({ hr: 1000 }), ['factory', 'firsthr']);                           // 홈런 공장장은 1,000개, 홈런왕은 2,000개
+  assert.deepEqual(titlesFor({ hr: 2000, g_out5: 200 }), ['hrking', 'factory', 'firsthr', 'outking']);
+  assert.deepEqual(titlesFor({ g_out5: 199 }), []);                                            // 아웃왕은 200판
+  assert.deepEqual(titlesFor({}), []);
+  assert.equal(topTitle(['outking', 'firsthr', 'god']), 'god');
   assert.equal(topTitle(['outking', 'firsthr']), 'firsthr');
-  assert.equal(topTitle(['eye', 'cycle']), 'cycle');
   assert.equal(topTitle([]), null);
   assert.equal(topTitle(null), null);
-  for (const t of TITLES) assert.ok([...t.short].length >= 2 && [...t.short].length <= 4, `${t.id} 배지는 2~4글자`);
+  assert.deepEqual(addCounts({ hr: 3, x: 5, ball: -1 }, { hr: 2, ball: 1, g_hr2: 1 }), { hr: 5, ball: 1, g_hr2: 1 });   // 모르는 칸·음수는 버린다
+  assert.deepEqual(cleanCounts('망가진 값'), {});
+  // 판마다 쌓으면 한 판에 하나씩만 판 수가 오른다
+  let total = {};
+  for (let i = 0; i < 3; i++) total = addCounts(total, countsOf('HHRRRRRRRR'));
+  assert.deepEqual([total.hr, total.g_hr2, total.g_b2b, total.firstHr], [6, 3, 3, 3]);
 });
 
 test('점수 범위(서버 점수 검사): 안타 종류를 알면 결과 점수·연속 보너스(큰 쪽)·끝내기 찬스 2배가 정해지고, 모르는 것은 존 안 공 안타의 정타 +100뿐이다', () => {

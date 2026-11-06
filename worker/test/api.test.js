@@ -349,21 +349,28 @@ test('점수 검사(2026-11-05): 안타 종류를 담은 전광판은 점수 하
   assert.equal(legacy.status, 200);
 });
 
-test('칭호(2026-11-05): 10구 판을 받을 때 그 판의 전광판으로 칭호를 정해 계정에 남기고(같은 칭호는 한 번), /me와 /rankings(대표 칭호 하나)에 보인다', async () => {
+test('칭호(2026-11-06 쌓아서 받기): 10구 판마다 전광판·공 순서·점수로 쌓는 수를 계정에 더하고, 정한 수에 닿은 칭호만 준다(같은 칭호는 한 번). /me와 /rankings(대표 칭호 하나)에 보인다', async () => {
   const a = (await login('c1', 'p-device-0001')).hash.login, b = (await login('c3', 'p-device-0002')).hash.login;
   const hit = async (token, code, nick) => { const t = await seeded(token), lights = playedAs(t.seed, code); return (await call('POST', '/scores', { token, body: score(t, { nick, lights, score: rangeOf(t.seed, lights).min }) })).json(); };
-  const first = await hit(a, 'H', '가람');   // 존 안 공을 모두 홈런: 연속 홈런 10번, 마지막 기회도 홈런
+  const first = await hit(a, 'H', '가람');   // 존 안 공을 모두 홈런: 기회 10번 모두 홈런(⭐야구의신⭐)
   assert.equal(first.ok, true);
-  for (const id of ['hrking', 'walkoff', 'firsthr']) assert.ok(first.newTitles.includes(id), `${id}를 받는다`);
+  for (const id of ['god', 'hit10', 'firsthr']) assert.ok(first.newTitles.includes(id), `${id}를 받는다`);
+  for (const id of ['hrking', 'factory', 'walkoff', 'outking', 'cycle']) assert.ok(!first.newTitles.includes(id), `${id}는 아직(쌓아야 받는다)`);
   assert.deepEqual(first.titles, first.newTitles);
-  const again = await hit(a, 'H', '가람');   // 이미 받은 칭호는 다시 주지 않는다(다른 판이라 볼 5개면 선구안은 새로 받을 수 있다)
-  assert.deepEqual([again.ok, again.newTitles.filter((id) => first.titles.includes(id))], [true, []]);
-  assert.ok(first.titles.every((id) => again.titles.includes(id)));
-  assert.deepEqual((await me(a)).titles, again.titles);
-  const plain = await hit(b, 'S', '나래');   // 단타만 친 사람은 안타 종류 칭호가 없다(볼 5개면 선구안)
-  assert.deepEqual(plain.newTitles.filter((id) => id !== 'eye'), []);
+  assert.deepEqual([first.counts.hr, first.counts.g_hr10, first.counts.lastHr], [10, 1, 1]);
+  const again = await hit(a, 'H', '가람');   // 이미 받은 칭호는 다시 주지 않고, 수는 쌓인다
+  assert.deepEqual([again.ok, again.newTitles.filter((id) => first.titles.includes(id)), again.counts.hr, again.counts.g_hr10], [true, [], 20, 2]);
+  const mine = await me(a);
+  assert.deepEqual([mine.titles, mine.counts.hr], [again.titles, 20]);
+  // 정한 수에 닿는 판에서 받는다(홈런 공장장 1,000개·홈런왕 2,000개)
+  await env.DB.prepare('UPDATE accounts SET counts = ? WHERE player_id = ?').bind(JSON.stringify({ ...again.counts, hr: 1995 }), mine.playerId).run();
+  const big = await hit(a, 'H', '가람');
+  assert.deepEqual([big.counts.hr, ['hrking', 'factory'].every((id) => big.newTitles.includes(id))], [2005, true]);
+  const legacy = await (await call('POST', '/scores', { token: a, body: score(await seeded(a), { nick: '가람' }) })).json();   // 예전 게임(G)은 쌓지 않는다
+  assert.deepEqual([legacy.ok, legacy.newTitles, legacy.counts.hr], [true, [], 2005]);
+  const plain = await hit(b, 'S', '나래');   // 단타만 10번: 10할 타자만(똑딱이는 50판)
+  assert.deepEqual([plain.newTitles, plain.counts.g_singles, plain.counts.hr], [['hit10'], 1, undefined]);
   const ranking = await (await call('GET', '/rankings')).json();
   const titleOf = (nick) => ranking.players.find((p) => p.nick === nick).title;
-  assert.equal(titleOf('가람'), 'hrking');   // 대표 칭호는 받은 것 가운데 우선순위가 가장 높은 것(사이클링 다음 홈런왕)
-  assert.equal(titleOf('나래'), plain.titles.includes('eye') ? 'eye' : null);
+  assert.deepEqual([titleOf('가람'), titleOf('나래')], ['god', 'hit10']);   // 대표 칭호는 받은 것 가운데 등급이 가장 높은 것
 });

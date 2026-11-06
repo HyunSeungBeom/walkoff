@@ -28,7 +28,7 @@ function seedsFor(b, day, ticket, playerId, pitches, nowMs) {
   const error = ticketError(b.token, ticket, playerId, nowMs, pitches);
   return error ? { error } : { seeds: [ticket.seed] };
 }
-const seqOf = (seed) => makeSequence(seed, pitcherHand(seed) === 'L');
+export const seqOf = (seed) => makeSequence(seed, pitcherHand(seed) === 'L');
 
 // 닉네임(10자까지)과 팀
 export function validateProfile(b) {
@@ -56,10 +56,11 @@ export function validateSubmission(b, nowMs, playerId, ticket = null) {
   if (!/^[GSDTHYR]{1,40}$/.test(lights) || (lights.includes('G') && /[SDTH]/.test(lights))) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
   const found = seedsFor(b, day, ticket, playerId, lights.length, nowMs);
   if (found.error) return { ok: false, error: found.error };
-  const ranges = found.seeds.map((s) => scoreRange(lights, seqOf(s))).filter(Boolean);
+  const ranges = found.seeds.map((seed) => ({ seed, r: scoreRange(lights, seqOf(seed)) })).filter((x) => x.r);
   if (!ranges.length) return { ok: false, error: 'bad_lights' };
-  if (!Number.isInteger(score) || score < 0 || !ranges.some((r) => score >= r.min && score <= r.max)) return { ok: false, error: 'bad_score' };
-  return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights } };
+  const hit = Number.isInteger(score) && score >= 0 ? ranges.find(({ r }) => score >= r.min && score <= r.max) : null;
+  if (!hit) return { ok: false, error: 'bad_score' };
+  return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights, seed: hit.seed } };   // seed: 칭호를 쌓을 때 공 순서를 다시 만든다
 }
 
 // key가 큰 순서로 줄 세우고, 같은 값은 같은 등수(1, 2, 2, 4)

@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   coin_at INTEGER NOT NULL DEFAULT 0,            -- 마지막으로 코인을 준 시각(ms)
   daily_bonus_day TEXT NOT NULL DEFAULT '',      -- 오늘의 10구 2배를 준 날(하루 한 번). 2026-10-30 2배를 없애서 더 쓰지 않는다
   -- 칭호·업적(2026-11-05, js/core/titles.js). 이미 있던 DB에는 migrations/0007_titles.sql로 더했다
-  titles TEXT NOT NULL DEFAULT '[]'              -- 받은 칭호 id(JSON 배열)
+  titles TEXT NOT NULL DEFAULT '[]',             -- 받은 칭호 id(JSON 배열)
+  -- 쌓아서 받는 칭호(2026-11-06). 이미 있던 DB에는 migrations/0008_title_counts.sql로 더했다
+  counts TEXT NOT NULL DEFAULT '{}'              -- 칭호마다 쌓은 수(JSON, js/core/titles.js countsOf)
 );
 
 -- 하루 이용 통계(2026-10-29, src/stats.js). 이미 있던 DB에는 migrations/0003_stats.sql로 더했다
