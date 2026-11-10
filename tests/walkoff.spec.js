@@ -3898,6 +3898,50 @@ test.describe('결과 한 박자·건너뛰기', () => {
     expect(r.count).toBe(3);
     expect(errors).toEqual([]);
   });
+
+  test('홈런 뒤 주자를 따라 화면이 멀리 밀린 채 다음 공을 누르면 화면이 거의 제자리에 온 뒤 와인드업을 시작하고, 화면이 제자리면 지금처럼 0.5초 뒤다(2026-11-10 패들렛 의견 "카메라가 다 가기 전에 이미 던지고 있어요")', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(SETUP);
+    const r = await page.evaluate(() => {
+      const w = walkoff, g = w.game, v = w.view;
+      const windup = () => { let k = 0; while (g.state === 'windup' && g.t <= 0 && k < 600) { __step(); k++; } return { sec: Math.round(k / 60 * 100) / 100, pan: Math.abs(v.panX) / v.w, held: g.held }; };   // 누른 뒤 와인드업 시작까지(초)
+      __hit(w.makeSequence(42, w.pitcherHand(42) === 'L')[0], 0);   // 중월 홈런
+      while (g.resultT < 19) __step();   // 홈을 밟고 더그아웃 쪽으로 가는 주자를 따라 화면이 밀려 있다
+      const far = Math.abs(v.panX) / v.w;
+      w.tap(g.clockAt);
+      const state = g.state, hr = windup();
+      while (g.state !== 'result') { if (g.state === 'pitch' && g.swingAt == null && w.ballTime() > 0.2) w.swing(g.clockAt, 'key'); __step(); }   // 헛스윙이든 무엇이든 결과까지
+      while (g.resultT < 6 || Math.abs(v.panX) > 0.001) __step();
+      w.tap(g.clockAt);
+      return { far, state, hr, home: windup() };
+    });
+    expect(r.far).toBeGreaterThan(0.15);
+    expect(r.state).toBe('windup');
+    expect(r.hr.pan).toBeLessThan(0.02);        // 와인드업을 시작할 때 화면이 제자리(화면 폭 2% 안)
+    expect(r.hr.sec).toBeGreaterThan(0.5);      // 그만큼 기다렸다
+    expect(r.hr.held).toBeLessThanOrEqual(3);   // 많아야 3초
+    expect(r.home.held).toBe(0); expect(r.home.pan).toBeLessThan(1e-6); expect(r.home.sec).toBeLessThanOrEqual(0.52);   // 화면이 제자리면 지금과 같다(0.5초, 1/60초 쌓기 오차 한 장면)
+    expect(errors).toEqual([]);
+  });
+
+  test('자세한 카드(칩·타이밍 막대·타구·이유) 뒤에는 반투명 어두운 판을 깔아 뒤의 전광판 글자와 겹쳐 보이지 않는다(2026-11-10 패들렛 의견 "정타 게이지랑 메시지가 겹쳐요")', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(SETUP);
+    const reason = await page.evaluate(() => {
+      const w = walkoff, g = w.game;
+      __hit(w.makeSequence(332, false)[2], -40);   // 좌전 안타(카메라가 안 따라가서 자세한 줄이 전광판 위에 나온다)
+      while (!w.boardMoment() || g.resultT < w.boardMoment().t1 + 0.4) __step();
+      return g.outcome.reason;
+    });
+    const ops = await drawnOps(page), dark = await norm(page, 'rgba(6,12,24,0.62)'), vw = await page.evaluate(() => walkoff.view.w);
+    const at = ops.findIndex((o) => o.t === 'fill' && o.style === dark), P = ops[at];
+    expect(at).toBeGreaterThan(-1);
+    const lines = ops.filter((o, i) => i > at && o.t === 'text' && (/^\d+ms (빠름|늦음)$/.test(o.s) || ['빠름', '늦음', reason].includes(o.s) || /^타구 \d+km\/h/.test(o.s)));
+    expect(new Set(lines.map((o) => o.s)).size).toBe(5);   // 칩·막대 양끝·타구·이유를 판 다음에 그린다
+    for (const o of lines) { expect(o.y, o.s).toBeGreaterThan(P.y); expect(o.y, o.s).toBeLessThan(P.y + P.h); }
+    expect(P.x).toBeGreaterThanOrEqual(0); expect(P.x + P.w).toBeLessThanOrEqual(vw);
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('타구 정보', () => {

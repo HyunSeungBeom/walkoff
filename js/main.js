@@ -2722,9 +2722,10 @@ function drawResultCard() {
   // 자세한 카드(비거리·칩·타이밍 막대·타구·이유)는 전광판이 HIT·HOMERUN을 다 띄운 뒤에 제목 아래로 나온다(전광판 자리를 가린다). 투수 머리 위까지만 쓴다
   if (!cardDetails()) return;
   const shownAt = bm ? bm.t1 : game.revealAt, k = easeOut((game.resultT - shownAt) / 0.25);
-  ctx.globalAlpha = k;
-  let y = T.y + T.size / 2 + (m ? 16 : 20) + (1 - k) * 10;
-  if (hr) { text(`${r.name} · ${Math.round(carryOf(r))}m`, cx, y, { size: m ? 15 : 18, shadow: true }); y += m ? 28 : 30; }
+  // 자세한 줄은 [줄 높이, 너비, 그리기(y)]로 모아 너비·높이를 잰 뒤, 그 뒤에 반투명 어두운 판을 깔고 그린다(2026-11-10 패들렛 의견 '정타 게이지랑
+  // 메시지가 겹쳐서 식별이 잘 안 돼요'. 카메라가 공을 안 따라간 타구는 이 줄들이 바탕 없이 뒤의 전광판 글자 위에 겹쳤다)
+  const rows = [], widthOf = (s, size, weight = 700) => { ctx.font = font(size, weight); return ctx.measureText(s).width; };
+  if (hr) { const s = `${r.name} · ${Math.round(carryOf(r))}m`; rows.push([m ? 28 : 30, widthOf(s, m ? 15 : 18), (y) => text(s, cx, y, { size: m ? 15 : 18, shadow: true })]); }
   const chips = [];
   if (!r.took) {
     // 정타가 아닌데 ±15ms 안이면 존 밖 공이다. 그냥 '타이밍 정확'이라 쓰면 정타로 읽혀서, 잡혔을 때 '정타인데 아웃'으로 들렸다
@@ -2740,10 +2741,16 @@ function drawResultCard() {
     const end = game.scn.end;
     chips.push([game.scnEvent, end === 'win' ? '#f2c94c' : 'rgba(0,0,0,0.55)', end === 'win' ? '#1b1405' : end ? '#ff9a9a' : '#ffffff']);
   }
-  if (chips.length) { pillRow(chips, y, m ? 13 : 14); y += m ? 30 : 32; }
-  if (!r.took) { const bw = m ? 180 : 240; drawTimingBar(cx - bw / 2, y, bw, r.dt); y += m ? 22 : 24; }
-  if (r.ev) { text(`타구 ${r.ev}km/h · 발사각 ${r.la}° · ${Math.round(carryOf(r))}m`, cx, y, { size: m ? 12 : 14, weight: 600, shadow: true }); y += m ? 20 : 21; }
-  text(r.reason, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.82)', shadow: true });
+  if (chips.length) { const size = m ? 13 : 14; rows.push([m ? 30 : 32, chips.reduce((a, [s]) => a + widthOf(s, size) + 22, 0) + 8 * (chips.length - 1), (y) => pillRow(chips, y, size)]); }
+  if (!r.took) { const bw = m ? 180 : 240; rows.push([m ? 22 : 24, bw + 2 * (8 + widthOf('늦음', 11, 600)), (y) => drawTimingBar(cx - bw / 2, y, bw, r.dt)]); }
+  if (r.ev) { const s = `타구 ${r.ev}km/h · 발사각 ${r.la}° · ${Math.round(carryOf(r))}m`; rows.push([m ? 20 : 21, widthOf(s, m ? 12 : 14, 600), (y) => text(s, cx, y, { size: m ? 12 : 14, weight: 600, shadow: true })]); }
+  rows.push([m ? 20 : 21, widthOf(r.reason, m ? 12 : 14, 600), (y) => text(r.reason, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.82)', shadow: true })]);
+  let y = T.y + T.size / 2 + (m ? 16 : 20) + (1 - k) * 10;
+  const padX = m ? 14 : 18, w = Math.min(view.w - 16, Math.max(...rows.map((row) => row[1])) + padX * 2), top = y - rows[0][0] / 2 - (m ? 4 : 6);
+  const h = rows.reduce((a, row) => a + row[0], 0) - rows[rows.length - 1][0] / 2 + rows[0][0] / 2 + (m ? 8 : 12);
+  ctx.globalAlpha = k;
+  roundRect(cx - w / 2, top, w, h, 12); ctx.fillStyle = 'rgba(6,12,24,0.62)'; ctx.fill();
+  for (const [rh, , draw] of rows) { draw(y); y += rh; }
   ctx.globalAlpha = 1;
 }
 
@@ -4704,10 +4711,10 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 줄을 더하면 끝 글자를 올려 읽은 사람에게도 NEW를 다시 띄운다), label은 화면 머리
-  { id: '2026-11-10b', label: '11/10', items: [
-    '수비수들이 드디어 숨을 쉬어요. 제가 봐도 너무 딱딱했거든요. 이제 공 쪽으로 몸을 돌리며 기다려요.',
-    '뛰다 멈출 때 몸이 접히며 휙 돌던 것도 고쳤고, 땅볼 줍는 동작도 덜 튀어요.',
+  { id: '2026-11-10c', label: '11/10', items: [
+    '수비수들이 드디어 숨을 쉬어요. 뛰다 멈출 때 몸이 휙 접히던 것과 땅볼 줍는 동작이 튀던 것도 고쳤어요.',
     '유격수와 2루수가 이제 머리 위로 날아가는 공에 뛰어오르고, 앞에 떨어지는 공에는 몸을 날려요. 멍하니 서서 구경하던 시절은 끝났어요.',
+    '패들렛에 올라온 의견대로, 홈런 뒤에도 화면이 제자리로 돌아온 다음에 공이 날아오고, 결과 글자도 전광판에 묻히지 않게 또렷해졌어요.',
   ] },
   { id: '2026-11-06c', label: '11/6', items: [
     '랭킹에서 팀을 누르면 팀원마다 팀 점수를 얼마나 보탰는지 나와요. 우리 팀 에이스가 누군지 이제 숨길 수 없어요.',
@@ -5174,8 +5181,10 @@ function startGame(mode, waited = false, opts = {}) {
 // 지금 판과 같은 모드로 처음부터(조준 판이면 조준 판으로)
 const restartGame = () => startGame(game.mode, false, { aim: game.aim });
 
+const WINDUP_HOLD = 3;
+const screenHome = () => Math.abs(view.panX) < view.w * 0.02 && Math.abs(view.panY) < view.h * 0.02 && !camMoved();   // 화면 밀기·카메라가 타석 시점 가까이(2% 안)
 function startPitch() {
-  Object.assign(game, { state: 'windup', t: -0.5, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false });
+  Object.assign(game, { state: 'windup', t: -0.5, held: 0, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false });
   game.lastChance = game.mode !== 'scenario' && game.left === 1;
 }
 
@@ -5456,6 +5465,10 @@ function update(dt) {
   game.t += dt; game.clockAt = now;
   const p = game.seq[game.i];
 
+  // 홈런 주자를 따라 멀리 민 화면이 돌아오는 동안은 와인드업을 시작하지 않는다(2026-11-10 패들렛 의견 '카메라가 다 가기 전에 이미 던지고 있어요').
+  // 화면은 초당 시야 1배로만 돌아와서(PAN_SPEED) 홈을 밟고 더그아웃 쪽으로 간 주자를 따라간 뒤에는 폰은 화면 폭 1.4배를 0.7초쯤 되돌아오는데,
+  // 와인드업은 누르고 0.5초에 시작했다. 화면이 거의 제자리에 올 때까지 시계를 와인드업 시작(0초)에 붙잡는다(많아야 WINDUP_HOLD초). 이미 제자리면 그대로다
+  if (game.state === 'windup' && game.t > 0 && game.held < WINDUP_HOLD && !screenHome()) { game.held += Math.min(dt, game.t); game.t = 0; }
   if (game.state === 'windup' && ballTime() >= 0) { game.state = 'pitch'; Sound.release(); }
   if (game.state === 'pitch' && game.swingAt == null && ballTime() > p.T + FOUL_MS / 1000) { if (game.mode === 'scenario') game.moves[game.i] = null; finish(judgeTake(p)); }
   if ((game.state === 'pitch' || game.state === 'result') && !hasBattedBall() && !game.mittDone && ballTime() > p.T * 1.05) {
