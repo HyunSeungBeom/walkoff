@@ -101,12 +101,22 @@ export function fielderSkeleton(at, face, v, look, lefty = false) {
   k.front = Math.sign(k.facing(k.shTurn)[0]) || 1;
   return k;
 }
-// 뼈대 둘을 k(0~1)로 섞는다. 몸통 방향은 벡터(axes)로 섞는다
-export function blendSkeleton(a, b, k) {
-  const L = (p, q) => [lerp(p[0], q[0], k), lerp(p[1], q[1], k), lerp(p[2], q[2], k)], LR = (p, q) => ({ l: L(p.l, q.l), r: L(p.r, q.r) });
+// 뼈대 둘을 k(0~1)로 섞는다. 몸통 방향은 벡터(axes)로 섞는다.
+// turn(a에서 b까지 몸이 도는 각, 라디안)을 주면 두 뼈대를 골반을 축으로 같은 방향까지 돌려 놓고 자세만 섞는다(2026-11-09 사용자 '수비 선수들이 너무 딱딱함').
+// 관절 자리를 그대로 섞으면 크게 돌 때 어깨·골반이 한 점으로 모였다 펴져서 몸이 접히며 휙 돈다(수비수가 뛰기 시작·멈출 때 장면의 99%에서 나왔다)
+export function blendSkeleton(a, b, k, turn = 0) {
+  const L3 = (p, q) => [lerp(p[0], q[0], k), lerp(p[1], q[1], k), lerp(p[2], q[2], k)];
+  const ca = Math.cos(turn * k), sa = Math.sin(turn * k), cb = Math.cos(turn * (k - 1)), sb = Math.sin(turn * (k - 1));
+  const spinA = (q) => [q[0] * ca - q[2] * sa, q[1], q[0] * sa + q[2] * ca], spinB = (q) => [q[0] * cb - q[2] * sb, q[1], q[0] * sb + q[2] * cb];
+  const pelvis = L3(a.pelvis, b.pelvis), L = turn ? (p, q) => V.add(pelvis, L3(spinA(V.sub(p, a.pelvis)), spinB(V.sub(q, b.pelvis)))) : L3, LR = (p, q) => ({ l: L(p.l, q.l), r: L(p.r, q.r) });
   const ax = (s) => s.axes ?? { lc: s.left(s.shTurn), fc: s.facing(s.shTurn), lp: s.left(s.hipTurn), fp: s.facing(s.hipTurn) };
-  const A = ax(a), B = ax(b), N = (p, q) => { const v = L(p, q), n = V.len(v) || 1; return V.mul(v, 1 / n); };
-  return { ...b, pelvis: L(a.pelvis, b.pelvis), chest: L(a.chest, b.chest), head: L(a.head, b.head), brim: L(a.brim, b.brim),
+  const A = ax(a), B = ax(b), N = (p, q) => { const v = turn ? L3(spinA(p), spinB(q)) : L3(p, q), n = V.len(v) || 1; return V.mul(v, 1 / n); };
+  return { ...b, pelvis, chest: L(a.chest, b.chest), head: L(a.head, b.head), brim: L(a.brim, b.brim),
     hips: LR(a.hips, b.hips), shoulders: LR(a.shoulders, b.shoulders), knees: LR(a.knees, b.knees), feet: LR(a.feet, b.feet), elbows: LR(a.elbows, b.elbows), hands: LR(a.hands, b.hands),
     axes: { lc: N(A.lc, B.lc), fc: N(A.fc, B.fc), lp: N(A.lp, B.lp), fp: N(A.fp, B.fp) } };
+}
+// 뼈대 a에서 b까지 몸(어깨)이 도는 각(라디안, -π~π)
+export function yawGap(a, b) {
+  const yaw = (s) => { const q = s.axes ? s.axes.fc : s.facing(s.shTurn); return Math.atan2(q[2], q[0]); }, d = yaw(b) - yaw(a);
+  return d - 2 * Math.PI * Math.round(d / (2 * Math.PI));
 }

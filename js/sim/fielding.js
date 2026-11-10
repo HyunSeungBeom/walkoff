@@ -4,7 +4,7 @@
 // 실제 야구에서 맡는 일대로 움직여 보여 준다(주자 없는 상황 기준): 공을 맡은 사람은 쫓아가 잡아 던지고, 나머지는 베이스 커버·송구 뒤 백업으로 간다.
 // 수비수는 투수와 같은 3D 인형(assembleFigure → drawBatterFigure, 상대 팀 유니폼)이고, 뛸 때는 주자 걸음(runnerSkeleton)을 쓴다.
 // 전에는 맡은 1~2명만 움직이고 나머지는 서 있었으며, 카메라를 정면으로 보는 납작한 인형이라 외야 쪽으로 뛰면 뒷걸음질처럼 보였다
-import { clamp, DEG, lerp, polar } from '../core/math.js';
+import { clamp, DEG, lerp, mulberry32, polar } from '../core/math.js';
 import { BASE1, BASE2, BASE3, FAIR_SPRAY, fenceDist, INFIELDERS, MOUND, OUTFIELDERS } from '../core/field.js';
 import {
   computeRace, DIVE_GLOVE, diveShort, FIELD_REACT, FIELD_SPEED, groundPath, interceptGround, PCOVER, PCOVER_LEN, PLAY_EX, reachGround, RUN_REACH,
@@ -14,7 +14,7 @@ import { HOME_PLATE, HOME_THROW, TAG_TIME } from '../core/scenario.js';
 import { catchTime, flightDuration, flightPos, interceptRoll, rollPath, THROW_OUT } from '../core/flight.js';
 import { port } from './port.js';
 import { bendJoint, faceTo, flatDist, smooth, stepToward, unitTo, V } from './geom.js';
-import { blendSkeleton, fielderSkeleton, fpose, makeTrack, pitcherSkeleton } from './pose.js';
+import { blendSkeleton, fielderSkeleton, fpose, makeTrack, pitcherSkeleton, yawGap } from './pose.js';
 import { alongRoute, runTrack, trackAt } from './route.js';
 import { runnerReach, runPlan } from './batter.js';
 import { runnerSkeleton } from './runpose.js';
@@ -33,7 +33,7 @@ const isOutfielder = (f) => OUTFIELDERS.includes(f);
 const FIELD_RUN_IN = { top: FIELD_SPEED.in[0], tau: FIELD_SPEED.in[1], cad: [1.8, 0.05], D: 0.21, effort: 1, lean: 0.2, start: 0.35, Dstart: 0.06, drive: 0.2, dust: 0 };
 const FIELD_RUN_OUT = { ...FIELD_RUN_IN, top: FIELD_SPEED.out[0], tau: FIELD_SPEED.out[1] };
 const FIELD_JOG = { top: 4, tau: 0.5, cad: [1.4, 0.07], D: 0.26, effort: 0, lean: 0.06, start: 0.1, Dstart: 0.04, drive: 0.05, dust: 0 };
-const BLEND = 0.15;   // 동작이 바뀔 때 앞 자세에서 섞는 시간(초)
+const BLEND = 0.15, TURN_MORE = 0.18;   // 동작이 바뀔 때 앞 자세에서 섞는 시간(초). 크게 돌아설 때는 도는 각에 맞춰 TURN_MORE초까지 더 섞는다(actorSkeleton)
 
 // 수비 자세(키 값, 투수와 같은 pitchVec 모양). 홈 쪽(-z)을 보고 선 오른손잡이 기준이고, 자리(발 사이)가 원점이다. 왼쪽이 +x다
 const FPOSE = {
@@ -133,8 +133,9 @@ const diveTrack = (F, v0 = 0) => {
   const z = (t) => (t <= tc ? v0 * t + 0.5 * a * t * t : F + slide * (1 - (1 - (t - tc) / T2) ** 2));
   return Object.assign((u) => { const v = FTRACK.dive(u).slice(), dz = -z(clamp(u, 0, 1) * DIVE_LEN) - v[2]; for (const i of [2, 8, 11, 14, 17]) v[i] += dz; return v; }, { end: F + slide });
 };
-// 토스는 0.45초 동작의 55%에 놓는다. 달려가며 잡는 동작은 잡기 0.15초 전에 달리던 걸음에서 이어진다. 수비수는 초속 9m씩 줄여 선다
-const TOSS_LEN = 0.45, TOSS_AT = 0.55, PICK_LEAD = 0.15, FIELD_BRAKE = 9, HOP_LEN = 0.35, HOP_D = 0.4;   // 크로 홉은 던지기 앞 0.35초에 0.4m
+// 토스는 0.45초 동작의 55%에 놓는다. 달려가며 잡는 동작은 잡기 0.25초 전부터 그동안 달리던 걸음에서 섞어 이어진다(2026-11-09 0.15초에서 늘림: 그 사이에
+// 글러브와 발을 옮기느라 손발이 뛸 때의 1.7배 빠르기로 튀었다. 잡고 놓는 때는 그대로다). 수비수는 초속 9m씩 줄여 선다. 크로 홉은 던지기 앞 0.35초에 0.4m
+const TOSS_LEN = 0.45, TOSS_AT = 0.55, PICK_LEAD = 0.25, FIELD_BRAKE = 9, HOP_LEN = 0.35, HOP_D = 0.4;
 // 몸(엉덩이·몸통·손)과 두 발을 따로 키 장면으로 잇는 동작. 발은 디딘 동안 같은 값을 두 번 넣어 땅에 붙인다(미끄러지지 않게)
 function composeTrack(body, lf, rf) {
   const B = makeTrack(body), L = makeTrack(lf), R = makeTrack(rf);
@@ -224,8 +225,8 @@ function buildPlay(r, o = {}) {
   const last = (f) => acts[f.pos][acts[f.pos].length - 1];
   const where = (f) => { const e = last(f); return !e ? homeOf(f) : e.k === 'move' ? e.to : e.k === 'shuffle' ? e.to : e.endAt ?? e.at; };
   const freeAt = (f) => { const e = last(f); return e ? (e.t1 ?? e.t0) : 0; };
-  const pose = (f, t0, at, face, v, o = {}) => acts[f.pos].push({ k: 'pose', t0, at, face, v, name: o.name ?? 'pose', look: o.look, t1: o.t1 });
-  const anim = (f, t0, at, face, track, len, o = {}) => acts[f.pos].push({ k: 'pose', t0, t1: t0 + len, at, face, track, len, name: o.name ?? 'pose', look: o.look, endAt: o.endAt });
+  const pose = (f, t0, at, face, v, o = {}) => acts[f.pos].push({ k: 'pose', t0, at, face, v, name: o.name ?? 'pose', look: o.look, t1: o.t1, still: o.still });   // still: 공을 받는 자세(서 있어도 움직이지 않는다)
+  const anim = (f, t0, at, face, track, len, o = {}) => acts[f.pos].push({ k: 'pose', t0, t1: t0 + len, at, face, track, len, name: o.name ?? 'pose', look: o.look, endAt: o.endAt, blend: o.blend });   // blend: 앞 자세에서 섞는 시간(없으면 BLEND)
   // 지금 자리에서 to로 뛰어 닿는 때를 돌려준다. stop이 false면 멈추지 않고 to를 지나는 때에 끝난다(달려가며 잡기, 다이빙 앞). 짧으면 옆걸음
   const run = (f, to, t0, o = {}) => {
     const from = where(f), d = flatDist(from, to), G = o.gait ?? gaitOf(f);
@@ -297,7 +298,7 @@ function buildPlay(r, o = {}) {
   // 받는 사람: 마감 전에 그 자리에 가서 던지는 쪽을 보고 서 있다가, 공이 닿기 0.25초 전에 받는 자세(1루는 몸 뻗기)
   const receive = (f, at, from, tArr, recvPose = FPOSE.cover, name = 'cover') => {
     arriveBy(f, at, tArr - 0.3, FPOSE.cover, { faceTo: from, name: 'cover' });
-    pose(f, Math.max(freeAt(f), tArr - 0.25), at, faceTo(at, from), recvPose, { name });
+    pose(f, Math.max(freeAt(f), tArr - 0.25), at, faceTo(at, from), recvPose, { name, still: true });
   };
   // 공 처리가 끝나면 베이스 둘레의 수비수가 to로 비켜 서서(2.5m 안이면 옆걸음) look 쪽을 본다. 공을 쥐었으면 든 채로(2026-11-03 사용자 '주루 다듬기' 2·3번).
   // 홈 뒤 카메라에서는 홈과 베이스를 잇는 줄 위에 선 사람끼리 겹쳐 보여서, 베이스에 서는 주자의 옆으로 2m쯤 비킨다
@@ -378,7 +379,7 @@ function buildPlay(r, o = {}) {
     const bd = Math.hypot(B[0], B[1]) || 1, out = (u[0] * B[0] + u[1] * B[1]) / bd, room = out > 0.2 ? (fenceDist(Math.atan2(B[0], B[1]) / DEG) - 1.5 - bd) / out : Infinity;   // 담장 쪽으로 가면 담장 1.5m 앞까지만 미끄러진다
     run(f, B, start, { stop: false, gait: G, look: 'ball', force: true });
     const pk = pickTrack(kind, B, face, u, v, C, ex, bare, room);
-    anim(f, T - PICK_LEAD, B, face, pk.track, pk.len, { name: kind === 'plant' ? 'backhand' : 'runThrow', endAt: pk.endAt });
+    anim(f, T - PICK_LEAD, B, face, pk.track, pk.len, { name: kind === 'plant' ? 'backhand' : 'runThrow', endAt: pk.endAt, blend: PICK_LEAD });
     return { at: B, face, pk };
   };
   // 뜬공·직선타 잡기: 넉넉하면 떨어지는 자리에 먼저 가서 기다렸다 잡고, 빠듯하면 달려가며 글러브를 뻗어 잡고 몇 걸음 더 가서 서고,
@@ -649,7 +650,7 @@ function buildPlay(r, o = {}) {
       if (!tg?.go) {   // 잡은 공은 공 쪽 키스톤(중계하러 나온 유격수·2루수)에게 가볍게 던져 준다. 전에는 잡은 채 서 있었다
         const rv = got.at[0] < 0 ? SS : B2, rvAt = stepToward(homeOf(rv), got.at, 6), from = where(X), face = faceTo(rvAt, from);
         const th = throwTo(X, from, rv, rvAt, FPOSE.catchChest, Math.max(freeAt(X), tc + LOB_WAIT), LOB_SPEED, undefined, { hop: false, len: LOB_LEN, arc: LOB_ARC * flatDist(from, rvAt), name: 'lob' });
-        pose(rv, Math.max(freeAt(rv), th.tRel - 0.25), rvAt, face, FPOSE.cover, { name: 'cover' });
+        pose(rv, Math.max(freeAt(rv), th.tRel - 0.25), rvAt, face, FPOSE.cover, { name: 'cover', still: true });
         pose(rv, th.tArr - 0.2, rvAt, face, FPOSE.catchChest, { name: 'catch' });
         pose(rv, th.tArr + 0.35, rvAt, faceTo(rvAt, [0, MOUND]), FPOSE.hold, { name: 'hold' });
         play.ev.lob = { to: rv.pos, release: th.tRel, arrive: th.tArr };
@@ -760,12 +761,45 @@ function entrySpot(e, t) {
 }
 function entryLook(play, e, at, t, f) {
   if (e.look === 'down') return [Math.cos(e.face), -1.1, Math.sin(e.face)];   // 고개를 숙인다(홈런 맞은 투수)
-  if (e.look !== 'ball' || !play) return null;
+  return e.look === 'ball' && play ? ballLook(play, f, at, t) : null;
+}
+// at에서 공 쪽(눈 높이 1.6m에서). 자기가 쥔 공이면 null
+function ballLook(play, f, at, t) {
   let sg = play.segs[0];
   for (const q of play.segs) if (t >= q.t0) sg = q;
-  if (sg.by === f) return null;
+  if (!sg || sg.by === f) return null;
   const b = sg.at(t);
   return [b.x - at[0], b.y - 1.6, b.z - at[1]];
+}
+// 서 있는 수비수(2026-11-09 사용자 '수비 선수들이 너무 딱딱함'에서 고른 1번): 공이 맞은 뒤 가만히 선 자세(준비·지켜보기·백업·베이스에서 기다리기)에
+// 숨 쉬기·몸무게 옮기기·글러브 손 까딱이기·잔발을 더하고 몸통을 공 쪽으로 돌린다(재 보니 수비수 시간의 57%가 완전히 멈춰 있었다).
+// 화면에 작게 보여서 실제보다 크게 움직이고, 더 작게 보이는 외야수는 1.5배다. 빠르기·시작점은 수비 위치와 타구(play.end)로 정해져 무작위 없이 판마다 조금씩 다르다.
+// 공을 받는 자세(still)는 송구가 그 글러브 자리로 오므로 빼고, 공을 치기 전(play 없음)은 조준 테스트(2026-11-06~12) 동안 화면을 바꾸지 않으려고 그대로 둔다
+const ALIVE = new Set(['ready', 'watch', 'backup', 'cover']), ALIVE_RAMP = 0.4, STEP_LEN = 0.3;   // 공이 맞고 ALIVE_RAMP초에 걸쳐 커진다(맞기 전 자세에서 끊기지 않게)
+const aliveSeeds = (play, f) => ((play.alive ??= {})[f.pos] ??= (() => {
+  const rnd = mulberry32([...f.pos].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, Math.round(play.end * 1000)));
+  return Array.from({ length: 8 }, () => rnd());
+})());
+function alivePose(v, play, f, t, look, face) {
+  const q = aliveSeeds(play, f), g = smooth(t / ALIVE_RAMP), m = g * (isOutfielder(f) ? 1.5 : 1), o = v.slice();
+  const wave = (hz, ph) => Math.sin(2 * Math.PI * (hz * t + ph));
+  const breath = wave(0.45 + 0.2 * q[0], q[1]), sway = wave(0.25 + 0.12 * q[2], q[3]), mitt = wave(0.65 + 0.3 * q[4], q[5]);
+  o[0] += 0.05 * m * sway; o[3] += 5 * m * sway; o[4] += 9 * m * sway; o[18] += 0.04 * m * sway;   // 몸무게를 옆으로 옮긴다
+  o[1] += 0.025 * m * breath; o[5] += 0.05 * m * breath; o[13] += 0.02 * m * breath; o[16] += 0.02 * m * breath;   // 숨 쉬듯 들썩인다
+  o[13] += 0.05 * m * mitt; o[14] -= 0.035 * m * mitt; o[16] -= 0.025 * m * mitt;   // 글러브 손을 까딱인다
+  // 잔발: 1.9~3.4초마다 왼발·오른발이 번갈아 바깥으로 한 걸음 갔다가 그 발의 다음 차례에 돌아온다(c: 그 발이 내디딘 걸음 수, p: 지금 걸음의 진행)
+  const P = 1.9 + 1.5 * q[6], ph = t / P + q[7], n = Math.floor(ph), u = (ph - n) * P / STEP_LEN, d = 0.06 * m, out = (c, side) => (c % 2 ? d * side : 0);
+  for (const [i, side, par] of [[6, 1, 0], [9, -1, 1]]) {
+    const c = Math.floor((n - par) / 2) + 1, p = (n - par) % 2 === 0 ? clamp(u, 0, 1) : 1;
+    o[i] += lerp(out(c - 1, side), out(c, side), smooth(p)); o[i + 1] += 0.08 * m * Math.sin(Math.PI * p);
+  }
+  // 몸통을 공 쪽으로 돌린다(어깨 40도·엉덩이 14도까지, 두 손도 따라 돈다). 공이 등 뒤면 돌지 않고, 머리 위 6m 안이면 덜 돈다(바로 위에서는 방향이 휙 바뀌어서)
+  if (look) {
+    const w = g * Math.sin(Math.atan2(look[2], look[0]) - face) * clamp(Math.hypot(look[0], look[2]) / 6, 0, 1), a = 32 * DEG * w, ca = Math.cos(a), sa = Math.sin(a);
+    o[4] += 40 * w; o[3] += 14 * w;
+    for (const i of [12, 15]) { const x = o[i] - o[0], z = o[i + 2] - o[2]; o[i] = o[0] + x * ca - z * sa; o[i + 2] = o[2] + x * sa + z * ca; }
+  }
+  return o;
 }
 // 뛰는 수비수 뼈대. 몸은 길을 따라 그 자리에서 가는 쪽을 본다(투수의 1루 커버처럼 꺾이는 길도)
 function moveSkeleton(play, f, e, t, look, lefty) {
@@ -795,16 +829,23 @@ function entrySkeleton(play, f, e, t) {
     return e.reach ? reachHand(k, e.reach, t, () => moveSkeleton(play, f, e, e.reach.t, null, lefty).chest) : k;
   }
   if (e.k === 'shuffle') return fielderSkeleton(at, e.face ?? (look ? Math.atan2(look[2], look[0]) : HOME_FACE(at)), e.v, look, lefty);
+  if (play && !e.track && !e.still && ALIVE.has(e.name)) { const seen = look ?? ballLook(play, f, at, t); return fielderSkeleton(at, e.face, alivePose(e.v, play, f, t, seen, e.face), seen, lefty); }
   const v = e.track ? e.track(clamp((t - e.t0) / e.len, 0, 1)) : e.v;
   return fielderSkeleton(at, e.face, v, look, lefty);
 }
+// 동작이 바뀌면 앞 자세에서 BLEND초 동안 섞는다. 뛰기 시작·멈추기·서 있는 자세로 크게 돌아설 때는 도는 각만큼 TURN_MORE초까지 더 천천히 돈다(180도면 0.33초, 다음 동작 전까지).
+// 잡기·던지기는 공이 정한 때에 맞춰야 해서 정한 시간 그대로다(BLEND, 달려가며 잡기는 e.blend = PICK_LEAD). 도는 각은 동작마다 한 번 재 둔다(e.turn: 섞는 동안 뛰는 몸이 흔들려도 도는 쪽이 바뀌지 않게)
 export function actorSkeleton(play, f, t) {
-  const { e, prev } = actorEntry(play, f, t);
+  const { e, prev, i } = actorEntry(play, f, t);
   if (!e) return entrySkeleton(play, f, readyEntry(f), t);
-  const k = entrySkeleton(play, f, e, t), u = (t - e.t0) / BLEND;
-  if (u >= 1) return k;
-  const from = prev ? entrySkeleton(play, f, prev, Math.min(t, prev.t1 ?? t)) : f === PITCHER_F ? pitcherSkeleton(port.pitchT(), !!port.lefty()) : entrySkeleton(play, f, readyEntry(f), t);
-  return blendSkeleton(from, k, smooth(u));
+  const k = entrySkeleton(play, f, e, t), since = t - e.t0, base = e.blend ?? BLEND;
+  if (since >= base + TURN_MORE) return k;
+  const from = (q) => (prev ? entrySkeleton(play, f, prev, Math.min(q, prev.t1 ?? q)) : f === PITCHER_F ? pitcherSkeleton(port.pitchT(), !!port.lefty()) : entrySkeleton(play, f, readyEntry(f), q));
+  const turn = (e.turn ??= yawGap(from(e.t0), entrySkeleton(play, f, e, e.t0 + base))), next = play.acts[f.pos][i + 1];
+  const slow = e.k === 'move' || e.k === 'shuffle' || (ALIVE.has(e.name) && !e.track && !e.still);
+  const len = Math.min(base + (slow ? TURN_MORE * Math.abs(turn) / Math.PI : 0), next ? Math.max(base, next.t0 - e.t0) : Infinity);
+  if (since >= len) return k;
+  return blendSkeleton(from(t), k, smooth(since / len), Math.abs(turn) > 0.1 ? turn : 0);
 }
 const NAME_OF = { move: 'run', shuffle: 'run' };
 export function actorState(play, f, t) {

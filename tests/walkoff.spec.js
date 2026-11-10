@@ -2772,6 +2772,57 @@ test.describe('수비', () => {
     expect(d.hr.upDown).toBeGreaterThan(0.05);   // 일어나도 고개는 숙인 채
     expect(errors).toEqual([]);
   });
+
+  // 2026-11-09 사용자 '수비 선수들이 너무 딱딱함'(고른 것 1·2번). 전에는 수비수 시간의 57%가 완전히 멈춰 있었고, 뛰기 시작·멈출 때 장면의 99%에서 몸이 접히며 휙 돌았다
+  test('수비 동작: 공을 친 뒤 서 있는 수비수는 숨 쉬듯 움직이며 공 쪽으로 몸을 돌리고, 돌아설 때 몸이 접히지 않는다(치기 전 자세는 그대로)', async ({ page, isMobile }) => {
+    test.skip(isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const errors = await open(page, '?seed=1');
+    const d = await page.evaluate(() => {
+      const w = walkoff, F = (pos) => w.DEFENSE.find((f) => f.pos === pos), J = (k) => [k.pelvis, k.chest, k.head, k.hands.l, k.hands.r, k.feet.l, k.feet.r];
+      const moved = (a, b) => Math.max(...J(a).map((p, i) => Math.hypot(p[0] - J(b)[i][0], p[1] - J(b)[i][1], p[2] - J(b)[i][2])));
+      const fc = (k) => k.axes?.fc ?? k.facing(k.shTurn), seq = w.makeSequence(1, w.pitcherHand(1) === 'L');
+      // 치기 전(수비 일정 없음)에는 3초 동안 한 관절도 안 움직인다(조준 타격 테스트 동안 치기 전 화면은 바꾸지 않는다)
+      const before = Math.max(...w.DEFENSE.map((f) => moved(w.actorSkeleton(null, f, 0), w.actorSkeleton(null, f, 3.3))));
+      // 좌익수 뜬공(시드 1 첫 공 -54ms): 우익수는 할 일이 없어 내내 제자리 준비 자세다. 맞는 순간은 치기 전 자세 그대로이고, 그 뒤로는 0.25초마다 자세가 바뀐다
+      const r = w.judgeSwing(seq[0], -54, 'R'), pl = w.fieldPlay(r), RF = F('우익수'), at = w.actorState(pl, RF, 0).spot;
+      const at0 = moved(w.actorSkeleton(pl, RF, 0), w.actorSkeleton(null, RF, 0)), steps = [];
+      for (let t = 1; t < 4; t += 0.25) steps.push(moved(w.actorSkeleton(pl, RF, t), w.actorSkeleton(pl, RF, t + 0.25)));
+      // 공이 좌익수 쪽에 있을 때 몸(어깨)이 치기 전보다 공 쪽을 본다(수평 방향의 내적 차이)
+      const b = pl.ball(2), to = [b.x - at[0], b.z - at[1]], n = Math.hypot(...to), look = (k) => (fc(k)[0] * to[0] + fc(k)[2] * to[1]) / n;
+      const toward = look(w.actorSkeleton(pl, RF, 2)) - look(w.actorSkeleton(null, RF, 2));
+      // 같은 타구를 다시 만들어도 똑같다(무작위 없음)
+      const again = w.fieldPlay(w.judgeSwing(seq[0], -54, 'R')), same = [1.3, 2.7].every((t) => moved(w.actorSkeleton(pl, RF, t), w.actorSkeleton(again, RF, t)) === 0);
+      // 시드 1~4 공 3개씩·5가지 타이밍의 수비수 8명(공을 친 뒤 투구 그림인 투수는 빼고): 어깨 폭(0.4m)이 가장 좁을 때, 뛰기·서 있기 중 한 장면(1/60초)에 도는 가장 큰 각
+      let minW = 9, maxTurn = 0;
+      for (let seed = 1; seed <= 4; seed++) {
+        const s = w.makeSequence(seed, w.pitcherHand(seed) === 'L');
+        for (let i = 0; i < 3; i++) for (let dt = -48; dt <= 48; dt += 24) {
+          const q = w.judgeSwing(s[i], dt, 'R');
+          if (!q.ev || q.kind === 'whiff' || q.kind === 'foul') continue;
+          const p = w.fieldPlay(q);
+          for (const f of w.DEFENSE) {
+            let prev = null;
+            for (let t = 0; t <= p.end; t += 1 / 60) {
+              if (f.pos === '투수' && !p.acts['투수'].some((e) => e.t0 <= t)) continue;
+              const k = w.actorSkeleton(p, f, t), sh = k.shoulders, yaw = Math.atan2(sh.l[2] - sh.r[2], sh.l[0] - sh.r[0]), pose = w.actorState(p, f, t).pose;
+              minW = Math.min(minW, Math.hypot(sh.l[0] - sh.r[0], sh.l[1] - sh.r[1], sh.l[2] - sh.r[2]));
+              if (prev != null && ['run', 'ready', 'watch', 'backup', 'cover'].includes(pose)) maxTurn = Math.max(maxTurn, Math.abs(Math.atan2(Math.sin(yaw - prev), Math.cos(yaw - prev))) * 180 / Math.PI);
+              prev = yaw;
+            }
+          }
+        }
+      }
+      return { before, at0, steps, toward, same, minW, maxTurn };
+    });
+    expect(d.before).toBe(0);
+    expect(d.at0).toBeLessThan(1e-9);
+    expect(Math.min(...d.steps)).toBeGreaterThan(0.02);   // 전에는 0(같은 자세로 서 있었다)
+    expect(d.toward).toBeGreaterThan(0.1);
+    expect(d.same).toBe(true);
+    expect(d.minW).toBeGreaterThan(0.3);   // 전에는 0(어깨가 한 점으로 모였다 펴졌다)
+    expect(d.maxTurn).toBeLessThan(30);    // 전에는 한 장면에 180도 가까이 휙 돌았다
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('결과 공유', () => {
