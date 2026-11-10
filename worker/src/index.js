@@ -11,6 +11,7 @@ import { checkScenario } from './scenario.js';
 import { readBoard, saveDaily, updateBoard, renameInBoards, removeFromBoards } from './board.js';
 import { grantTitles, titlesIn, countsIn, gameCounts, titleOf, pickedTitle, shownTitle, withTitle } from './titles.js';
 import { TITLE_IDS } from '../../js/core/titles.js';
+import { giveTag, parseFind, findPlayers, sendGift, giftsLeft, inboxOf, markSeen } from './gifts.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -22,12 +23,13 @@ const HEADERS = {
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: HEADERS });
 
 // 로그인 없이 받는 경로의 횟수 제한(wrangler.toml [[ratelimits]], 무료). IP마다 센다. 바인딩이 없으면(테스트·wrangler dev) 세지 않는다.
-// 넘으면 429: 게임은 통계를 sendBeacon으로 보내 답을 안 보고, 랭킹 화면은 '잠시 뒤 다시'를 띄운다
-const LIMITERS = { '/events': 'EVENTS_LIMIT', '/rankings': 'RANKINGS_LIMIT' };
-async function limited(request, env, path) {
+// 넘으면 429: 게임은 통계를 sendBeacon으로 보내 답을 안 보고, 랭킹 화면은 '잠시 뒤 다시'를 띄운다.
+// 선물 받는 사람 찾기(/players, 2026-11-10)는 로그인한 사람만 쓰고 계정마다 센다(key)
+const LIMITERS = { '/events': 'EVENTS_LIMIT', '/rankings': 'RANKINGS_LIMIT', '/players': 'PLAYERS_LIMIT' };
+async function limited(request, env, path, key = request.headers.get('cf-connecting-ip') ?? 'unknown') {
   const limiter = env[LIMITERS[path]];
   if (!limiter) return false;
-  const { success } = await limiter.limit({ key: request.headers.get('cf-connecting-ip') ?? 'unknown' });
+  const { success } = await limiter.limit({ key });
   return !success;
 }
 const tooMany = () => new Response(JSON.stringify({ ok: false, error: 'rate_limited' }), { status: 429, headers: { ...HEADERS, 'retry-after': '60' } });
@@ -38,11 +40,12 @@ const withTotal = (p) => (p ? { ...p, total: p.best } : null);
 
 // 목록의 사람마다 입은 물건(2026-11-02 유저 피드백 '다른 사람이 무엇을 입었는지 보고 싶다')과 대표 칭호(2026-11-05, 받은 칭호 가운데 가장 높은 것.
 // 2026-11-10부터는 고른 칭호가 있으면 그것, shownTitle).
-// 산 물건만 입은 것으로 본다(lookOf). 계정이 없는 예전 기록은 없어서 게임이 기본 모습·칭호 없음으로 그린다. player_id는 UNIQUE라 목록 수(최대 50)만큼만 읽는다
+// 산 물건만 입은 것으로 본다(lookOf). 계정이 없는 예전 기록은 없어서 게임이 기본 모습·칭호 없음으로 그린다. player_id는 UNIQUE라 목록 수(최대 50)만큼만 읽는다.
+// 2026-11-10부터 #번호(tag)도 붙인다(입은 모습 창에 보이고 거기서 선물을 보낸다. 랭킹 줄에는 안 보인다)
 async function looksOf(db, ids) {
   if (!ids.length) return new Map();
-  const { results } = await db.prepare(`SELECT player_id, owned, equipped, titles FROM accounts WHERE player_id IN (${ids.map(() => '?').join(', ')})`).bind(...ids).all();
-  return new Map(results.map((a) => [a.player_id, { look: lookOf(a.equipped, ownedOf(a.owned)), title: shownTitle(a.equipped, titlesIn(a.titles)) }]));
+  const { results } = await db.prepare(`SELECT player_id, owned, equipped, titles, tag FROM accounts WHERE player_id IN (${ids.map(() => '?').join(', ')})`).bind(...ids).all();
+  return new Map(results.map((a) => [a.player_id, { look: lookOf(a.equipped, ownedOf(a.owned)), title: shownTitle(a.equipped, titlesIn(a.titles)), tag: a.tag ?? null }]));
 }
 
 // 이번 주 순위와 지난주 1등(사람, 팀). 주마다 모아 둔 요약(board.js)으로 매긴다.
@@ -60,7 +63,7 @@ async function rankings(db, week, playerId, now, { looks = false, lastWeek = tru
   const lookById = looks ? await looksOf(db, ids) : null, last = lastList && rankSummary(lastList, null);
   return {
     week, nextWeek: addDays(week, 7), ...cur, ...(playerId ? { allTime } : {}),   // allTime: 그 사람이 이번 주에 친 판이 없어도(me가 null) 준다
-    players: cur.players.map((p, i) => (lookById ? { ...withTotal(p), look: lookById.get(ids[i])?.look ?? null, title: lookById.get(ids[i])?.title ?? null } : withTotal(p))), me: withTotal(cur.me),
+    players: cur.players.map((p, i) => (lookById ? { ...withTotal(p), look: lookById.get(ids[i])?.look ?? null, title: lookById.get(ids[i])?.title ?? null, tag: lookById.get(ids[i])?.tag ?? null } : withTotal(p))), me: withTotal(cur.me),
     ...(last ? { lastWeek: { player: withTotal(last.players[0]), team: last.teams[0] ?? null } } : {}),
   };
 }
@@ -96,7 +99,9 @@ async function findOrCreateAccount(db, key, pid) {
   if (found) return found.player_id;
   const taken = !pid || await db.prepare('SELECT 1 AS x FROM accounts WHERE player_id = ?').bind(pid).first();
   await db.prepare('INSERT OR IGNORE INTO accounts (kakao_key, player_id) VALUES (?, ?)').bind(key, taken ? crypto.randomUUID() : pid).run();
-  return (await find()).player_id;   // 두 번 눌러 동시에 들어와도 계정은 하나
+  const playerId = (await find()).player_id;   // 두 번 눌러 동시에 들어와도 계정은 하나
+  await giveTag(db, playerId);   // #번호(gifts.js)
+  return playerId;
 }
 
 async function loginCallback(url, env, now) {
@@ -113,12 +118,14 @@ async function loginCallback(url, env, now) {
   return backTo(st.r, { login: await newSession(env, playerId, now), n: st.n });
 }
 
-// 로그인 표의 계정. 기록을 지운 계정의 표는 받지 않는다
-const ACCOUNT_COLS = 'player_id, nick, team, coins, owned, equipped, titles, counts';
+// 로그인 표의 계정. 기록을 지운 계정의 표는 받지 않는다. 번호가 없으면(마이그레이션 0010 뒤 옛 서버가 만든 계정) 이때 준다
+const ACCOUNT_COLS = 'player_id, nick, team, coins, owned, equipped, titles, counts, tag, games';
 const accountById = (db, pid) => db.prepare(`SELECT ${ACCOUNT_COLS} FROM accounts WHERE player_id = ?`).bind(pid).first();
 async function account(request, env, now) {
   const pid = await sessionPlayer(env, request, now);
-  return pid ? accountById(env.DB, pid) : null;
+  const a = pid ? await accountById(env.DB, pid) : null;
+  if (a && a.tag == null) a.tag = await giveTag(env.DB, a.player_id);
+  return a;
 }
 // 게임에 돌려주는 지갑: 코인, 산 물건, 착용(look)
 const wallet = (a) => { const owned = ownedOf(a.owned); return { coins: a.coins, owned, look: lookOf(a.equipped, owned) }; };
@@ -153,7 +160,7 @@ export default {
         return new Response(null, { status: 204, headers: HEADERS });
       }
 
-      const acct = ['/seeds', '/scores', '/scenario', '/me', '/shop/buy', '/shop/equip', '/title'].includes(url.pathname) ? await account(request, env, now) : null;
+      const acct = ['/seeds', '/scores', '/scenario', '/me', '/shop/buy', '/shop/equip', '/title', '/players', '/shop/gift', '/gifts/seen'].includes(url.pathname) ? await account(request, env, now) : null;
       // 10구 도전 한 판의 시드와 일회용 표(seeds.js). 게임은 기다리지 않고 시작하려고 다음 판 표를 미리 받아 둔다
       if (url.pathname === '/seeds' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
@@ -168,12 +175,12 @@ export default {
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const s = checked.value;
         // 같은 사람·같은 날은 그날 가장 높은 판만 남기고(saveDaily), 그 주 요약의 내 몫을 다시 계산한다(updateBoard). accepted는 그날 기록이 새로 생기거나 올랐다는 뜻.
-        // 계정에는 마지막으로 쓴 닉네임·팀을 적어 둔다. 10구 도전의 표는 같은 묶음에서 쓴 것으로 적는다(점수가 못 들어가면 표도 남는다).
+        // 계정에는 마지막으로 쓴 닉네임·팀과 랭킹 판 수(선물 조건, gifts.js)를 적어 둔다. 10구 도전의 표는 같은 묶음에서 쓴 것으로 적는다(점수가 못 들어가면 표도 남는다).
         // 같은 표로 동시에 두 번 보내면 둘 다 들어갈 수 있지만, 같은 공 순서라 그날 가장 높은 점수 하나만 남고 코인은 20초 간격으로 한 번이다
         const [res] = await env.DB.batch([
           saveDaily(env.DB, s),
           updateBoard(env.DB, s.week, s.playerId),
-          env.DB.prepare('UPDATE accounts SET nick = ?, team = ? WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
+          env.DB.prepare('UPDATE accounts SET nick = ?, team = ?, games = games + 1 WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
           ...(ticket ? [useSeed(env.DB, ticket, now)] : []),
         ]);
         const earned = await giveCoins(env.DB, s.playerId, coinsFor(s.score), now);
@@ -198,7 +205,11 @@ export default {
       }
       if (url.pathname === '/me') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
-        if (method === 'GET') return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team, ...wallet(acct), titles: titlesIn(acct.titles), counts: countsIn(acct.counts), title: pickedTitle(acct.equipped, titlesIn(acct.titles)) });
+        if (method === 'GET') {   // tag·games·giftsLeft·gifts는 선물하기(2026-11-10): 내 번호, 랭킹 판 수, 오늘 더 보낼 수 있는 수, 안 본 받은 선물
+          const [left, gifts] = await Promise.all([giftsLeft(env.DB, acct.player_id, now), inboxOf(env.DB, acct.player_id)]);
+          return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team, ...wallet(acct), titles: titlesIn(acct.titles), counts: countsIn(acct.counts), title: pickedTitle(acct.equipped, titlesIn(acct.titles)),
+            tag: acct.tag, games: acct.games, giftsLeft: left, gifts });
+        }
         if (method === 'PUT') {   // 팀·닉네임 바꾸기. 닉네임은 랭킹에 바로 보이게 지난 기록에도 고쳐 쓴다(팀은 그날 팀 그대로)
           const checked = validateProfile(await request.json().catch(() => null));
           if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
@@ -210,9 +221,10 @@ export default {
           ]);
           return json({ ok: true });
         }
-        if (method === 'DELETE') {   // 기록 지우기: 점수와 계정을 모두 지운다
+        if (method === 'DELETE') {   // 기록 지우기: 점수와 계정을 모두 지운다(주고받은 선물 기록도. 받은 사람이 가진 물건은 그대로)
           await env.DB.batch([
             env.DB.prepare('DELETE FROM daily_scores WHERE player_id = ?').bind(acct.player_id),
+            env.DB.prepare('DELETE FROM gifts WHERE sender = ? OR receiver = ?').bind(acct.player_id, acct.player_id),
             removeFromBoards(env.DB, acct.player_id),
             env.DB.prepare('DELETE FROM seed_tokens WHERE player_id = ?').bind(acct.player_id),
             env.DB.prepare('DELETE FROM accounts WHERE player_id = ?').bind(acct.player_id),
@@ -256,6 +268,31 @@ export default {
         const equipped = JSON.stringify(withTitle(lookOf(acct.equipped, ownedOf(acct.owned)), id));
         await env.DB.prepare('UPDATE accounts SET equipped = ? WHERE player_id = ?').bind(equipped, acct.player_id).run();
         return json({ ok: true, title: id, shown: shownTitle(equipped, have) });
+      }
+      // ===== 선물하기(gifts.js) =====
+      // 받는 사람 찾기: ?nick=골든(그 닉네임 모두) 또는 ?nick=골든%234821(그 한 명). 로그인한 사람만, 계정마다 횟수를 센다
+      if (url.pathname === '/players' && method === 'GET') {
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        if (await limited(request, env, '/players', acct.player_id)) return tooMany();
+        const q = parseFind(url.searchParams.get('nick'));
+        if (!q) return json({ ok: false, error: 'bad_nick' }, 400);
+        return json({ ok: true, players: await findPlayers(env.DB, q, acct.player_id) });
+      }
+      // 선물 보내기: { to: 받는 사람 번호, item: 물건 id }. 답은 보낸 사람 지갑과 오늘 남은 수
+      if (url.pathname === '/shop/gift' && method === 'POST') {
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        const b = await request.json().catch(() => null), it = itemById(b?.item);
+        if (!it) return json({ ok: false, error: 'unknown_item' }, 400);
+        if (it.price === 0) return json({ ok: false, error: 'free_item' }, 400);
+        const sent = await sendGift(env.DB, acct, b.to, it, now);
+        const after = await accountById(env.DB, acct.player_id);
+        if (sent.error) return json({ ok: false, error: sent.error, games: sent.games, ...wallet(after) }, sent.error === 'no_player' ? 404 : 400);
+        return json({ ok: true, to: sent.to, giftsLeft: sent.left, ...wallet(after) });
+      }
+      // 받은 선물을 본 것으로(메뉴 띠를 눌렀을 때): { ids: [선물 id] }
+      if (url.pathname === '/gifts/seen' && method === 'POST') {
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        return json({ ok: true, seen: await markSeen(env.DB, acct.player_id, (await request.json().catch(() => null))?.ids) });
       }
       return json({ ok: false, error: 'not_found' }, 404);
     } catch (e) {

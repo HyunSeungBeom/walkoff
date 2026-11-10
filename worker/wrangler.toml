@@ -19,3 +19,9 @@ simple = { limit = 60, period = 60 }
 name = "RANKINGS_LIMIT"
 namespace_id = "1102"
 simple = { limit = 60, period = 60 }
+
+# 선물 받는 사람 찾기(2026-11-10, /players). 로그인한 사람만 쓰고 계정마다 1분에 30번(사람이 찾기에는 넉넉하고, 닉네임을 훑는 장난은 막는다)
+[[ratelimits]]
+name = "PLAYERS_LIMIT"
+namespace_id = "1103"
+simple = { limit = 30, period = 60 }

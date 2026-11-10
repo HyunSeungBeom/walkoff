@@ -28,8 +28,27 @@ CREATE TABLE IF NOT EXISTS accounts (
   -- 칭호·업적(2026-11-05, js/core/titles.js). 이미 있던 DB에는 migrations/0007_titles.sql로 더했다
   titles TEXT NOT NULL DEFAULT '[]',             -- 받은 칭호 id(JSON 배열)
   -- 쌓아서 받는 칭호(2026-11-06). 이미 있던 DB에는 migrations/0008_title_counts.sql로 더했다
-  counts TEXT NOT NULL DEFAULT '{}'              -- 칭호마다 쌓은 수(JSON, js/core/titles.js countsOf)
+  counts TEXT NOT NULL DEFAULT '{}',             -- 칭호마다 쌓은 수(JSON, js/core/titles.js countsOf)
+  -- 선물하기(2026-11-10, src/gifts.js). 이미 있던 DB에는 migrations/0010_gift.sql로 더했다
+  tag INTEGER,                                   -- 바뀌지 않는 번호(게임은 '골든#4821', 0~9999, 4자리가 차면 10000~99999). 처음 로그인할 때 준다
+  games INTEGER NOT NULL DEFAULT 0               -- 10구 랭킹 판 수(선물은 GIFT_MIN_GAMES판 넘게 친 계정만)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_tag ON accounts (tag);
+CREATE INDEX IF NOT EXISTS accounts_nick ON accounts (nick);   -- 받는 사람 찾기
+
+-- 선물 기록(2026-11-10, src/gifts.js). 이미 있던 DB에는 migrations/0010_gift.sql로 더했다
+CREATE TABLE IF NOT EXISTS gifts (
+  id TEXT PRIMARY KEY,                           -- 무작위 UUID
+  sender TEXT NOT NULL,                          -- 보낸 계정(accounts.player_id)
+  receiver TEXT NOT NULL,                        -- 받은 계정
+  item TEXT NOT NULL,                            -- 물건 id(js/core/catalog.js)
+  price INTEGER NOT NULL,                        -- 보낸 사람 코인에서 뺀 값(그때 상점 값)
+  day TEXT NOT NULL,                             -- 보낸 날(한국 시간). 하루 보낸 수를 센다
+  sent_at INTEGER NOT NULL,                      -- 보낸 시각(ms)
+  seen INTEGER NOT NULL DEFAULT 0                -- 받는 사람이 메뉴 띠를 눌러 봤으면 1
+);
+CREATE INDEX IF NOT EXISTS gifts_sender ON gifts (sender, day);
+CREATE INDEX IF NOT EXISTS gifts_receiver ON gifts (receiver, seen);
 
 -- 하루 이용 통계(2026-10-29, src/stats.js). 이미 있던 DB에는 migrations/0003_stats.sql로 더했다
 CREATE TABLE IF NOT EXISTS play_stats (

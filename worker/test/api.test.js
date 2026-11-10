@@ -1,18 +1,19 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { sign, verify, allowedReturn } from '../src/auth.js';
+import { sign, verify, allowedReturn, newSession } from '../src/auth.js';
 import { kstDay, weekStart, addDays, maxScoreFor } from '../src/rules.js';
 import { DEFAULTS } from '../src/shop.js';
 import { makeSequence, pitcherHand, zoneMiss } from '../../js/core/pitches.js';
 import { scoreRange } from '../../js/core/score.js';
 import { SEED_TTL_MS, SEEDS_PER_HOUR } from '../src/seeds.js';
+import { GIFTS_PER_DAY, GIFT_MIN_GAMES } from '../src/gifts.js';
 import { memoryD1 } from './d1.js';
 import { perfectBatter, playScenario, randomBatter, whiffBatter } from './scenario-play.js';
 
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
 const N = 'nonce-0123456789';
-const KAKAO = { c1: 111, c2: 111, c3: 222 };   // 인가 코드 → 카카오 회원번호. c1과 c2는 같은 사람이 다른 기기에서 받은 코드
+const KAKAO = { c1: 111, c2: 111, c3: 222, c4: 333, c5: 444 };   // 인가 코드 → 카카오 회원번호. c1과 c2는 같은 사람이 다른 기기에서 받은 코드
 const realFetch = globalThis.fetch;
 let env, kakaoCalls;
 
@@ -395,4 +396,133 @@ test('대표 칭호 고르기(2026-11-10): 받은 칭호만 달고(안 받은·�
   assert.deepEqual(await pick(null), [200, { ok: true, title: null, shown: 'god' }]);   // 다시 자동으로
   assert.deepEqual(await shown(), [null, 'god']);
   assert.equal((await me(a)).look.bat, 'bat-red');   // 칭호를 바꿔도 입은 물건은 그대로
+});
+
+// ===== 선물하기와 #번호(2026-11-10, src/gifts.js) =====
+const pad = (tag) => String(tag).padStart(4, '0');   // 게임이 보이는 번호(4자리)
+const named = async (code, pid, nick) => { const token = (await login(code, pid)).hash.login; await call('PUT', '/me', { token, body: { nick, team: 'lg' } }); return token; };
+// 번호 뽑기를 정해 둔 차례로(겹침을 일부러 만든다). 끝나면 원래대로
+function fixedRandom(values) {
+  const real = crypto.getRandomValues;
+  crypto.getRandomValues = (arr) => { arr[0] = values.shift() ?? 0; return arr; };
+  return () => { crypto.getRandomValues = real; };
+}
+const fillTags = (n) => env.DB.prepare(`WITH RECURSIVE k(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM k WHERE i < ${n - 1})
+  INSERT INTO accounts (kakao_key, player_id, tag) SELECT 'fill-' || i, 'p-fill-' || i, i FROM k`).run();   // 번호 0 ~ n-1을 다른 계정이 쓰는 중
+
+test('#번호: 새 계정은 로그인할 때, 번호 없는 계정(옛 서버가 만든)은 처음 불러올 때 받고, 닉네임을 바꾸거나 다른 기기에서 들어와도 그대로다. 랭킹 사람에게도 붙는다', async () => {
+  const a = (await login('c1', 'p-device-0001')).hash.login, tagA = (await me(a)).tag;
+  assert.ok(Number.isInteger(tagA) && tagA >= 0 && tagA < 10000, `4자리 번호 ${tagA}`);
+  assert.equal(env.DB.rows("SELECT tag FROM accounts WHERE player_id = 'p-device-0001'")[0].tag, tagA);   // 로그인할 때 이미 받았다
+  await call('PUT', '/me', { token: a, body: { nick: '새이름', team: 'kt' } });
+  assert.equal((await me(a)).tag, tagA);
+  assert.equal((await me((await login('c2', 'p-device-0009')).hash.login)).tag, tagA);   // 같은 카카오 계정, 다른 기기
+  await env.DB.prepare('INSERT INTO accounts (kakao_key, player_id, nick, team) VALUES (?, ?, ?, ?)').bind('old-key', 'p-old-00001', '옛사람', 'kt').run();
+  const old = await newSession(env, 'p-old-00001', Date.now());
+  const tagOld = (await me(old)).tag;
+  assert.ok(Number.isInteger(tagOld) && tagOld !== tagA);
+  assert.equal((await me(old)).tag, tagOld);   // 한 번만 준다
+  await call('POST', '/scores', { token: a, body: score(await seeded(a), { nick: '새이름' }) });
+  const ranking = await (await call('GET', '/rankings')).json();
+  assert.deepEqual(ranking.players.map((p) => [p.nick, p.tag]), [['새이름', tagA]]);
+});
+
+test('#번호: 뽑은 번호가 이미 있으면 다시 뽑고, 4자리가 80% 넘게 차면 5자리로 준다', async () => {
+  await fillTags(1);   // 번호 0을 누가 쓰는 중
+  let undo = fixedRandom([0, 0, 4821]);
+  const a = (await login('c1', 'p-device-0001')).hash.login;
+  undo();
+  assert.equal((await me(a)).tag, 4821);   // 0, 0은 겹쳐서 버렸다
+  env.DB.rows('DELETE FROM accounts');
+  await fillTags(7999);   // 4자리 7,999개(80% 아래): 세 번 겹쳐도 4자리에서 계속 뽑는다
+  undo = fixedRandom([1, 2, 3, 9000]);
+  const b = (await login('c3', 'p-device-0002')).hash.login;
+  undo();
+  assert.equal((await me(b)).tag, 9000);
+  undo = fixedRandom([4, 5, 6, 777]);   // 이제 8,000개(80%): 세 번 겹치면 5자리
+  const c = (await login('c4', 'p-device-0003')).hash.login;
+  undo();
+  assert.equal((await me(c)).tag, 10777);
+  const tags = env.DB.rows('SELECT tag FROM accounts').map((r) => r.tag);
+  assert.equal(new Set(tags).size, tags.length);   // 겹치지 않는다
+});
+
+test('받는 사람 찾기: 같은 닉네임을 모두(나는 빼고), 닉네임#번호면 그 한 명, 없는 번호면 빈 목록. 로그인해야 쓰고 계정 ID는 보내지 않는다', async () => {
+  const a = await named('c1', 'p-device-0001', '가람'), b = await named('c3', 'p-device-0002', '골든'), c = await named('c4', 'p-device-0003', '골든');
+  await named('c5', 'p-device-0004', '골든이');   // 닉네임이 다르면 안 나온다
+  const tagB = (await me(b)).tag, tagC = (await me(c)).tag;
+  const find = async (token, nick) => { const r = await call('GET', `/players?nick=${encodeURIComponent(nick)}`, { token }); return [r.status, await r.json()]; };
+  assert.equal((await call('GET', '/players?nick=골든')).status, 401);
+  const [st, all] = await find(a, '골든');
+  assert.equal(st, 200);
+  assert.deepEqual(all.players.map((p) => [p.nick, p.tag, p.team]).sort((x, y) => x[1] - y[1]), [['골든', tagB, 'lg'], ['골든', tagC, 'lg']].sort((x, y) => x[1] - y[1]));
+  assert.deepEqual([all.players[0].look.bat, all.players[0].title], ['bat-wood', null]);   // 입은 모습·대표 칭호
+  assert.ok(!JSON.stringify(all).includes('p-device-'));
+  assert.deepEqual((await find(a, '  골든  '))[1].players.length, 2);   // 앞뒤 빈칸은 뺀다
+  assert.deepEqual((await find(a, `골든#${pad(tagB)}`))[1].players.map((p) => p.tag), [tagB]);
+  assert.deepEqual((await find(a, `골든 #${pad(tagC)}`))[1].players.map((p) => p.tag), [tagC]);
+  const missing = [...Array(10000).keys()].find((t) => t !== tagB && t !== tagC);
+  assert.deepEqual((await find(a, `골든#${pad(missing)}`))[1].players, []);   // 없는 번호
+  assert.deepEqual((await find(a, `가람#${pad(tagB)}`))[1].players, []);   // 닉네임과 번호가 다른 사람이면 없다
+  assert.deepEqual((await find(b, '골든'))[1].players.map((p) => p.tag), [tagC]);   // 나는 빼고
+  assert.deepEqual((await find(a, '골'))[1].players, []);   // 정확히 같은 닉네임만
+  assert.equal((await find(a, ''))[0], 400);
+});
+
+test('선물하기: 보낸 사람 코인에서 상점 값이 빠지고 받는 사람 물건이 된다(입지는 않는다). 자기 자신·기본 물건·없는 번호·랭킹 판 10판 이하·하루 3번 넘김·코인 부족·이미 가진 물건은 거절한다', async () => {
+  const a = await named('c1', 'p-device-0001', '가람'), b = await named('c3', 'p-device-0002', '골든');
+  const tagA = (await me(a)).tag, tagB = (await me(b)).tag;
+  const gift = async (token, to, item) => { const r = await call('POST', '/shop/gift', { token, body: { to, item } }); return [r.status, await r.json()]; };
+  const err = async (...x) => { const [st, d] = await gift(...x); return [st, d.error]; };
+  assert.equal((await call('POST', '/shop/gift', { body: { to: tagB, item: 'bat-red' } })).status, 401);
+  await env.DB.prepare("UPDATE accounts SET coins = 2000 WHERE player_id = 'p-device-0001'").run();
+  for (let i = 0; i < GIFT_MIN_GAMES; i++) {   // 10구 랭킹 판 10판: 아직 못 보낸다(10판 넘게 친 계정만)
+    await call('POST', '/scores', { token: a, body: score(await seeded(a), { nick: '가람' }) });
+    await env.DB.prepare("UPDATE accounts SET coin_at = 0, coins = 2000 WHERE player_id = 'p-device-0001'").run();
+  }
+  assert.equal((await me(a)).games, GIFT_MIN_GAMES);
+  const [, few] = await gift(a, tagB, 'bat-red');
+  assert.deepEqual([few.error, few.games, few.coins], ['not_enough_games', GIFT_MIN_GAMES, 2000]);
+  await call('POST', '/scores', { token: a, body: score(await seeded(a), { nick: '가람' }) });
+  await env.DB.prepare("UPDATE accounts SET coins = 2000 WHERE player_id = 'p-device-0001'").run();
+  assert.deepEqual(await err(a, tagA, 'bat-red'), [400, 'self']);
+  assert.deepEqual(await err(a, tagB, 'bat-wood'), [400, 'free_item']);
+  assert.deepEqual(await err(a, tagB, 'no-such'), [400, 'unknown_item']);
+  assert.deepEqual(await err(a, (tagB + 1) % 10000 === tagA ? (tagB + 2) % 10000 : (tagB + 1) % 10000, 'bat-red'), [404, 'no_player']);
+  assert.deepEqual(await err(a, String(tagB), 'bat-red'), [404, 'no_player']);   // 번호는 숫자로
+  assert.deepEqual(await err(a, tagB, 'bat-phoenix'), [400, 'not_enough_coins']);   // 8,000코인
+
+  const [st, ok] = await gift(a, tagB, 'bat-red');
+  assert.deepEqual([st, ok.ok, ok.coins, ok.to, ok.giftsLeft, ok.owned], [200, true, 1850, { nick: '골든', tag: tagB }, GIFTS_PER_DAY - 1, []]);
+  const got = await me(b);
+  assert.deepEqual([got.owned, got.look.bat, got.coins], [['bat-red'], 'bat-wood', 0]);   // 받은 물건은 내 것, 입는 것은 직접
+  assert.deepEqual(got.gifts.map((g) => [g.item, g.from]), [['bat-red', { nick: '가람', tag: tagA }]]);
+  assert.deepEqual(await err(a, tagB, 'bat-red'), [400, 'already_owned']);
+  assert.equal((await me(a)).coins, 1850);   // 거절된 것은 코인을 빼지 않았다
+  assert.deepEqual((await gift(a, tagB, 'helmet-black'))[1].giftsLeft, 1);
+  assert.deepEqual((await gift(a, tagB, 'glove-black'))[1].giftsLeft, 0);
+  assert.deepEqual(await err(a, tagB, 'shoe-white'), [400, 'daily_limit']);
+  const mine = await me(a);
+  assert.deepEqual([mine.coins, mine.owned, mine.giftsLeft], [1850 - 150 - 100, [], 0]);
+  await env.DB.prepare("UPDATE gifts SET day = '2000-01-01'").run();   // 다음 날이면 다시 보낸다
+  assert.equal((await gift(a, tagB, 'shoe-white'))[0], 200);
+
+  // 받는 쪽: 안 본 선물은 새것부터, 띠를 누르면 본 것으로(남의 선물은 못 바꾼다). 받은 물건은 입을 수 있다
+  const inbox = (await me(b)).gifts;
+  assert.deepEqual(inbox.map((g) => g.item), ['shoe-white', 'glove-black', 'helmet-black', 'bat-red']);
+  assert.deepEqual(await (await call('POST', '/gifts/seen', { token: a, body: { ids: inbox.map((g) => g.id) } })).json(), { ok: true, seen: 0 });
+  assert.deepEqual(await (await call('POST', '/gifts/seen', { token: b, body: { ids: inbox.slice(1).map((g) => g.id) } })).json(), { ok: true, seen: 3 });
+  assert.deepEqual((await me(b)).gifts.map((g) => g.item), ['shoe-white']);
+  assert.equal((await (await call('POST', '/shop/equip', { token: b, body: { item: 'bat-red' } })).json()).look.bat, 'bat-red');
+  // 보낸 사람이 기록을 지우면 주고받은 선물 기록도 지우고, 받은 물건은 그대로
+  assert.equal((await call('DELETE', '/me', { token: a })).status, 200);
+  assert.deepEqual([env.DB.rows('SELECT * FROM gifts').length, (await me(b)).owned.length, (await me(b)).gifts], [0, 4, []]);
+});
+
+test('선물하기: 같은 물건을 동시에 두 번 보내도 한 번만 가고 코인도 한 번만 빠진다', async () => {
+  const a = await named('c1', 'p-device-0001', '가람'), b = await named('c3', 'p-device-0002', '골든'), tagB = (await me(b)).tag;
+  await env.DB.prepare("UPDATE accounts SET coins = 1000, games = 11 WHERE player_id = 'p-device-0001'").run();
+  const res = await Promise.all([0, 1].map(() => call('POST', '/shop/gift', { token: a, body: { to: tagB, item: 'bat-silver' } })));
+  assert.deepEqual(res.map((r) => r.status).sort(), [200, 400]);
+  assert.deepEqual([(await me(a)).coins, (await me(b)).owned, env.DB.rows('SELECT * FROM gifts').length], [600, ['bat-silver'], 1]);
 });

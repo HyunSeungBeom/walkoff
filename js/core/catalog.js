@@ -93,3 +93,8 @@ export const ITEMS = [
   { id: 'sound-8bit', slot: 'sound', price: 1500 },
   { id: 'sound-duck', slot: 'sound', price: 300 },
 ];
+
+// 선물하기(2026-11-10 사용자 결정): 상점 물건만 보내고, 한 사람이 하루(한국 시간)에 GIFTS_PER_DAY번, 10구 랭킹 판을 GIFT_MIN_GAMES판 넘게 친 계정만 보낸다(부계정 막기).
+// 서버(worker/src/gifts.js)가 정하고, 게임은 안내 글에 쓴다
+export const GIFTS_PER_DAY = 3;
+export const GIFT_MIN_GAMES = 10;

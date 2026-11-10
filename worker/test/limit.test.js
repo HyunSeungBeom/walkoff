@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { kstDay } from '../src/rules.js';
 import { memoryD1 } from './d1.js';
+import { newSession } from '../src/auth.js';
 
 // 로그인 없이 받는 경로의 횟수 제한(wrangler.toml [[ratelimits]]). Cloudflare 바인딩처럼 key마다 limit번까지 success를 돌려주는 가짜
 const fakeLimiter = (limit) => {
@@ -40,4 +41,17 @@ test('횟수 제한: 로그인한 요청과 미리 묻는 요청(OPTIONS)은 세
   const plain = { DB: memoryD1() };
   for (let i = 0; i < 30; i++) assert.equal((await events(plain, '1.1.1.1')).status, 204);
   assert.equal((await rankings(plain, '1.1.1.1')).status, 200);
+});
+
+test('횟수 제한: 선물 받는 사람 찾기(/players)는 로그인한 계정마다 센다(같은 IP의 다른 계정은 따로)', async () => {
+  const env = { DB: memoryD1(), SESSION_SECRET: 'test-session-secret', PLAYERS_LIMIT: fakeLimiter(2) };
+  for (const pid of ['p-device-0001', 'p-device-0002']) await env.DB.prepare('INSERT INTO accounts (kakao_key, player_id, nick, tag) VALUES (?, ?, ?, ?)').bind(`k-${pid}`, pid, '골든', pid.endsWith('1') ? 1 : 2).run();
+  const find = async (pid) => (await worker.fetch(new Request('https://api.test/players?nick=골든', { headers: { 'cf-connecting-ip': '1.1.1.1', authorization: `Bearer ${await newSession(env, pid, Date.now())}` } }), env)).status;
+  const a = [];
+  for (let i = 0; i < 3; i++) a.push(await find('p-device-0001'));
+  assert.deepEqual(a, [200, 200, 429]);
+  assert.equal(await find('p-device-0002'), 200);
+  assert.deepEqual([...env.PLAYERS_LIMIT.keys.keys()], ['p-device-0001', 'p-device-0002']);
+  assert.equal((await worker.fetch(new Request('https://api.test/players?nick=골든'), env)).status, 401);   // 로그인 없이는 세기 전에 막는다
+  assert.equal(env.PLAYERS_LIMIT.keys.size, 2);
 });

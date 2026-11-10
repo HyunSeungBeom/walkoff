@@ -8,7 +8,7 @@ import { groundPath, interceptGround, sprintTime } from './core/race.js';
 import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, leadAt, makeScenario as makeScenarioIn, SCENARIOS, scenarioPitch, scenarioPoints } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos } from './core/flight.js';
-import { ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
+import { GIFT_MIN_GAMES, GIFTS_PER_DAY, ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
 import { TITLES, TIERS, titleById, countsOf, addCounts, cleanCounts, titlesFor, topTitle } from './core/titles.js';
 import { connect } from './sim/port.js';
 import { bendJoint, smooth, unit3, V } from './sim/geom.js';
@@ -3750,17 +3750,21 @@ async function loadRanking() {
 function closeRanking() {
   if (game.rankView) { game.rankView = null; return; }   // 사람 모습을 보고 있으면 팀 창이나 목록으로
   if (game.rankTeam) { game.rankTeam = null; return; }   // 팀 창이면 팀 탭으로
-  if (game.rankBack === 'over') game.state = 'over'; else goTitle();
+  if (game.rankBack === 'over') game.state = 'over'; else if (game.rankBack === 'gift' && game.gift) game.state = 'gift'; else goTitle();   // gift: 선물 찾기의 '랭킹에서 고르기'
 }
-// 다른 사람 옷 보기(2026-11-03 사용자 결정, 랭킹 서버가 줄마다 그 사람이 입은 물건(look)을 보낸다). 계정이 없는 예전 기록은 null이라 기본 모습이다
-function openRankLook(row) { game.rankView = { nick: row.nick, team: row.team, rank: row.rank, best: row.best ?? row.total ?? 0, look: cleanLook(row.look), title: titleById(row.title)?.name ?? null }; }
+// 다른 사람 옷 보기(2026-11-03 사용자 결정, 랭킹 서버가 줄마다 그 사람이 입은 물건(look)을 보낸다). 계정이 없는 예전 기록은 null이라 기본 모습이다.
+// 2026-11-10부터 #번호(tag)를 닉네임 뒤에 보이고, 로그인했으면 남(번호가 있는 계정)에게 [선물하기]
+function openRankLook(row) {
+  game.rankView = { nick: row.nick, team: row.team, rank: row.rank, best: row.best ?? row.total ?? 0, look: cleanLook(row.look), title: titleById(row.title)?.name ?? null, titleId: row.title ?? null,
+    tag: Number.isInteger(row.tag) ? row.tag : null, me: !!row.me };
+}
 // 그 사람의 타자 모습(팀 색 + 입은 물건)을 상점 미리 보기처럼 크게, 3초마다 한 번 휘두른다(등번호는 휘두르면 보인다). 아래에 입은 물건 이름
 function drawRankLook() {
   dim(0.86);
   rankList.max = 0;   // 넘기지 않는 화면(돌아가면 팀 창·목록은 넘기던 자리 그대로)
   const m = view.mobile, cx = view.w / 2, v = game.rankView, t = teamById(v.team);
   let y = view.h * (m ? 0.07 : 0.08);
-  text(v.nick, cx, y, { size: m ? 22 : 28, weight: 800 });
+  drawNickTag(v.nick, v.tag, cx, y, m ? 22 : 28, 'center');
   y += m ? 26 : 32;
   text(`${v.title ? `${v.title} · ` : ''}${t?.name ?? ''} · 이번 주 ${v.rank}위 · ${v.best.toLocaleString()}점`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });   // 대표 칭호가 있으면 맨 앞
   y += m ? 18 : 22;
@@ -3772,7 +3776,10 @@ function drawRankLook() {
   ctx.font = font(m ? 12 : 14, 600);
   for (const nm of names) { const cur = lines[lines.length - 1], next = cur ? `${cur} · ${nm}` : nm; if (cur && ctx.measureText(next).width > bw) lines.push(nm); else lines[lines.length - 1] = next; }
   lines.forEach((ln, i) => text(i === 0 && !names.length ? '기본 모습' : ln, cx, y + i * (m ? 18 : 20), { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.8)' }));
-  addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, game.rankTeam ? '‹ 팀으로' : '‹ 랭킹으로', 'primary', closeRanking);
+  const back = game.rankTeam ? '‹ 팀으로' : '‹ 랭킹으로', pick = game.rankBack === 'gift' && !!game.gift;   // pick: 선물 찾기에서 랭킹으로 왔다
+  if (loggedIn() && v.tag != null && !v.me) {
+    rowRects(cx, view.h - (m ? 96 : 104), m ? view.w - 48 : 400, 48, 2, 10).forEach((r, i) => addButton(r, i ? (pick ? '이 사람 고르기' : '선물하기') : back, i === (pick ? 1 : 0) ? 'primary' : 'secondary', i ? () => giftFromRank(v) : closeRanking));
+  } else addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, back, 'primary', closeRanking);
 }
 function drawLookFigure(box, look, team) {
   roundRect(box.x, box.y, box.w, box.h, 14);
@@ -3937,7 +3944,7 @@ function teamBoard(d, team) {
   if (!t) return null;
   const pts = (p) => p.best ?? p.total ?? 0;   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
   const list = d.players.filter((p) => p.team === team);
-  if (d.me?.team === team && !list.some((p) => p.me)) list.push({ rank: d.me.rank, nick: settings.nick || '-', team, best: pts(d.me), days: d.me.days, me: true, look: wallet.look, title: myTitle(), outside: true });
+  if (d.me?.team === team && !list.some((p) => p.me)) list.push({ rank: d.me.rank, nick: settings.nick || '-', team, best: pts(d.me), days: d.me.days, me: true, look: wallet.look, title: myTitle(), tag: myTag(), outside: true });
   const rest = Math.max(0, t.players - list.length), restPts = Math.max(0, t.total - list.reduce((s, p) => s + pts(p), 0));
   let rank = 0;
   const rows = list.map((p, i) => {
@@ -3999,9 +4006,10 @@ async function syncAccount() {
     if (res.status === 401) { logout('expired'); return; }
     if (!res.ok) return;
     const acct = await res.json();
-    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
+    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); store.remove('accountTag'); store.remove('giftRecent'); resetGiftInfo(); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
     settings.playerId = acct.playerId; store.set('playerId', acct.playerId);
     setWallet(acct);
+    setGiftInfo(acct);
     settleTitles(null, acct);
     let msg = '카카오로 로그인했어요';
     if (store.get('profileDirty', 0) && teamById(settings.team)) await pushProfile();   // 지난번에 바꾼 팀을 못 적었으면 서버의 옛 팀으로 덮지 않고 다시 보낸다
@@ -4038,7 +4046,8 @@ async function pushProfile() {
 function logout(reason) {
   Object.assign(auth, { token: null, fresh: false });
   seedTicket.ready = null;   // 받아 둔 시드는 그 계정 것이다
-  store.remove('session'); store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); accountBestAt = 0;   // 메뉴 최고 기록·칭호는 다시 이 기기 값으로
+  store.remove('session'); store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); store.remove('accountTag'); store.remove('giftRecent'); accountBestAt = 0;   // 메뉴 최고 기록·칭호는 다시 이 기기 값으로
+  resetGiftInfo();
   resetWallet();   // 코인과 꾸미기는 계정에 남는다. 이 브라우저는 기본 모습으로
   toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
 }
@@ -4051,8 +4060,8 @@ async function deleteAccount() {
     if (!res.ok && res.status !== 401) throw new Error(`delete ${res.status}`);
     Object.assign(auth, { token: null, fresh: false });
     seedTicket.ready = null;
-    ['session', 'pending', 'playerId', 'accountBest', 'accountTitles', 'accountTitle', 'accountCounts'].forEach((k) => store.remove(k));
-    resetWallet();
+    ['session', 'pending', 'playerId', 'accountBest', 'accountTitles', 'accountTitle', 'accountCounts', 'accountTag', 'giftRecent'].forEach((k) => store.remove(k));
+    resetWallet(); resetGiftInfo();
     settings.playerId = ensurePlayerId();
     goTitle();
     toast('랭킹 기록과 계정을 지웠어요');
@@ -4720,7 +4729,7 @@ noInput.addEventListener('input', () => {
 
 async function refreshWallet() {
   if (!loggedIn()) return;
-  try { const res = await api('/me'); if (res.ok) setWallet(await res.json()); else if (res.status === 401) logout('expired'); } catch { /* 이 브라우저에 남은 값으로 그린다 */ }
+  try { const res = await api('/me'); if (res.ok) { const d = await res.json(); setWallet(d); setGiftInfo(d); } else if (res.status === 401) logout('expired'); } catch { /* 이 브라우저에 남은 값으로 그린다 */ }
 }
 function openShop(view = 'shop') {
   game.shop = { view, tab: game.shop?.tab ?? 'bat', sel: null, no: Number.isInteger(wallet.look.no) ? wallet.look.no : 7, demo: performance.now(), busy: false };
@@ -4774,8 +4783,9 @@ function drawCoinPill(x, cy, coins, align = 'left') {
   return { x: x0, y: cy - h / 2, w, h };
 }
 
-// 물건 칸 하나: 견본 그림, 이름, 가격이나 상태. 배트·헬멧·신발은 타자에게 입히는 것과 같은 함수로 작게 그린다
-function drawItemCard(r, it, on) {
+// 물건 칸 하나: 견본 그림, 이름, 가격이나 상태. 배트·헬멧·신발은 타자에게 입히는 것과 같은 함수로 작게 그린다.
+// gift는 랭킹에서 고른 받는 사람(선물할 물건을 고르는 중): 상태는 내 것이 아니라 값과 그 사람이 입고 있는지
+function drawItemCard(r, it, on, gift = null) {
   const m = view.mobile, t = teamById(settings.team), sw = r.h * (m ? 0.27 : 0.3), sx = r.x + (m ? 7 : 10) + sw, sy = r.y + r.h / 2;
   roundRect(r.x, r.y, r.w, r.h, 12);
   ctx.fillStyle = on ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)'; ctx.fill();
@@ -4821,7 +4831,8 @@ function drawItemCard(r, it, on) {
   ctx.font = font(size, 700);
   const fit = Math.min(1, (r.x + r.w - 5 - tx) / ctx.measureText(it.name).width);   // 폰은 한 줄에 셋이라 긴 이름('토끼 슬리퍼')은 글자를 줄인다
   text(it.name, tx, sy - (m ? 8 : 9), { size: size * fit, weight: 700, align: 'left' });
-  const status = wearing(it) ? ['착용 중', '#8ef0a8'] : owns(it.id) ? [it.price ? '보유' : '기본', 'rgba(255,255,255,0.6)'] : [`${it.price.toLocaleString()}코인`, '#f2c94c'];
+  const status = gift ? (gift.look[it.slot] === it.id ? ['입고 있음', 'rgba(255,255,255,0.6)'] : it.price ? [`${it.price.toLocaleString()}코인`, '#f2c94c'] : ['기본', 'rgba(255,255,255,0.6)'])
+    : wearing(it) ? ['착용 중', '#8ef0a8'] : owns(it.id) ? [it.price ? '보유' : '기본', 'rgba(255,255,255,0.6)'] : [`${it.price.toLocaleString()}코인`, '#f2c94c'];
   text(status[0], tx, sy + (m ? 10 : 12), { size: m ? 11 : 13, weight: 700, color: status[1], align: 'left' });
 }
 
@@ -4920,13 +4931,17 @@ function drawShopPreview(box) {
 
 function drawShop() {
   dim(0.86);
-  const m = view.mobile, cx = view.w / 2, sh = game.shop, W = m ? view.w - 24 : 760, x0 = cx - W / 2;
+  const m = view.mobile, cx = view.w / 2, sh = game.shop, W = m ? view.w - 24 : 760, x0 = cx - W / 2, to = sh.giftTo;
   let y = m ? 16 : 24;
-  rowRects(cx, y, m ? 190 : 240, 34, 2, 6).forEach((r, i) => {   // [상점 | 내 물건]
+  if (to) sh.view = 'shop';
+  const coinR = wallet.coins != null ? drawCoinPill(x0 + W, y + 17, wallet.coins, 'right') : null;
+  if (to) {   // 랭킹에서 고른 사람에게 보낼 물건(선물하기): [상점 | 내 물건] 대신 받는 사람
+    ctx.font = font(m ? 15 : 17, 800);
+    text(fitText(`${to.nick}${tagText(to.tag)}에게 보낼 물건`, (coinR ? coinR.x - 10 : x0 + W) - x0 - 4), x0 + 4, y + 17, { size: m ? 15 : 17, weight: 800, align: 'left' });
+  } else rowRects(cx, y, m ? 190 : 240, 34, 2, 6).forEach((r, i) => {   // [상점 | 내 물건]
     const v = i ? 'inventory' : 'shop';
     addButton(r, i ? '내 물건' : '상점', sh.view === v ? 'chipOn' : 'chip', () => { sh.view = v; sh.sel = null; });
   });
-  if (wallet.coins != null) drawCoinPill(x0 + W, y + 17, wallet.coins, 'right');
   y += 34 + (m ? 10 : 14);
   const tcols = m ? 4 : 8, tw = (W - (tcols - 1) * 6) / tcols, th = m ? 30 : 34;
   // 폰은 물건 칸이 한 줄에 셋(2026-10-30 물건이 늘어 가장 많은 배트가 12개). 미리 보기 칸 높이는 물건이 가장 많은 탭도
@@ -4937,7 +4952,10 @@ function drawShop() {
   const maxRows = Math.min(m ? 5 : 4, Math.ceil(Math.max(...SHOP_SLOTS.map(([s]) => SHOP_ITEMS.filter((i) => i.slot === s).length)) / icols));
   const below = (m ? 10 : 14) + Math.ceil(SHOP_SLOTS.length / tcols) * (th + 6) + (m ? 6 : 10) + maxRows * (ih + 8) + (m ? 6 : 10) + 114 + 8;
   const pv = { x: x0, y, w: W, h: clamp(Math.min(view.h * 0.27, view.h - y - below), 110, 300) };
-  drawShopPreview(pv);
+  if (to) {   // 미리 보기는 받는 사람이 고른 물건을 입은 모습
+    lookOverride = { look: giftPreviewLook(to.look, shopItem(sh.sel)), team: to.team };
+    try { drawShopPreview(pv); } finally { lookOverride = null; }
+  } else drawShopPreview(pv);
   y += pv.h + (m ? 10 : 14);
   SHOP_SLOTS.forEach(([slot, label], i) => {
     const r = { x: x0 + (i % tcols) * (tw + 6), y: y + Math.floor(i / tcols) * (th + 6), w: tw, h: th };
@@ -4950,7 +4968,7 @@ function drawShop() {
   if (!scroll) shopList.max = 0;
   list.forEach((it, i) => {
     const r = { x: x0 + (i % icols) * (iw + gap), y: y0 + Math.floor(i / icols) * (ih + 8), w: iw, h: ih };
-    drawItemCard(r, it, sh.sel === it.id);
+    drawItemCard(r, it, sh.sel === it.id, to);
     if (scroll) scrollButton(shopList, r, it.name, () => selectItem(it)); else ui.buttons.push({ r, label: it.name, onTap: () => selectItem(it) });
   });
   if (scroll) endScroll(shopList, y0 + full - 8, x0 + W + (m ? 4 : 6));
@@ -4958,33 +4976,288 @@ function drawShop() {
   drawShopAction(y);
 }
 
-// 아래 버튼: 고른 물건에 따라 로그인 / 사기 / 착용하기 / 착용 중 / 등번호 달기
+// 아래 버튼: 고른 물건에 따라 로그인 / 사기 / 착용하기 / 착용 중 / 등번호 달기. 상점 탭에서 기본이 아닌 물건을 고르면 오른쪽에 [선물하기](2026-11-10).
+// 랭킹에서 고른 사람에게 보낼 물건을 고르는 중이면(sh.giftTo) [선물하기 · 값]과 취소(입은 모습 창으로)
 function drawShopAction(y) {
   const m = view.mobile, cx = view.w / 2, sh = game.shop, sel = shopItem(sh.sel), bw = m ? view.w - 64 : 320, note = (s) => text(s, cx, y + 10, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
-  const btn = { x: cx - bw / 2, y: y + 24, w: bw, h: 46 };
+  const btn = { x: cx - bw / 2, y: y + 24, w: bw, h: 46 }, to = sh.giftTo;
+  const canGift = !to && loggedIn() && sh.view === 'shop' && giftable(sel), gw = m ? 100 : 110, main = canGift ? { ...btn, w: bw - gw - 8 } : btn;
   let showNo = false;
-  if (!loggedIn()) {
+  if (to) {
+    if (!sel) note('보낼 물건을 골라요 · 위는 받는 사람 모습이에요');
+    else if (!giftable(sel)) note('기본 물건은 선물할 수 없어요');
+    else if (to.look[sel.slot] === sel.id) { note(`${sel.name} · 이미 입고 있어요`); addButton(btn, '이미 가진 물건이에요', 'secondary', () => toast('이미 가진 물건이에요')); }
+    else { note(`${sel.name} · ${sel.price.toLocaleString()}코인`); addButton(btn, `선물하기 · ${sel.price.toLocaleString()}코인`, 'primary', () => giftPicked(sel)); }
+  } else if (!loggedIn()) {
     note('카카오로 로그인하면 코인을 모아 꾸밀 수 있어요');
     addButton(btn, '카카오로 로그인', 'kakao', startKakaoLogin);
   } else if (!sel) note(sh.view === 'shop' ? '고르면 위에서 미리 입어 봐요 · 코인은 점수의 1/100' : '가진 물건을 골라 입어요');
   else if (!owns(sel.id)) {
     const can = (wallet.coins ?? 0) >= sel.price;
     note(can ? `${sel.name} · ${sel.price.toLocaleString()}코인` : `코인이 ${(sel.price - (wallet.coins ?? 0)).toLocaleString()}개 모자라요`);
-    addButton(btn, can ? `사기 · ${sel.price.toLocaleString()}코인` : '코인이 모자라요', can ? 'primary' : 'secondary', () => (can ? buyItem(sel) : toast('판을 더 쳐서 코인을 모아 보세요')));
+    addButton(main, can ? `사기 · ${sel.price.toLocaleString()}코인` : '코인이 모자라요', can ? 'primary' : 'secondary', () => (can ? buyItem(sel) : toast('판을 더 쳐서 코인을 모아 보세요')));
   } else if (sel.id === 'number-on') {   // 번호 입력칸 + 달기
     showNo = true;
     note('0~99 사이 번호를 넣고 달기를 눌러요');
     const iw = m ? 90 : 100;
-    Object.assign(noInput.style, { display: 'block', left: `${cx - bw / 2}px`, top: `${btn.y}px`, width: `${iw}px`, height: '46px' });
-    addButton({ x: btn.x + iw + 10, y: btn.y, w: bw - iw - 10, h: 46 }, '달기', 'primary', () => {
+    Object.assign(noInput.style, { display: 'block', left: `${main.x}px`, top: `${main.y}px`, width: `${iw}px`, height: '46px' });
+    addButton({ x: main.x + iw + 10, y: main.y, w: main.w - iw - 10, h: 46 }, '달기', 'primary', () => {
       const n = Number(noInput.value);
       if (noInput.value === '' || !Number.isInteger(n) || n < 0 || n > 99) { toast('0~99 사이 번호를 골라 주세요'); return; }
       noInput.blur(); equipItem(sel, n);
     });
-  } else if (wearing(sel)) { note(`${sel.name} · 착용 중`); addButton(btn, '착용 중', 'secondary', () => {}); }
-  else { note(sel.price ? `${sel.name} · 보유` : `${sel.name} · 기본`); addButton(btn, '착용하기', 'primary', () => equipItem(sel)); }
+  } else if (wearing(sel)) { note(`${sel.name} · 착용 중`); addButton(main, '착용 중', 'secondary', () => {}); }
+  else { note(sel.price ? `${sel.name} · 보유` : `${sel.name} · 기본`); addButton(main, '착용하기', 'primary', () => equipItem(sel)); }
+  if (canGift) addButton({ x: btn.x + bw - gw, y: btn.y, w: gw, h: 46 }, '선물하기', 'secondary', () => startGift(sel));
   if (!showNo && noInput.style.display !== 'none') noInput.style.display = 'none';
-  addButton({ x: cx - 70, y: btn.y + 54, w: 140, h: 36 }, '닫기', 'link', () => { noInput.blur(); goTitle(); });
+  addButton({ x: cx - 70, y: btn.y + 54, w: 140, h: 36 }, to ? '취소' : '닫기', 'link', () => { noInput.blur(); if (to) closeGiftShop(); else goTitle(); });
+}
+
+// ===== 선물하기 =====
+// 2026-11-10 패들렛 의견 '아이템 선물하기 기능? 돈이 남아요', 사용자 결정. 친구 기능 없이 닉네임을 적어 보내고, 닉네임이 겹치면 계정마다 바뀌지 않는
+// #번호(서버 tag, '골든#4821')로 고른다. 번호는 내 정보 카드·입은 모습 창·선물 찾기에만 보인다(랭킹 줄은 그대로).
+// 상점 물건만 보내고(코인은 주고받지 않는다) 보낸 사람 코인에서 상점 값이 빠진다. 하루 GIFTS_PER_DAY번, 10구 랭킹 판을 GIFT_MIN_GAMES판 넘게 친 계정만이고 정하는 것은 서버다(worker/src/gifts.js).
+// 길: 상점에서 물건을 고르고 [선물하기] → 받는 사람 찾기(닉네임 적기·최근 보낸 사람·랭킹, step 'find') → 확인(받는 사람 모습과 #번호, step 'confirm') → 보냄.
+// 랭킹·팀원 창에서 사람을 누른 입은 모습 창의 [선물하기]는 그 사람에게 보낼 물건을 상점에서 고른다(game.shop.giftTo, 미리 보기도 그 사람 모습).
+// 받는 쪽은 메뉴에 '선물이 왔어요' 띠(안 본 선물만, /me의 gifts)가 뜨고, 누르면 내 물건에서 그 물건을 보여 준다. 입는 것은 직접 한다(거절은 없다)
+const tagText = (tag) => (Number.isInteger(tag) ? `#${String(tag).padStart(4, '0')}` : '');
+const myTag = () => { const t = loggedIn() ? store.get('accountTag', null) : null; return Number.isInteger(t) ? t : null; };
+const giftable = (it) => !!it && it.price > 0;
+// /me 답에서 받은 것: 안 본 받은 선물(inbox), 랭킹 판 수(games), 오늘 더 보낼 수 있는 수(left). 모르면 null.
+// seen은 이번에 띠를 눌러 본 선물(본 것으로 적는 요청보다 /me 답이 먼저 와도 띠를 다시 안 띄운다)
+const giftBox = { inbox: [], games: null, left: null, seen: new Set() };
+function setGiftInfo(d) {
+  if (Number.isInteger(d?.tag)) store.set('accountTag', d.tag);
+  if (Array.isArray(d?.gifts)) giftBox.inbox = d.gifts.filter((g) => shopItem(g?.item) && !giftBox.seen.has(g.id));
+  if (Number.isInteger(d?.games)) giftBox.games = d.games;
+  if (Number.isInteger(d?.giftsLeft)) giftBox.left = d.giftsLeft;
+}
+function resetGiftInfo() { Object.assign(giftBox, { inbox: [], games: null, left: null }); giftBox.seen.clear(); }
+// 받는 사람 한 명: 찾기 결과·랭킹 줄·최근 보낸 사람을 같은 모양으로 { nick, tag, team, title(칭호 id), look }
+const giftPerson = (p) => ({ nick: String(p.nick ?? ''), tag: p.tag, team: p.team ?? null, title: p.title ?? null, look: cleanLook(p.look) });
+// 최근 보낸 사람(이 기기, 친구 목록 대신 GIFT_RECENT명, 보낸 차례)
+const GIFT_RECENT = 5;
+function giftRecent() {
+  const v = loggedIn() ? store.get('giftRecent', []) : [];
+  return (Array.isArray(v) ? v : []).filter((p) => Number.isInteger(p?.tag) && typeof p.nick === 'string').slice(0, GIFT_RECENT).map(giftPerson);
+}
+const rememberGiftTo = (p) => store.set('giftRecent', [p, ...giftRecent().filter((x) => x.tag !== p.tag)].slice(0, GIFT_RECENT));
+// 서버가 거절한 까닭(worker/src/gifts.js의 오류 이름)을 사람 말로
+const GIFT_ERRORS = {
+  not_enough_coins: () => '코인이 모자라요',
+  already_owned: () => '이미 가진 물건이에요',
+  daily_limit: () => `오늘은 ${GIFTS_PER_DAY}번 다 보냈어요 · 내일 다시 보낼 수 있어요`,
+  not_enough_games: (d) => `10구 랭킹 판을 ${GIFT_MIN_GAMES}판 넘게 치면 선물할 수 있어요${Number.isInteger(d?.games) ? ` · 지금 ${d.games}판` : ''}`,
+  self: () => '나에게는 보낼 수 없어요',
+  no_player: () => '찾는 사람이 없어요',
+  free_item: () => '기본 물건은 선물할 수 없어요',
+};
+// 보내기 전에 막히는 까닭(알고 있는 값으로만, 서버가 다시 본다). 없으면 null
+function giftBlock(it) {
+  if (!loggedIn()) return '카카오로 로그인하면 선물할 수 있어요';
+  if (giftBox.games != null && giftBox.games <= GIFT_MIN_GAMES) return GIFT_ERRORS.not_enough_games({ games: giftBox.games });
+  if (giftBox.left === 0) return GIFT_ERRORS.daily_limit();
+  if ((wallet.coins ?? 0) < it.price) return `코인이 ${(it.price - (wallet.coins ?? 0)).toLocaleString()}개 모자라요`;
+  return null;
+}
+// 받는 사람이 고른 물건을 입은 모습(랭킹에서 고른 사람에게 보낼 물건을 고를 때 미리 보기). 등번호는 그 사람 번호, 없으면 7
+function giftPreviewLook(look, it) {
+  if (!it) return look;
+  const out = { ...look, [it.slot]: it.id };
+  if (it.id === 'number-on') out.no = Number.isInteger(look.no) ? look.no : 7;
+  return out;
+}
+
+// 상점에서 고른 물건으로 받는 사람 찾기를 연다
+function startGift(it) {
+  const why = giftBlock(it);
+  if (why) { toast(why); return; }
+  game.gift = { step: 'find', item: it.id, to: null, from: 'shop', find: { status: 'idle', players: [] }, busy: false };
+  giftInput.value = ''; giftList.key = '';
+  game.state = 'gift';
+}
+// 입은 모습 창의 [선물하기]. 선물 찾기에서 랭킹으로 왔으면 그 물건으로 확인, 아니면 그 사람에게 보낼 물건을 상점에서 고른다
+function giftFromRank(v) {
+  const to = giftPerson({ ...v, title: v.titleId });
+  if (game.rankBack === 'gift' && game.gift?.item) { Object.assign(game.gift, { to, step: 'confirm' }); game.state = 'gift'; return; }
+  openShop('shop');
+  game.shop.giftTo = to;
+}
+function giftPicked(it) {   // 랭킹에서 고른 사람에게 보낼 물건을 상점에서 골랐다
+  const why = giftBlock(it);
+  if (why) { toast(why); return; }
+  game.gift = { step: 'confirm', item: it.id, to: game.shop.giftTo, from: 'rank', busy: false };
+  game.state = 'gift';
+}
+function closeGiftShop() { game.shop.giftTo = null; game.state = 'ranking'; }   // 입은 모습 창으로(rankView 그대로)
+function giftBack() {   // 확인 → 찾기(상점에서 왔으면) 또는 상점, 찾기 → 상점(고르던 물건 그대로)
+  const g = game.gift;
+  giftInput.blur();
+  if (g.step === 'confirm' && g.from === 'shop') { g.step = 'find'; return; }
+  game.state = 'shop';
+}
+function pickGiftTo(p) {
+  const g = game.gift;
+  Object.assign(g, { to: p, step: 'confirm' });
+  giftInput.blur();
+  if (g.find.status === 'idle') refreshGiftTo(p);   // 최근 보낸 사람: 남겨 둔 모습으로 먼저 보이고 지금 모습·칭호로 바꾼다
+}
+async function refreshGiftTo(p) {
+  try {
+    const res = await api(`/players?nick=${encodeURIComponent(`${p.nick}${tagText(p.tag)}`)}`);
+    const now = res.ok ? (await res.json()).players?.find((x) => x.tag === p.tag) : null;
+    if (now && game.gift?.to?.tag === p.tag) game.gift.to = giftPerson(now);
+  } catch { /* 남겨 둔 모습으로 보인다(서버는 번호로 보낸다) */ }
+}
+
+// 받는 사람 찾기: 적은 닉네임(앞뒤 빈칸 뺌)과 정확히 같은 사람(나는 빼고), '닉네임#번호'면 그 한 명
+async function findGiftTo() {
+  const g = game.gift, q = giftInput.value.trim();
+  if (!q) { toast('닉네임을 적어 주세요'); return; }
+  if (g.find.status === 'loading') return;
+  giftInput.blur();   // 폰 키보드를 닫아 찾은 줄이 보이게
+  g.find = { status: 'loading', players: [], q };
+  try {
+    const res = await api(`/players?nick=${encodeURIComponent(q)}`);
+    if (res.status === 401) { logout('expired'); game.state = 'shop'; return; }
+    const d = await res.json().catch(() => ({}));
+    if (game.gift !== g) return;   // 그 사이 나갔다
+    if (!res.ok) { g.find = { status: res.status === 400 ? 'none' : 'error', players: [], q, busy: res.status === 429 }; return; }
+    const players = (d.players ?? []).filter((x) => Number.isInteger(x.tag)).map(giftPerson);
+    g.find = { status: players.length ? 'ok' : 'none', players, q };
+  } catch { if (game.gift === g) g.find = { status: 'error', players: [], q }; }
+}
+
+async function sendGift() {
+  const g = game.gift, it = shopItem(g.item), to = g.to;
+  if (g.busy) return;
+  g.busy = true;
+  try {
+    const res = await api('/shop/gift', { method: 'POST', body: { to: to.tag, item: it.id } });
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 401) { logout('expired'); game.state = 'shop'; return; }
+    setWallet(d);
+    if (Number.isInteger(d.giftsLeft)) giftBox.left = d.giftsLeft;
+    if (Number.isInteger(d.games)) giftBox.games = d.games;
+    if (!res.ok) {
+      if (d.error === 'daily_limit') giftBox.left = 0;
+      toast(GIFT_ERRORS[d.error]?.(d) ?? '보내지 못했어요. 잠시 뒤 다시 해 주세요');
+      return;
+    }
+    const sent = { ...to, nick: d.to?.nick ?? to.nick };   // 그 사이 닉네임을 바꿨으면 지금 닉네임
+    rememberGiftTo(sent);
+    toast(`보냈어요 · ${sent.nick}${tagText(sent.tag)}에게 ${it.name}`);
+    if (g.from === 'rank') closeGiftShop(); else game.state = 'shop';
+  } catch { toast('보내지 못했어요. 잠시 뒤 다시 해 주세요'); } finally { g.busy = false; }
+}
+
+// 메뉴 '선물이 왔어요' 띠를 누르면: 본 것으로 적고(못 적으면 다음에 다시 뜬다) 내 물건에서 맨 위 선물을 고른 채로 연다
+function openGiftInbox() {
+  const list = giftBox.inbox, g0 = list[0], it = shopItem(g0?.item);
+  list.forEach((g) => giftBox.seen.add(g.id));
+  giftBox.inbox = [];
+  api('/gifts/seen', { method: 'POST', body: { ids: list.map((g) => g.id) } }).catch(() => {});
+  openShop('inventory');
+  if (!it) return;
+  Object.assign(game.shop, { tab: it.slot, sel: it.id, demo: performance.now() });
+  toast(`${it.name} · ${g0.from?.nick ? `${g0.from.nick}${tagText(g0.from.tag)}님이 보냈어요` : '선물로 받았어요'} · 착용하기로 입어요`);
+}
+
+// 받는 사람 닉네임 칸(닉네임 칸처럼 캔버스 위에 띄운다). 닉네임 10자 + ' #' + 번호 5자리
+const giftInput = document.createElement('input');
+Object.assign(giftInput, { type: 'text', maxLength: 17, autocomplete: 'off', spellcheck: false, placeholder: '닉네임 또는 닉네임#1234', enterKeyHint: 'search' });
+giftInput.setAttribute('aria-label', '받는 사람 닉네임');
+Object.assign(giftInput.style, {
+  position: 'fixed', display: 'none', boxSizing: 'border-box', padding: '0 12px', zIndex: '2', outline: 'none',
+  border: '2px solid rgba(255,255,255,0.35)', borderRadius: '12px', background: 'rgba(8,16,30,0.85)', color: '#fff',
+  font: `700 16px ${FONT}`, textAlign: 'center',   // 16px보다 작으면 아이폰이 입력할 때 화면을 확대한다
+});
+document.body.appendChild(giftInput);
+const giftList = { scroll: 0, max: 0, drag: null, key: '', top: 0, bottom: 0 };   // 찾은 사람·최근 보낸 사람 줄(넘치면 끌어 넘긴다)
+
+// 닉네임 뒤에 흐린 #번호. align 'center'면 x가 둘을 합친 가운데. 합친 폭을 돌려준다
+function drawNickTag(nick, tag, x, cy, size, align = 'left') {
+  const label = tagText(tag), ts = Math.round(size * 0.8);
+  ctx.font = font(size, 800);
+  const nw = ctx.measureText(nick).width;
+  ctx.font = font(ts, 700);
+  const tw = label ? ctx.measureText(label).width + 4 : 0, x0 = align === 'center' ? x - (nw + tw) / 2 : x;
+  text(nick, x0, cy, { size, weight: 800, align: 'left' });
+  if (label) text(label, x0 + nw + 4, cy + 1, { size: ts, weight: 700, color: 'rgba(255,255,255,0.45)', align: 'left' });
+  return nw + tw;
+}
+// 받는 사람 한 줄: 팀 색 점, 닉네임#번호, 대표 칭호 배지, 오른쪽 팀 이름과 ›
+function drawGiftRow(r, p) {
+  const m = view.mobile, t = teamById(p.team), cy = r.y + r.h / 2, size = m ? 15 : 16, badge = titleById(p.title), bs = m ? 10 : 11;
+  roundRect(r.x, r.y, r.w, r.h, 12); ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fill();
+  if (t) { ctx.beginPath(); ctx.arc(r.x + 22, cy, 8, 0, Math.PI * 2); ctx.fillStyle = t.main; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = t.accent; ctx.stroke(); }
+  text('›', r.x + r.w - 14, cy, { size: size + 6, weight: 700, color: 'rgba(255,255,255,0.5)', align: 'right' });
+  const right = r.x + r.w - 30;
+  if (t) text(t.short, right, cy, { size: m ? 12 : 13, weight: 700, color: 'rgba(255,255,255,0.6)', align: 'right' });
+  ctx.font = font(m ? 12 : 13, 700);
+  const end = right - (t ? ctx.measureText(t.short).width + 10 : 0), x = r.x + 40 + drawNickTag(p.nick, p.tag, r.x + 40, cy, size) + 8;
+  if (badge && x + titleBadgeW(badge.short, bs) <= end) titleBadge(x, cy, badge, bs);
+}
+
+function drawGift() {
+  dim(0.86);
+  giftList.max = 0;
+  if (game.gift.step === 'confirm') drawGiftConfirm(); else drawGiftFind();
+}
+function drawGiftFind() {
+  const m = view.mobile, cx = view.w / 2, g = game.gift, it = shopItem(g.item), W = m ? view.w - 32 : 460, x0 = cx - W / 2, f = g.find, soft = 'rgba(255,255,255,0.6)';
+  let y = view.h * (m ? 0.06 : 0.08);
+  text('누구에게 보낼까요?', cx, y, { size: m ? 22 : 28, weight: 800 });
+  y += m ? 28 : 34;
+  text(`${it.name} · ${it.price.toLocaleString()}코인`, cx, y, { size: m ? 13 : 15, weight: 700, color: '#f2c94c' });
+  y += m ? 20 : 26;
+  const bw = m ? 72 : 84, iw = W - bw - 8;
+  Object.assign(giftInput.style, { display: 'block', left: `${x0}px`, top: `${y}px`, width: `${iw}px`, height: '44px' });
+  addButton({ x: x0 + iw + 8, y, w: bw, h: 44 }, '찾기', 'primary', findGiftTo);
+  y += 44 + (m ? 16 : 20);
+  text('같은 닉네임이 여럿이면 #번호로 골라요', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  y += m ? 26 : 32;
+  const rows = f.status === 'ok' ? f.players : f.status === 'idle' ? giftRecent() : [];
+  const head = f.status === 'ok' ? (rows.length > 1 ? `같은 닉네임이 ${rows.length}명이에요 · #번호로 골라요` : '찾은 사람') : rows.length ? '최근 보낸 사람' : '';
+  const say = { loading: '찾는 중…', none: '찾는 사람이 없어요', error: f.busy ? '요청이 많아요. 잠시 뒤 다시 해 주세요' : '찾지 못했어요. 잠시 뒤 다시 해 주세요' }[f.status];
+  if (say) text(say, cx, y + 10, { size: m ? 14 : 16, weight: 600, color: 'rgba(255,255,255,0.8)' });
+  if (head) { text(head, x0 + 4, y, { size: m ? 12 : 13, weight: 800, color: f.status === 'ok' ? '#f2c94c' : soft, align: 'left' }); y += m ? 16 : 20; }
+  if (rows.length) {
+    const step = m ? 52 : 50;
+    let ry = beginScroll(giftList, `${f.status}:${f.q ?? ''}`, y, view.h - (m ? 152 : 162));
+    for (const p of rows) {
+      const r = { x: x0, y: ry, w: W, h: step - 6 };
+      drawGiftRow(r, p);
+      scrollButton(giftList, r, `받는 사람 ${p.nick}${tagText(p.tag)}`, () => pickGiftTo(p));
+      ry += step;
+    }
+    endScroll(giftList, ry - 6, x0 + W + 6);
+  }
+  addButton({ x: cx - 110, y: view.h - (m ? 144 : 154), w: 220, h: 36 }, '랭킹에서 고르기 ›', 'link', () => { giftInput.blur(); openRanking('gift'); });
+  addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, '‹ 상점으로', 'secondary', giftBack);
+}
+// 확인: 받는 사람 모습(입은 모습 창과 같은 그림)과 닉네임#번호, 보낼 물건과 보낸 뒤 내 코인. 그 사람이 입고 있는 물건이면 못 보낸다(가진 물건)
+function drawGiftConfirm() {
+  const m = view.mobile, cx = view.w / 2, g = game.gift, it = shopItem(g.item), to = g.to, t = teamById(to.team), title = titleById(to.title);
+  let y = view.h * (m ? 0.06 : 0.08);
+  text('선물 보내기', cx, y, { size: m ? 15 : 17, weight: 800, color: '#f2c94c' });
+  y += m ? 30 : 38;
+  drawNickTag(to.nick, to.tag, cx, y, m ? 22 : 28, 'center');
+  y += m ? 26 : 32;
+  text(`${title ? `${title.name} · ` : ''}${t?.name ?? ''}`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
+  y += m ? 18 : 22;
+  const bw = m ? view.w - 40 : 420, bh = Math.max(120, Math.min(m ? 300 : 340, view.h - y - (m ? 230 : 240)));
+  drawLookFigure({ x: cx - bw / 2, y, w: bw, h: bh }, to.look, to.team);
+  y += bh + (m ? 22 : 26);
+  const have = to.look[it.slot] === it.id, coins = wallet.coins ?? 0, left = giftBox.left;
+  text(`보낼 물건 · ${it.name} · ${it.price.toLocaleString()}코인`, cx, y, { size: m ? 14 : 16, weight: 800 });
+  y += m ? 22 : 26;
+  text(have ? '이미 입고 있는 물건이라 보낼 수 없어요' : `보내면 내 코인 ${Math.max(0, coins - it.price).toLocaleString()}${left != null ? ` · 오늘 ${Math.max(0, left - 1)}번 더 보낼 수 있어요` : ''}`, cx, y, { size: m ? 12 : 14, weight: 600, color: have ? '#ff8a8a' : 'rgba(255,255,255,0.75)' });
+  y += m ? 20 : 24;
+  text('받으면 바로 그 사람 물건이 돼요', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  const sw = m ? view.w - 64 : 320, label = have ? '이미 가진 물건이에요' : g.busy ? '보내는 중…' : `보내기 · ${it.price.toLocaleString()}코인`;
+  addButton({ x: cx - sw / 2, y: view.h - (m ? 150 : 160), w: sw, h: 48 }, label, have || g.busy ? 'secondary' : 'primary', () => (have ? toast('이미 가진 물건이에요') : sendGift()));
+  addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, '‹ 다시 고르기', 'link', giftBack);
 }
 
 // ===== 시작 화면과 끝 화면 =====
@@ -5019,8 +5292,8 @@ function drawTitle(time) {
   const line = hot ? (streak >= 2 ? `${streak}일 연속 중 · 오늘 치면 ${streak + 1}일` : '오늘 치면 2일 연속')
     : `${streak >= 2 ? `${streak}일 연속 · ` : ''}주간 랭킹은 이번 주 최고 기록이에요`;
   text(line, cx, cy + (m ? 196 : 250), { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
-  const mb = menuButtonRect();   // 오른쪽 위 '≡ 메뉴'(안 읽은 새 소식은 NEW), 메뉴를 한 번도 안 연 사람에게는 아래 말풍선
-  drawMenuButton(mb, newsUnread());
+  const mb = menuButtonRect();   // 오른쪽 위 '≡ 메뉴'(안 읽은 새 소식이나 안 본 받은 선물은 NEW), 메뉴를 한 번도 안 연 사람에게는 아래 말풍선
+  drawMenuButton(mb, newsUnread() || (loggedIn() && giftBox.inbox.length > 0));
   ui.buttons.push({ r: mb.hit, label: '메뉴', onTap: openMenu });
   if (hasPlayed() && !store.get('menuSeen', false)) ui.buttons.push({ r: drawMenuBubble(mb), label: '메뉴 안내', onTap: openMenu });
   if (loggedIn() && wallet.coins != null) {   // 메뉴 옆 코인. 누르면 상점
@@ -5133,10 +5406,12 @@ function openOutside(url) {
   try { w.opener = null; } catch { /* 벌써 다른 사이트로 넘어갔으면 못 끊는다 */ }
 }
 const linkAt = (x, y) => ui.buttons.find((b) => b.href && inRect(b.r, x, y));
+let giftsAt = 0;   // 메뉴를 열 때 받은 선물을 다시 본 때(performance.now). 처음은 syncAccount가 본다
 function openMenu() {
   game.state = 'menu'; menu.scroll = 0;
   if (!store.get('menuSeen', false)) store.set('menuSeen', 1);   // 말풍선은 메뉴를 한 번 열면 다시 안 띄운다
   refreshAccountBest();   // 로그인했으면 이번 주·역대 최고를 계정 기록으로(1분에 한 번까지)
+  if (loggedIn() && performance.now() - giftsAt > 60e3) { giftsAt = performance.now(); refreshWallet(); }   // 그 사이 온 선물(1분에 한 번까지)
 }
 // 아이콘: 24칸 SVG 경로(시안 mock.html, 원·둥근 네모도 경로로 바꿨다)를 금색 2px 선으로 그린다
 const circlePath = (cx, cy, r) => `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0z`;
@@ -5155,6 +5430,7 @@ const MENU_ICONS = Object.fromEntries(Object.entries({
   voice: 'M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z',
   out: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',   // 바깥 사이트로 나가는 화살표
   close: 'M6 6l12 12M18 6L6 18',
+  gift: 'M4 11h16v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM3 7h18v4H3zM12 7v14M12 7C10 3 6 3 6.5 5.5S10 7 12 7M12 7c2-4 6-4 5.5-1.5S14 7 12 7',   // 선물 상자(받은 선물 띠)
 }).map(([k, d]) => [k, new Path2D(d)]));
 function menuIcon(name, x, y, size, color = '#f2c94c') {   // (x, y)가 왼쪽 위인 size px 칸에
   ctx.save(); ctx.translate(x, y); ctx.scale(size / 24, size / 24);
@@ -5212,15 +5488,16 @@ const MENU_SIZE = {
     h3Top: 9, h3Bottom: 5, h3Font: 11, row: 44, gap: 5, rowPad: 12, icon: 30, label: 15, value: 12, foot: 24, footFont: 11, minRow: 44 },
   compact: { top: 8, bottom: 8, headPad: 8, badge: 40, badgeFont: 15, nick: 16, newsGap: 6, newsH: 30, h3Top: 6, h3Bottom: 3, gap: 4, foot: 20, minRow: 34 },
 };
-// 메뉴 자리: 묶음을 PC는 두 칸(놀기·기록 | 내 것·설정), 폰은 한 칸에 놓고 줄 높이를 남는 높이에 맞춘다. max는 넘쳐서 끌어 넘길 길이
-function menuLayout(groups) {
+// 메뉴 자리: 묶음을 PC는 두 칸(놀기·기록 | 내 것·설정), 폰은 한 칸에 놓고 줄 높이를 남는 높이에 맞춘다. max는 넘쳐서 끌어 넘길 길이.
+// bands는 카드 아래 띠 수(새 소식·의견 보내기, 받은 선물이 있으면 '선물이 왔어요'까지 셋)
+function menuLayout(groups, bands = 2) {
   const m = view.mobile, cols = m ? [groups] : [groups.slice(0, 2), groups.slice(2)];
   const heads = Math.max(...cols.map((c) => c.length)), rows = Math.max(...cols.map((c) => c.reduce((n, g) => n + g[1].length, 0)));
   const size = (compact) => {
     const c = { ...MENU_SIZE[m ? 'mo' : 'pc'], ...(compact ? MENU_SIZE.compact : {}) };
     if (m) c.minRow = c.row;   // 폰은 줄을 44px 아래로 줄이지 않는다(카드·제목 여백만 줄이고 넘치면 끌어 넘긴다, 2026-11-05 사용자 결정)
     if (!m && !compact) c.top = clamp(view.h * 0.07, 12, c.top);
-    const fixed = c.top + c.headPad * 2 + c.badge + 2 * (c.newsGap + c.newsH) + heads * (c.h3Top + c.h3Font + c.h3Bottom) + c.foot + c.bottom;   // 띠 둘(새 소식·의견 보내기)
+    const fixed = c.top + c.headPad * 2 + c.badge + bands * (c.newsGap + c.newsH) + heads * (c.h3Top + c.h3Font + c.h3Bottom) + c.foot + c.bottom;
     return { c, fixed, rowH: clamp((view.h - fixed) / rows - c.gap, c.minRow, c.row) };
   };
   let L = size(false);
@@ -5271,7 +5548,7 @@ function drawMenu() {
     ['설정', [['calib', '타이밍 보정', fmtMs(settings.offset), startCalib, `타이밍 보정 ${fmtMs(settings.offset)}`],
       ...(canVibrate ? [['vib', '진동', settings.vibrate ? '켜짐' : '꺼짐', toggleVibrate, settings.vibrate ? '진동 켜짐' : '진동 꺼짐']] : [])]],
   ];
-  const L = menuLayout(groups), c = L.c, { x0, W } = L;
+  const gifts = loggedIn() ? giftBox.inbox : [], L = menuLayout(groups, gifts.length ? 3 : 2), c = L.c, { x0, W } = L;
   menu.max = L.max; menu.scroll = clamp(menu.scroll, 0, menu.max);
   let y = c.top - menu.scroll;
   // 내 정보 카드: 팀 배지(팀 색), 닉네임, 칩(최고 기록·연속 기록 2일부터·코인), 오른쪽 닫기
@@ -5289,10 +5566,16 @@ function drawMenu() {
   if (streak >= 2) chips.push([[String(streak), gold], ['일 연속', soft]]);
   if (coins != null) chips.push([['코인 ', soft], [coins.toLocaleString(), gold]]);
   const top = titleById(myTitle()), bw = top ? titleBadgeW(top.short, c.chip) + 8 : 0;   // 대표 칭호는 닉네임 옆 등급 색 배지(닉네임이 길면 줄인다)
+  const tag = tagText(myTag()), ts = c.nick - 4;   // 닉네임 뒤 흐린 #번호(로그인했을 때, 2026-11-10 선물하기)
+  ctx.font = font(ts, 700);
+  const tagW = tag ? ctx.measureText(tag).width + 5 : 0;
   ctx.font = font(c.nick, 800);
-  const nick = fitText(settings.nick || '-', close.x - 10 - tx - bw), nickY = chips.length ? by + c.badge * 0.3 : by + c.badge / 2;
+  const nick = fitText(settings.nick || '-', close.x - 10 - tx - bw - tagW), nickY = chips.length ? by + c.badge * 0.3 : by + c.badge / 2;
   text(nick, tx, nickY, { size: c.nick, weight: 800, align: 'left' });
-  if (top) { ctx.font = font(c.nick, 800); titleBadge(tx + ctx.measureText(nick).width + 8, nickY, top, c.chip); }
+  ctx.font = font(c.nick, 800);
+  const nickW = ctx.measureText(nick).width;
+  if (tag) text(tag, tx + nickW + 5, nickY + 1, { size: ts, weight: 700, color: 'rgba(255,255,255,0.45)', align: 'left' });
+  if (top) titleBadge(tx + nickW + tagW + 8, nickY, top, c.chip);
   ctx.font = font(c.chip, 700);
   const chipW = (parts) => parts.reduce((s, [str]) => s + ctx.measureText(str).width, 0) + (c.chip > 11 ? 18 : 14) + 6;
   const si = chips.findIndex((x) => x[1][0] === '일 연속');
@@ -5307,6 +5590,21 @@ function drawMenu() {
   menuIcon('close', close.x + 10, close.y + 10, 20, '#ffffff');
   ui.buttons.push({ r: close, label: '닫기', onTap: goTitle });
   y += hh + c.newsGap;
+  if (gifts.length) {   // '선물이 왔어요' 띠(안 본 선물만): 맨 위 선물의 보낸 사람·물건, 여럿이면 외 N개. 누르면 내 물건에서 그 물건
+    const gr = { x: x0, y, w: W, h: c.newsH }, gy = gr.y + gr.h / 2, gx0 = gr.x + (m ? 12 : 14), gEnd = gr.x + gr.w - (m ? 12 : 14), gis = c.newsFont + 4, gg = ctx.createLinearGradient(gr.x, 0, gr.x + gr.w, 0);
+    gg.addColorStop(0, 'rgba(242,201,76,0.3)'); gg.addColorStop(1, 'rgba(242,201,76,0.06)');
+    roundRect(gr.x, gr.y, gr.w, gr.h, 12); ctx.fillStyle = gg; ctx.fill(); ctx.strokeStyle = 'rgba(242,201,76,0.6)'; ctx.lineWidth = 1; ctx.stroke();
+    menuIcon('gift', gx0, gy - gis / 2, gis, gold);
+    let gx = gx0 + gis + 8;
+    text('선물이 왔어요', gx, gy + 0.5, { size: c.newsFont, weight: 800, align: 'left' });
+    gx += ctx.measureText('선물이 왔어요').width + 10;
+    text('›', gEnd, gy, { size: c.newsFont + 6, weight: 700, color: 'rgba(255,255,255,0.5)', align: 'right' });
+    const g0 = gifts[0], from = g0.from?.nick ? `${g0.from.nick}${tagText(g0.from.tag)}님 · ` : '';
+    ctx.font = font(c.newsFont, 500);
+    text(fitText(`${from}${shopItem(g0.item).name}${gifts.length > 1 ? ` 외 ${gifts.length - 1}개` : ''}`, gEnd - 16 - gx), gx, gy + 0.5, { size: c.newsFont, weight: 500, color: 'rgba(255,255,255,0.78)', align: 'left' });
+    ui.buttons.push({ r: gr, label: '선물이 왔어요', onTap: openGiftInbox });
+    y += gr.h + c.newsGap;
+  }
   // 새 소식 띠: 맨 위 소식의 날짜와 첫 줄(넘치면 …), 안 읽었으면 NEW. 누르면 새 소식
   const nr = { x: x0, y, w: W, h: c.newsH }, nx0 = nr.x + (m ? 12 : 14), ny = nr.y + nr.h / 2, arrowX = nr.x + nr.w - (m ? 12 : 14), ng = ctx.createLinearGradient(nr.x, 0, nr.x + nr.w, 0);
   ng.addColorStop(0, 'rgba(255,77,77,0.24)'); ng.addColorStop(1, 'rgba(255,77,77,0.05)');
@@ -5869,7 +6167,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
 }
 
 let linkPress = null;   // 바깥 링크를 누른 손가락(pointerId)
-const dragList = () => ({ menu, ranking: rankList, titles: titleList, shop: shopList })[game.state] ?? null;   // 끌어 넘기는 화면(넘치면 뗄 때 누른다)
+const dragList = () => ({ menu, ranking: rankList, titles: titleList, shop: shopList, gift: giftList })[game.state] ?? null;   // 끌어 넘기는 화면(넘치면 뗄 때 누른다)
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
@@ -5898,7 +6196,7 @@ canvas.addEventListener('pointermove', (e) => {
 addEventListener('pointerup', (e) => {
   news.drag = null;
   const d = dragList()?.drag;
-  menu.drag = rankList.drag = titleList.drag = shopList.drag = null;
+  menu.drag = rankList.drag = titleList.drag = shopList.drag = giftList.drag = null;
   if (d && !d.moved) primaryAction(d.t, d.x, d.y);
   if (linkPress != null && e.pointerId === linkPress) {   // 링크 위에서 뗐을 때만 연다
     linkPress = null;
@@ -5926,6 +6224,11 @@ window.addEventListener('keydown', (e) => {
     else if (e.key === 'Escape') { noInput.blur(); goTitle(); }
     return;
   }
+  if (e.target === giftInput) {   // 받는 사람 닉네임을 적는 중에도 게임 키를 쓰지 않는다. 엔터는 찾기
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); findGiftTo(); }
+    else if (e.key === 'Escape') giftBack();
+    return;
+  }
   if (e.target === nickInput) {   // 닉네임을 입력하는 중에는 게임 키를 쓰지 않는다
     // 엔터는 메뉴에서 바꿀 때만 저장한다. 처음 화면에서는 키보드만 닫는다(폰 키보드의 완료 키로 카카오 로그인이 열리지 않게)
     if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); if (game.onboard?.next === 'menu') confirmOnboard(); else nickInput.blur(); }
@@ -5942,6 +6245,8 @@ window.addEventListener('keydown', (e) => {
   } else if (e.code === 'KeyR' && game.state === 'result') startReplay();
   else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && (game.state === 'title' || game.state === 'over')) setBats(e.code === 'ArrowLeft' ? 'L' : 'R');
   else if (e.code === 'Escape' && game.state === 'ranking' && (game.rankView || game.rankTeam)) closeRanking();   // 사람 모습·팀 창은 한 단계 뒤로
+  else if (e.code === 'Escape' && game.state === 'gift') giftBack();   // 선물하기도 한 단계씩
+  else if (e.code === 'Escape' && game.state === 'shop' && game.shop?.giftTo) closeGiftShop();
   else if (e.code === 'Escape' && game.state !== 'title') goTitle();
   else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'titles', 'news', 'calib'].includes(game.state)) {
     if (/^Digit[1-6]$/.test(e.code)) setPractice({ type: PRACTICE_TYPES[Number(e.code.slice(5)) - 1] });
@@ -5956,6 +6261,7 @@ function render(time) {
   ui.buttons = [];
   if (game.state !== 'onboard' && nickInput.style.display !== 'none') nickInput.style.display = 'none';
   if (game.state !== 'shop' && noInput.style.display !== 'none') noInput.style.display = 'none';
+  if (!(game.state === 'gift' && game.gift?.step === 'find') && giftInput.style.display !== 'none') giftInput.style.display = 'none';
   ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
   ctx.save();
   if (view.shake > 0) ctx.translate((Math.random() * 2 - 1) * view.shake, (Math.random() * 2 - 1) * view.shake);
@@ -6021,6 +6327,7 @@ function render(time) {
   if (game.state === 'ranking') { drawRanking(); drawToast(); return; }
   if (game.state === 'account') { drawAccount(); drawToast(); return; }
   if (game.state === 'shop') { drawShop(); drawToast(); return; }
+  if (game.state === 'gift') { drawGift(); drawToast(); return; }
   if (game.state === 'loginPrompt') { drawLoginPrompt(); drawToast(); return; }
   if (game.state === 'menu') { drawMenu(); drawToast(); return; }
   if (game.state === 'over') { drawGameOver(); drawTopBar(); drawToast(); return; }
@@ -6070,4 +6377,4 @@ prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
-  update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, tap: primaryAction, paused: false };
+  update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction, paused: false };

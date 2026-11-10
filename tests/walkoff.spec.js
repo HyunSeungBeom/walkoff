@@ -41,12 +41,17 @@ async function rankingOf(rows, mine = null) {
 // account.allTime: 계정의 역대 최고(다른 기기에서 친 판 포함). 실제 서버처럼 /rankings?player=와 /scores 답에 allTime으로 주고, 받은 점수로 올린다
 // account.titles·counts: 계정이 받은 칭호와 쌓은 수. 실제 서버처럼 /scores가 받은 전광판·표의 공 순서·점수로 수를 쌓아(core countsOf) 닿은 칭호를
 // newTitles·titles·counts로 주고, /me에도 titles·counts를 준다. account.title: 고른 대표 칭호(/title로 바꾸고 /me의 title로 준다, 2026-11-10)
+// 선물하기(2026-11-10): account.tag(내 #번호, 없으면 /me에 안 준다)·games(10구 랭킹 판 수)·gifts(안 본 받은 선물), players(다른 계정 [{ nick, tag, team, title, look, owned }]).
+// /players는 실제 서버의 찾기 글 읽기(worker/src/gifts.js parseFind)로 같은 닉네임(번호까지 적으면 그 한 명, 나는 빼고)을, /shop/gift는 실제 서버처럼
+// 자기 자신·랭킹 판 GIFT_MIN_GAMES판 이하·하루 GIFTS_PER_DAY번·코인·받는 사람이 가진 물건을 보고 코인을 빼 받는 사람 물건에 넣는다. /gifts/seen은 본 선물을 지운다
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
   const { replayScenario, WIN_BONUS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'scenario.js')).href);
   const { TITLE_IDS, countsOf, addCounts, titlesFor } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'titles.js')).href);
   const { makeSequence, pitcherHand } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'pitches.js')).href);
+  const { parseFind, GIFTS_PER_DAY, GIFT_MIN_GAMES } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'gifts.js')).href);
+  const players = (opts.players ?? []).map((p) => ({ ...p, owned: [...(p.owned ?? [])] })), inbox = [...(account.gifts ?? [])], sent = [];
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
   const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null, titles: [...(account.titles ?? [])], counts: { ...(account.counts ?? {}) }, title: account.title ?? null };
@@ -60,7 +65,7 @@ async function mockApi(page, opts = {}) {
       return new Promise((done) => setTimeout(done, 300)).then(() => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>kakao</title>' }));
     }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
-    if (['/seeds', '/me', '/scores', '/scenario', '/shop/buy', '/shop/equip', '/title'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (['/seeds', '/me', '/scores', '/scenario', '/shop/buy', '/shop/equip', '/title', '/players', '/shop/gift', '/gifts/seen'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
     if (url.pathname === '/scenario') {   // 끝내기 상황: 실제 서버 코드(replayScenario)로 표의 시드로 판을 다시 돌려 끝·점수를 정하고 코인을 준다
       if (opts.scenarioFail) return reply({ ok: false, error: 'server_error' }, 500);
       const { token, bats, moves } = JSON.parse(req.postData() || '{}'), ticket = tickets.find((t) => t.token === token);
@@ -80,7 +85,35 @@ async function mockApi(page, opts = {}) {
       return (opts.seedHold ? new Promise((done) => heldSeeds.push(done)) : Promise.resolve()).then(() => reply({ ok: true, ...t }));
     }
     if (url.pathname === '/me' && req.method() === 'PUT' && opts.failProfile) return reply({ ok: false, error: 'server_error' }, 500);   // 팀·닉네임 저장 실패(테스트 중에 바꿀 수 있게 요청 때 읽는다)
-    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles], counts: { ...record.counts }, title: record.title } : { ok: true });
+    if (url.pathname === '/me') {
+      return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles], counts: { ...record.counts }, title: record.title,
+        ...(account.tag != null ? { tag: account.tag } : {}), games: account.games ?? 0, giftsLeft: Math.max(0, GIFTS_PER_DAY - sent.length), gifts: inbox.map((g) => ({ ...g })) } : { ok: true });
+    }
+    if (url.pathname === '/players') {
+      const q = parseFind(url.searchParams.get('nick'));
+      if (!q) return reply({ ok: false, error: 'bad_nick' }, 400);
+      const found = players.filter((p) => p.nick === q.nick && p.tag !== account.tag && (q.tag == null || p.tag === q.tag)).slice(0, 10);
+      return reply({ ok: true, players: found.map(({ nick, tag, team, title, look }) => ({ nick, tag, team, title: title ?? null, look: look ?? null })) });
+    }
+    if (url.pathname === '/shop/gift') {
+      const b = JSON.parse(req.postData() || '{}'), it = ITEMS.find((i) => i.id === b.item), to = players.find((p) => p.tag === b.to);
+      const no = (error, status = 400) => reply({ ok: false, error, games: account.games ?? 0, ...wallet() }, status);
+      if (!it) return no('unknown_item');
+      if (it.price === 0) return no('free_item');
+      if (b.to === account.tag) return no('self');
+      if (!to) return no('no_player', 404);
+      if ((account.games ?? 0) <= GIFT_MIN_GAMES) return no('not_enough_games');
+      if (sent.length >= GIFTS_PER_DAY) return no('daily_limit');
+      if (shop.coins < it.price) return no('not_enough_coins');
+      if (to.owned.includes(it.id)) return no('already_owned');
+      shop.coins -= it.price; to.owned.push(it.id); sent.push({ to: to.tag, item: it.id });
+      return reply({ ok: true, to: { nick: to.nick, tag: to.tag }, giftsLeft: GIFTS_PER_DAY - sent.length, ...wallet() });
+    }
+    if (url.pathname === '/gifts/seen') {
+      const ids = JSON.parse(req.postData() || '{}').ids ?? [], before = inbox.length;
+      inbox.splice(0, inbox.length, ...inbox.filter((g) => !ids.includes(g.id)));
+      return reply({ ok: true, seen: before - inbox.length });
+    }
     if (url.pathname === '/scores') {
       if (opts.scoreFail) return reply({ ok: false, error: 'server_error' }, 500);
       const { score, mode, token, lights } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
@@ -123,6 +156,7 @@ async function mockApi(page, opts = {}) {
     return reply(url.searchParams.get('player') ? { ...rankings, allTime: record.allTime } : rankings);
   });
   Object.defineProperty(calls, 'tickets', { value: tickets });   // 받은 요청 목록과 비교할 때 걸리지 않게 숨긴 속성으로 둔다
+  Object.defineProperty(calls, 'players', { value: players });   // 선물을 받은 다른 계정(owned)
   Object.defineProperty(calls, 'releaseSeeds', { value: () => { opts.seedHold = false; heldSeeds.splice(0).forEach((done) => done()); } });
   return calls;
 }
@@ -4083,6 +4117,168 @@ test.describe('상점 배트 미리 보기', () => {
     expect(r.fireHit).toBeGreaterThan(r.woodHit);    // 불꽃 배트는 맞는 순간 불덩이가 터지고
     expect(r.fireWait).toBe(r.woodHit);              // 기다리는 동안은 안 터지고(원목 배트와 같은 수)
     expect(r.fireNext).toBe(r.fireHit);              // 2.5초마다 되풀이한다
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('선물하기와 #번호(2026-11-10)', () => {
+  // 다른 계정(가짜 서버 players). 골든은 둘이다(닉네임이 겹친다)
+  const OTHERS = [
+    { nick: '골든', tag: 4821, team: 'kt', title: 'god', look: { bat: 'bat-fire', helmet: 'helmet-tiger' } },
+    { nick: '골든', tag: 9302, team: 'lg', title: null, look: null, owned: ['bat-silver'] },
+  ];
+  const giftCalls = (errors) => errors.calls.filter((c) => c.path === '/shop/gift').map((c) => c.body);
+  const toastText = (page) => page.evaluate(() => walkoff.game.toast?.text ?? null);
+  const labels = (page) => page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
+  const pickRows = (page) => page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).filter((l) => l.startsWith('받는 사람 ')));
+
+  test('#번호: 로그인하면 메뉴 내 정보 카드의 닉네임 뒤와 랭킹 입은 모습 창에 보이고(4자리), 랭킹 줄에는 안 보인다. 내 모습 창에는 선물하기가 없고, 로그아웃하면 카드에서 없어진다', async ({ page }) => {
+    const rankings = { ...SAMPLE_RANKING, players: [{ ...SAMPLE_RANKING.players[0], tag: 77 }, { ...SAMPLE_RANKING.players[1], tag: 482 }] };
+    const errors = await open(page, '?seed=42', { login: true, api: { rankings, account: { tag: 482 } } });
+    await page.waitForFunction(() => walkoff.myTag() === 482);
+    await page.evaluate(() => walkoff.openMenu());
+    expect(await drawnTexts(page)).toContain('#0482');
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '랭킹 줄 1'));
+    expect((await drawnTexts(page)).filter((t) => t.startsWith('#'))).toEqual([]);   // 랭킹 줄은 그대로
+    await tap(page, '랭킹 줄 1');
+    await page.waitForTimeout(100);
+    const look = await drawnTexts(page);
+    expect([look.includes('명은'), look.includes('#0077')]).toEqual([true, true]);
+    expect(await labels(page)).toEqual(expect.arrayContaining(['‹ 랭킹으로', '선물하기']));
+    await tap(page, '‹ 랭킹으로');
+    await tap(page, '랭킹 줄 2');   // 내 줄
+    await page.waitForTimeout(100);
+    expect(await drawnTexts(page)).toContain('#0482');
+    expect(await labels(page)).not.toContain('선물하기');
+    await page.evaluate(() => walkoff.openAccount());
+    await tap(page, '로그아웃');
+    await page.evaluate(() => walkoff.openMenu());
+    expect((await drawnTexts(page)).filter((t) => t.startsWith('#'))).toEqual([]);
+    expect(await page.evaluate(() => [walkoff.myTag(), localStorage.getItem('walkoff.accountTag')])).toEqual([null, null]);
+    expect(errors).toEqual([]);
+  });
+
+  test('상점에서 선물하기: 닉네임으로 찾아 같은 닉네임 둘 가운데 #번호로 골라 보내면 내 코인이 줄고 받는 사람 물건이 되며, 최근 보낸 사람에 남는다. 닉네임#번호면 그 한 명, 없는 사람은 알리고, 이미 가진 물건은 거절된다', { tag: '@min' }, async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 2000, games: 11, tag: 1111 }, players: OTHERS } });
+    await page.waitForFunction(() => walkoff.wallet.coins === 2000 && walkoff.giftBox.games === 11);
+    await page.evaluate(() => walkoff.openShop('shop'));
+    await tap(page, '원목');
+    expect(await labels(page)).not.toContain('선물하기');   // 기본 물건은 못 보낸다
+    await tap(page, '빨강');
+    await tap(page, '선물하기');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, walkoff.game.gift?.step, walkoff.game.gift?.item])).toEqual(['gift', 'find', 'bat-red']);
+    const input = page.locator('input[aria-label="받는 사람 닉네임"]');
+    await expect(input).toBeVisible();
+    await input.fill('없는사람');
+    await input.press('Enter');
+    await expect.poll(() => page.evaluate(() => walkoff.game.gift.find.status)).toBe('none');
+    expect(await drawnTexts(page)).toContain('찾는 사람이 없어요');
+    await input.fill('  골든 ');
+    await tap(page, '찾기');
+    await expect.poll(() => pickRows(page)).toEqual(['받는 사람 골든#4821', '받는 사람 골든#9302']);
+    expect(await drawnTexts(page)).toContain('같은 닉네임이 2명이에요 · #번호로 골라요');
+    await input.fill('골든#4821');
+    await input.press('Enter');
+    await expect.poll(() => pickRows(page)).toEqual(['받는 사람 골든#4821']);
+    await input.fill('골든');
+    await input.press('Enter');
+    await expect.poll(() => pickRows(page)).toEqual(['받는 사람 골든#4821', '받는 사람 골든#9302']);
+    await tap(page, '받는 사람 골든#9302');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.gift.step, walkoff.game.gift.to.tag])).toEqual(['confirm', 9302]);
+    await expect(input).toBeHidden();
+    const texts = await drawnTexts(page);
+    expect(['골든', '#9302', '보낼 물건 · 빨강 · 150코인', '보내면 내 코인 1,850 · 오늘 2번 더 보낼 수 있어요'].filter((t) => !texts.includes(t))).toEqual([]);
+    await tap(page, '보내기 · 150코인');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, walkoff.wallet.coins, walkoff.giftBox.left])).toEqual(['shop', 1850, 2]);
+    expect(giftCalls(errors)).toEqual([{ to: 9302, item: 'bat-red' }]);
+    expect(await toastText(page)).toBe('보냈어요 · 골든#9302에게 빨강');
+    expect([await page.evaluate(() => walkoff.wallet.owned), errors.calls.players.find((p) => p.tag === 9302).owned]).toEqual([[], ['bat-silver', 'bat-red']]);   // 내 물건은 그대로
+    // 다시 열면 최근 보낸 사람에서 바로 고른다. 이미 가진 물건은 서버가 거절하고 코인은 그대로
+    await tap(page, '선물하기');
+    await expect.poll(() => pickRows(page)).toEqual(['받는 사람 골든#9302']);
+    expect(await drawnTexts(page)).toContain('최근 보낸 사람');
+    await tap(page, '받는 사람 골든#9302');
+    await tap(page, '보내기 · 150코인');
+    await expect.poll(() => toastText(page)).toBe('이미 가진 물건이에요');
+    expect([await page.evaluate(() => [walkoff.game.state, walkoff.wallet.coins]), giftCalls(errors).length]).toEqual([['gift', 1850], 2]);
+    await page.keyboard.press('Escape');   // 확인 → 찾기 → 상점
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.gift.step])).toEqual(['gift', 'find']);
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.shop.sel])).toEqual(['shop', 'bat-red']);
+    expect(errors).toEqual([]);
+  });
+
+  test('선물하기 막힘: 랭킹 판이 10판 이하, 코인 부족, 오늘 3번 다 보냈으면 찾기를 열지 않고 까닭을 알린다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 100, games: 10, tag: 1111 }, players: OTHERS } });
+    await page.waitForFunction(() => walkoff.giftBox.games === 10);
+    await page.evaluate(() => walkoff.openShop('shop'));
+    await tap(page, '빨강');
+    await tap(page, '선물하기');
+    await expect.poll(() => toastText(page)).toBe('10구 랭킹 판을 10판 넘게 치면 선물할 수 있어요 · 지금 10판');
+    await page.evaluate(() => { walkoff.giftBox.games = 11; });
+    await tap(page, '선물하기');
+    await expect.poll(() => toastText(page)).toBe('코인이 50개 모자라요');
+    await page.evaluate(() => { walkoff.giftBox.left = 0; walkoff.wallet.coins = 1000; });
+    await tap(page, '선물하기');
+    await expect.poll(() => toastText(page)).toBe('오늘은 3번 다 보냈어요 · 내일 다시 보낼 수 있어요');
+    expect([await page.evaluate(() => walkoff.game.state), giftCalls(errors)]).toEqual(['shop', []]);
+    expect(errors).toEqual([]);
+  });
+
+  test('받는 쪽: 안 본 선물이 있으면 시작 화면 메뉴 단추에 NEW, 메뉴에 선물이 왔어요 띠가 뜨고, 누르면 본 것으로 적고 내 물건에서 그 물건을 고른 채로 연다(입는 것은 직접)', async ({ page }) => {
+    const gifts = [
+      { id: '0f0f0f0f-0000-4000-8000-000000000001', item: 'bat-phoenix', at: Date.now(), from: { nick: '가람', tag: 1234 } },
+      { id: '0f0f0f0f-0000-4000-8000-000000000002', item: 'helmet-cat', at: Date.now() - 1000, from: { nick: '나래', tag: 5 } },
+    ];
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { tag: 1111, owned: ['bat-phoenix', 'helmet-cat'], gifts } } });
+    await page.waitForFunction(() => walkoff.giftBox.inbox.length === 2);
+    expect(await drawnTexts(page)).toContain('NEW');   // 아직 안 친 사람이라 새 소식 NEW는 안 뜬다
+    await page.evaluate(() => walkoff.openMenu());
+    const texts = await drawnTexts(page);
+    expect([texts.includes('선물이 왔어요'), texts.some((t) => t.startsWith('가람#1234님 · 불사조'))]).toEqual([true, true]);
+    await tap(page, '선물이 왔어요');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, walkoff.game.shop.view, walkoff.game.shop.tab, walkoff.game.shop.sel])).toEqual(['shop', 'inventory', 'bat', 'bat-phoenix']);
+    expect(errors.calls.filter((c) => c.path === '/gifts/seen').map((c) => c.body)).toEqual([{ ids: gifts.map((g) => g.id) }]);
+    expect(await page.evaluate(() => walkoff.wallet.look.bat)).toBe('bat-wood');   // 받은 물건은 입지 않은 채
+    await tap(page, '착용하기');
+    await expect.poll(() => page.evaluate(() => walkoff.wallet.look.bat)).toBe('bat-phoenix');
+    await tap(page, '닫기');
+    expect(await drawnTexts(page)).not.toContain('NEW');
+    await page.evaluate(() => walkoff.openMenu());
+    expect(await labels(page)).not.toContain('선물이 왔어요');
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹에서 사람을 눌러 보내기: 입은 모습 창 [선물하기] → 상점에서 그 사람에게 보낼 물건(입고 있는 것은 못 보냄) → 확인 → 보내면 입은 모습 창으로. 선물 찾기의 랭킹에서 고르기는 그 물건으로 바로 확인', async ({ page }) => {
+    const look = { bat: 'bat-fire', helmet: 'helmet-tiger' };
+    const rankings = { ...SAMPLE_RANKING, players: [{ ...SAMPLE_RANKING.players[0], tag: 77, look }, { ...SAMPLE_RANKING.players[1], tag: 1111 }] };
+    const errors = await open(page, '?seed=42', { login: true, api: { rankings, account: { coins: 3000, games: 30, tag: 1111 }, players: [{ nick: '명은', tag: 77, team: 'lotte', look, owned: ['bat-fire', 'helmet-tiger'] }] } });
+    await page.waitForFunction(() => walkoff.giftBox.games === 30);
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '랭킹 줄 1');
+    await tap(page, '선물하기');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, walkoff.game.shop.giftTo?.tag])).toEqual(['shop', 77]);
+    expect(await drawnTexts(page)).toContain('명은#0077에게 보낼 물건');
+    expect(await labels(page)).not.toContain('내 물건');
+    await tap(page, '불꽃');
+    await expect.poll(() => labels(page)).toContain('이미 가진 물건이에요');   // 명은이 입고 있다
+    await tap(page, '빨강');
+    await tap(page, '선물하기 · 150코인');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, walkoff.game.gift.step, walkoff.game.gift.to.tag])).toEqual(['gift', 'confirm', 77]);
+    await tap(page, '보내기 · 150코인');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, walkoff.game.rankView?.nick, walkoff.wallet.coins, walkoff.game.shop.giftTo])).toEqual(['ranking', '명은', 2850, null]);
+    // 상점에서 고른 물건 → 선물 찾기 → 랭킹에서 고르기 → 입은 모습 창 [이 사람 고르기] → 확인
+    await page.evaluate(() => walkoff.openShop('shop'));
+    await tap(page, '검정');
+    await tap(page, '선물하기');
+    await tap(page, '랭킹에서 고르기 ›');
+    await tap(page, '랭킹 줄 1');
+    await tap(page, '이 사람 고르기');
+    await expect.poll(() => page.evaluate(() => [walkoff.game.state, walkoff.game.gift.step, walkoff.game.gift.item, walkoff.game.gift.to.tag])).toEqual(['gift', 'confirm', 'bat-black', 77]);
+    await tap(page, '‹ 다시 고르기');
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.gift.step])).toEqual(['gift', 'find']);
+    expect(giftCalls(errors)).toEqual([{ to: 77, item: 'bat-red' }]);
     expect(errors).toEqual([]);
   });
 });
