@@ -75,6 +75,21 @@ export const Sound = (() => {
   // 크기는 사용자가 "너무 커서 놀랄 것 같다"고 해서 가장 큰 50ms 크기 0.06쯤(나무 '딱'의 절반)으로 맞췄다. level 1 안타(앞 1.8초), 2 홈런, 3 끝내기
   const CROWD_URL = 'crowd.mp3', CROWD_GAIN = 0.37;
   let crowdBuf = null;
+  // 오리 '꽥'(2026-11-10): 톱니파(380 → 440 → 250Hz)를 코맹맹이 소리 대역 두 곳(1.1kHz·2.5kHz)으로 거르고, 46Hz로 떨어 목이 갈라진 듯하게 한다.
+  // 폰 스피커에서도 들리게 낮은 울림은 넣지 않는다. 세게 칠수록 조금 높고 길다
+  function quack(power) {
+    if (!ac) return;
+    const t0 = ac.currentTime, dur = 0.2 + 0.06 * power, o = ac.createOscillator(), lfo = ac.createOscillator(), depth = ac.createGain(), rasp = ac.createGain(), g = ac.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(380 + 40 * power, t0); o.frequency.linearRampToValueAtTime(440 + 40 * power, t0 + 0.04); o.frequency.exponentialRampToValueAtTime(250, t0 + dur);
+    lfo.type = 'triangle'; lfo.frequency.value = 46; depth.gain.value = 0.35; rasp.gain.value = 0.65;
+    lfo.connect(depth).connect(rasp.gain);
+    env(g, t0, 0.012, dur, 0.9);
+    o.connect(rasp);
+    for (const [f, q] of [[1100, 4], [2500, 6]]) { const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q; rasp.connect(bp).connect(g); }
+    g.connect(master);
+    o.start(t0); lfo.start(t0); o.stop(t0 + dur + 0.05); lfo.stop(t0 + dur + 0.05);
+  }
   function loadCrowd() {
     fetch(CROWD_URL).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
       .then((b) => new Promise((ok, no) => ac.decodeAudioData(b, ok, no)))   // 옛 사파리는 콜백 방식만 된다
@@ -194,6 +209,7 @@ export const Sound = (() => {
         return;
       }
       if (style === 'sound-thunder') { thunder(power); return; }
+      if (style === 'sound-duck') { quack(power); return; }
       if (style === 'sound-8bit') {   // 8비트 '띠링': 옛 게임기 동전 소리(사각파 B5 → E6). 세게 칠수록 한 음씩 높게(온음 하나까지)
         const k = Math.pow(2, Math.round(power * 2) / 12);
         chip(988 * k, 0, 0.065, CHIP_GAIN);

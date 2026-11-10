@@ -1041,9 +1041,71 @@ function drawDiamondBat(a, b, wa, wb, col, detail, t) {
 }
 
 // 배트: a는 손, b는 끝(화면), wa·wb는 손잡이·끝 굵기(px), s는 끝 자리에서 1m가 몇 px인지
+// ===== 2026-11-10 더한 배트: 바게트(600)·무지개(1,500)·불사조(8,000) =====
+// 바게트: 손잡이부터 끝까지 굵기가 거의 같은 빵(지름 6cm 안팎, 끝은 둥글다). 비스듬한 칼집 다섯(갈라진 틈의 밝은 속살과 그 아래 그늘)과 밀가루 점
+function drawBaguetteBat(a, b, wa, wb, col, detail) {
+  const F = batFrame(a, b, wa, wb), w0 = 0.056 * F.sa, w1 = 0.062 * F.sb, len = Math.hypot(b.x - a.x, b.y - a.y);
+  segment(a, b, w0, w1, detail && len > 0.5 ? gradientAlong(a, b, [[0, '#c4843c'], [0.15, col('bat')], [0.75, col('bat')], [1, col('batEnd')]]) : col('bat'));
+  if (!detail || len < 0.5) return;
+  const ang = Math.atan2(F.d.y, F.d.x);
+  for (let i = 0; i < 5; i++) {
+    const u = 0.2 + i * 0.165, p = F.at(u), w = lerp(w0, w1, u), sl = Math.min(len * 0.065, w * 0.9);
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(ang + 0.5);
+    ctx.fillStyle = '#9a5520'; ctx.beginPath(); ctx.ellipse(0, w * 0.05, sl, w * 0.15, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f5d99c'; ctx.beginPath(); ctx.ellipse(0, -w * 0.02, sl * 0.86, w * 0.09, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  for (const [u, o] of [[0.28, 0.24], [0.44, -0.22], [0.6, 0.28], [0.74, -0.14], [0.9, 0.2]]) { const p = F.at(u, o * 0.06), r = Math.max(0.5, lerp(w0, w1, u) * 0.05); ellipseAt(p, r, r, 'rgba(255,255,255,0.75)'); }
+}
+// 무지개 배트: 손잡이는 흰 그립, 그 위는 빨강에서 보라까지 일곱 빛 띠(배트를 따라 칠한다). 위쪽에 윤기 줄, 밝은 빛 한 줄기가 2초마다 끝까지 훑는다
+const RAINBOW = ['#ff4b4b', '#ff9a1f', '#ffe03a', '#3fd06a', '#2f8cff', '#5b4bff', '#b04bff'];
+function drawRainbowBat(a, b, wa, wb, col, detail, t) {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!detail || len < 0.5) { segment(a, b, wa, wb, col('bat')); ellipseAt(b, wb / 2, wb / 2, col('batEnd')); return; }
+  const F = batFrame(a, b, wa, wb);
+  segment(a, b, wa, wb, gradientAlong(a, b, [[0, '#f2f2f5'], [0.2, '#f2f2f5'], ...RAINBOW.map((c, i) => [0.25 + 0.75 * i / 6, c])]));
+  ellipseAt(b, wb / 2, wb / 2, RAINBOW[6]);
+  segment(F.at(0.27, 0.011), F.at(0.97, 0.02), wa * 0.2, wb * 0.18, 'rgba(255,255,255,0.42)');
+  const u = (t / 2 % 1) * 1.4 - 0.2;
+  if (u > 0.24 && u < 0.96) segment(F.at(u - 0.035), F.at(u + 0.035), lerp(wa, wb, u) * 0.92, lerp(wa, wb, u) * 0.92, 'rgba(255,255,255,0.4)');
+}
+// 불사조 배트(8,000코인): 손잡이는 검붉고 끝으로 갈수록 붉게 달아올라 끝은 금빛이다. 몸통 둘레에 주황 빛이 숨 쉬듯 번지고(더하기 합성),
+// 위쪽(빛이 오는 쪽)으로 손잡이 쪽으로 젖힌 불꽃 깃털 여섯이 물결치며, 금빛 불씨가 떠오른다. 맞는 순간에는 불꽃 날개가 펼쳐진다(BAT_BURSTS.phoenix)
+const PHOENIX = [['rgba(225,40,14,0.9)', 1, 1], ['rgba(255,140,30,0.92)', 0.74, 0.62], ['rgba(255,226,140,0.95)', 0.46, 0.32]];
+function drawPhoenixBat(a, b, wa, wb, col, detail, t) {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!detail || len < 0.5) { segment(a, b, wa, wb, col('bat')); ellipseAt(b, wb / 2, wb / 2, col('batEnd')); return; }
+  const F = batFrame(a, b, wa, wb);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  glowRod(F.at(0.3), b, Math.max(3, 0.1 * F.sb), '255,110,30', 0.4 + 0.12 * Math.sin(t * 3.2), [[0, 0], [0.5, 0.18], [0.82, 0.55], [1, 1]]);
+  ctx.restore();
+  for (const [color, hk, wk] of PHOENIX) {   // 깃털: 밑동은 배트에 숨고 끝은 손잡이 쪽으로 휜다. 세 겹(빨강 → 주황 → 금빛 속)을 겹쳐 칠한다
+    ctx.fillStyle = color;
+    for (let i = 0; i < 6; i++) {
+      const u = 0.4 + 0.11 * i, p = F.at(u, 0.012), s = p.s, th = 0.8 + 0.14 * Math.sin(t * 4.3 + i * 1.3);
+      const v = { x: F.up.x * Math.cos(th) - F.d.x * Math.sin(th), y: F.up.y * Math.cos(th) - F.d.y * Math.sin(th) }, q = { x: -v.y, y: v.x };
+      const L = s * (0.12 + 0.035 * (i % 2) + 0.02 * i / 5) * (0.92 + 0.08 * Math.sin(t * 7 + i * 2.2)) * hk, bw = s * 0.02 * wk;
+      const tip = { x: p.x + v.x * L - F.d.x * L * 0.22, y: p.y + v.y * L - F.d.y * L * 0.22 }, m = { x: p.x + v.x * L * 0.5, y: p.y + v.y * L * 0.5 };
+      ctx.beginPath(); ctx.moveTo(p.x - q.x * bw, p.y - q.y * bw);
+      ctx.quadraticCurveTo(m.x - q.x * bw * 1.25, m.y - q.y * bw * 1.25, tip.x, tip.y);
+      ctx.quadraticCurveTo(m.x + q.x * bw * 1.25, m.y + q.y * bw * 1.25, p.x + q.x * bw, p.y + q.y * bw);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  segment(a, b, wa, wb, gradientAlong(a, b, [[0, '#260603'], [0.3, col('bat')], [0.62, '#b3240b'], [0.86, '#ff7a1c'], [1, col('batEnd')]]));
+  ellipseAt(b, wb / 2, wb / 2, '#ffd982');
+  segment(F.at(0.45, 0.01), F.at(0.98, 0.016), wa * 0.16, wb * 0.16, 'rgba(255,230,160,0.55)');   // 달아오른 심
+  for (let i = 0; i < 4; i++) {   // 불씨: 위로 떠오르며 사라진다
+    const k = (t * 0.8 + i * 0.25) % 1, p = F.at(0.5 + 0.13 * i), r = p.s * 0.008 * (1 - k) + 0.6;
+    ellipseAt({ x: p.x + Math.sin(t * 4 + i * 1.7) * p.s * 0.02, y: p.y - p.s * (0.05 + 0.16 * k) }, r, r, `rgba(255,214,110,${(0.9 * (1 - k)).toFixed(2)})`);
+  }
+}
 function drawBat(a, b, wa, wb, s, col, fx, detail) {
   if (fx === 'beam') { drawBeamBat(a, b, wa, wb, col, detail, fxTime()); return; }
   if (fx === 'diamond') { drawDiamondBat(a, b, wa, wb, col, detail, fxTime()); return; }
+  if (fx === 'baguette') { drawBaguetteBat(a, b, wa, wb, col, detail); return; }
+  if (fx === 'rainbow') { drawRainbowBat(a, b, wa, wb, col, detail, fxTime()); return; }
+  if (fx === 'phoenix') { drawPhoenixBat(a, b, wa, wb, col, detail, fxTime()); return; }
   const len = Math.hypot(b.x - a.x, b.y - a.y), d = len > 0.5 ? { x: (b.x - a.x) / len, y: (b.y - a.y) / len } : { x: 0, y: -1 }, n = { x: -d.y, y: d.x };
   const along = (stops) => (detail && len > 0.5 ? gradientAlong(a, b, stops) : col('bat'));
   if (fx === 'hammer') {   // 뿅망치: 노란 손잡이 끝에 배트와 직각인 빨간 머리통, 양 끝은 노란 마개, 몸통은 주름
@@ -1223,14 +1285,24 @@ function drawHelmet(h, s, brim, col, fx, detail, side = 1, face = 1) {
     const a = i / 16 * Math.PI * 2;
     ellipseAt({ x: h.x + Math.cos(a) * rx * 1.05, y: h.y + Math.sin(a) * ry * 1.05 }, 0.05 * s, 0.05 * s, deco(i % 2 ? '#b8692a' : '#cf8a3a'));
   }
-  if (fx === 'bear' || fx === 'tiger' || fx === 'lion') for (const e of [-1, 1]) {   // 둥근 귀
-    const p = { x: h.x + e * 0.095 * s, y: h.y - 0.088 * s }, r = (fx === 'lion' ? 0.036 : fx === 'tiger' ? 0.044 : 0.05) * s;
-    ellipseAt(p, r, r, c);
+  if (fx === 'bear' || fx === 'tiger' || fx === 'lion' || fx === 'panda') for (const e of [-1, 1]) {   // 둥근 귀(판다는 검정)
+    const p = { x: h.x + e * 0.095 * s, y: h.y - 0.088 * s }, r = (fx === 'lion' ? 0.036 : fx === 'tiger' ? 0.044 : fx === 'panda' ? 0.046 : 0.05) * s;
+    ellipseAt(p, r, r, fx === 'panda' ? deco('#1c1c21') : c);
     if (detail && fx === 'bear') ellipseAt({ x: p.x - e * 0.008 * s, y: p.y + 0.006 * s }, r * 0.5, r * 0.5, '#a8744a');
     if (detail && fx === 'tiger') {   // 호랑이 귀 뒤에는 흰 점이 있다
       ctx.lineWidth = Math.max(1, 0.008 * s); ctx.strokeStyle = '#1d1410'; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.9, 0, Math.PI * 2); ctx.stroke();
       ellipseAt({ x: p.x, y: p.y + 0.004 * s }, r * 0.42, r * 0.42, '#ffffff');
     }
+  }
+  if (fx === 'cat') for (const e of [-1, 1]) {   // 고양이: 바깥으로 조금 기운 뾰족한 귀(안쪽은 분홍)
+    const b1 = { x: h.x + e * 0.058 * s, y: h.y - 0.112 * s }, b2 = { x: h.x + e * 0.122 * s, y: h.y - 0.046 * s }, tip = { x: h.x + e * 0.122 * s, y: h.y - 0.19 * s };
+    const tri = (k, dy, color) => {
+      const m = { x: (b1.x + b2.x + tip.x) / 3, y: (b1.y + b2.y + tip.y) / 3 + dy }, at = (p) => ({ x: m.x + (p.x - m.x) * k, y: m.y + (p.y - m.y) * k });
+      const [p1, p2, p3] = [b1, tip, b2].map(at);
+      ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.closePath(); ctx.fill();
+    };
+    tri(1, 0, c);
+    if (detail) tri(0.52, 0.012 * s, '#f2a0ae');
   }
   if (fx === 'dino') for (let i = 0; i < 5; i++) {   // 머리 위 가시
     const a = (-150 + i * 30) * DEG, ca = Math.cos(a), sa = Math.sin(a), bw = 0.032 * s;
@@ -1242,11 +1314,14 @@ function drawHelmet(h, s, brim, col, fx, detail, side = 1, face = 1) {
   if (brim) ellipseAt(brim, 0.1 * brim.s, 0.035 * brim.s, c);
   ellipseAt(h, rx, ry, c);
   if (!detail) return;
-  if (fx === 'tiger' || fx === 'turtle' || fx === 'dino') {
+  if (fx === 'tiger' || fx === 'turtle' || fx === 'dino' || fx === 'cat') {
     ctx.save(); ctx.beginPath(); ctx.ellipse(h.x, h.y, rx, ry, 0, 0, Math.PI * 2); ctx.clip();
     if (fx === 'tiger') {   // 양옆에서 들어오는 줄무늬와 정수리 줄무늬
       for (const e of [-1, 1]) for (const yo of [-0.06, 0, 0.06]) segment({ x: h.x + e * rx, y: h.y + yo * s }, { x: h.x + e * rx * 0.42, y: h.y + (yo + 0.012) * s }, 0.026 * s, 0.004 * s, '#1d1410');
       for (const e of [-1, 1]) segment({ x: h.x + e * 0.03 * s, y: h.y - ry }, { x: h.x + e * 0.018 * s, y: h.y - ry * 0.5 }, 0.022 * s, 0.004 * s, '#1d1410');
+    } else if (fx === 'cat') {   // 고양이(치즈 태비): 정수리 줄 셋과 양옆 짧은 줄 둘. 호랑이보다 적고 옅은 주황 갈색
+      for (const xo of [-0.036, 0, 0.036]) segment({ x: h.x + xo * s, y: h.y - ry }, { x: h.x + xo * 0.75 * s, y: h.y - ry * (xo ? 0.52 : 0.42) }, 0.019 * s, 0.004 * s, '#c56b22');
+      for (const e of [-1, 1]) for (const yo of [-0.015, 0.04]) segment({ x: h.x + e * rx, y: h.y + yo * s }, { x: h.x + e * rx * 0.6, y: h.y + (yo + 0.01) * s }, 0.018 * s, 0.004 * s, '#c56b22');
     } else if (fx === 'turtle') {   // 등딱지: 가운데 육각형과 바깥으로 뻗는 금
       const cx = h.x, cy = h.y - 0.01 * s, R = 0.055 * s, vs = Array.from({ length: 6 }, (_, i) => ({ x: cx + Math.cos((i * 60 + 30) * DEG) * R, y: cy + Math.sin((i * 60 + 30) * DEG) * R }));
       ctx.lineWidth = Math.max(1, 0.012 * s); ctx.strokeStyle = '#24502a';
@@ -1259,7 +1334,33 @@ function drawHelmet(h, s, brim, col, fx, detail, side = 1, face = 1) {
     ctx.restore();
   }
   ellipseAt({ x: h.x - side * 0.04 * s, y: h.y - 0.06 * s }, 0.045 * s, 0.025 * s, 'rgba(255,255,255,0.28)');
+  if (fx === 'panda') {   // 판다 눈 둘레: 얼굴 쪽(챙 쪽) 아래의 비스듬한 검은 타원 둘. face대로 머리를 돌려 옆에서는 하나만, 뒤에서는 안 보인다
+    const fd = brim ? Math.sign(brim.x - h.x) || side : side, phi = fd * Math.acos(clamp(face, -1, 1));
+    for (const e of [-1, 1]) {
+      const a = phi + e * 0.45, see = Math.cos(a);
+      if (see < 0.12) continue;
+      const p = { x: h.x + Math.sin(a) * rx * 0.86, y: h.y + 0.04 * s };
+      ctx.fillStyle = '#1c1c21'; ctx.beginPath(); ctx.ellipse(p.x, p.y, 0.03 * s * see, 0.024 * s, -e * 0.5 * see, 0, Math.PI * 2); ctx.fill();
+      ellipseAt({ x: p.x + Math.sin(a) * 0.004 * s, y: p.y - 0.003 * s }, 0.009 * s * see, 0.009 * s, '#ffffff');
+    }
+  }
   if (fx === 'crown') drawCrown(h.x, h.y, rx, ry, detail, side);
+  else if (fx === 'halo') drawHalo(h.x, h.y, rx, ry, detail);
+}
+// 천사 헬멧(7,000코인, 2026-11-10): 헬멧은 팀 색 그대로이고 머리 위에 금빛 후광 고리가 떠서 천천히 위아래로 흔들린다(왕관처럼 헬멧 위에 얹는다).
+// 고리는 조금 내려다본 납작한 타원이고, 둘레에 은은한 빛(더하기 합성)과 위 가장자리 밝은 줄, 빛 한 점이 고리를 따라 돈다. 작게 보이면(돔 반폭 7px 아래) 금 고리만
+function drawHalo(cx, cy, rx, ry, detail, t = fxTime()) {
+  const y = cy - ry * 1.5 + ry * 0.07 * Math.sin(t * 2.2), RX = rx * 0.82, RY = ry * 0.22, w = Math.max(1, ry * 0.12), fine = detail && rx >= 7;
+  const ring = (dy, a0 = 0, a1 = Math.PI * 2) => { ctx.beginPath(); ctx.ellipse(cx, y + dy, RX, RY, 0, a0, a1); ctx.stroke(); };
+  ctx.save();
+  if (fine) { ctx.globalCompositeOperation = 'lighter'; ctx.strokeStyle = `rgba(255,214,110,${(0.22 + 0.08 * Math.sin(t * 3)).toFixed(3)})`; ctx.lineWidth = w * 3.2; ring(0); ctx.globalCompositeOperation = 'source-over'; }
+  ctx.strokeStyle = '#e8b52c'; ctx.lineWidth = w; ring(0);
+  if (fine) {
+    ctx.strokeStyle = '#fff3bf'; ctx.lineWidth = Math.max(0.6, w * 0.35); ring(-w * 0.15, Math.PI * 1.08, Math.PI * 1.92);
+    const a = t * 1.7;
+    drawSparkle({ x: cx + Math.cos(a) * RX, y: y + Math.sin(a) * RY }, w * (1.6 + 0.6 * Math.sin(t * 5)), 'rgba(255,255,240,0.95)');
+  }
+  ctx.restore();
 }
 
 // 신발: f는 발(화면), s는 발 자리에서 1m가 몇 px인지, front는 발끝 쪽(+1이면 화면 오른쪽).
@@ -1543,6 +1644,43 @@ function goldCord(pts, w, phase = 0, fancy = false) {
   ctx.lineCap = cap; ctx.lineJoin = join;
 }
 
+// ===== 2026-11-10 더한 장갑·유니폼 =====
+// 호피 장갑: 황갈색 바탕에 검은 테가 끊긴 반점(가운데는 조금 짙은 갈색). (x, y)는 손 가운데, rx·ry는 손 반지름(손을 돌린 좌표에서 부른다). 작으면 테만
+const LEOPARD_SPOTS = [[-0.48, -0.34, 0.2], [0.22, -0.5, 0.17], [0.52, 0.12, 0.19], [-0.12, 0.38, 0.18], [0.02, -0.04, 0.15], [-0.6, 0.18, 0.13]];
+function leopardSpots(x, y, rx, ry, fine) {
+  ctx.strokeStyle = '#2e1b0e';
+  for (const [u, v, r] of LEOPARD_SPOTS) {
+    const p = { x: x + u * rx, y: y + v * ry }, rr = r * rx;
+    if (fine) ellipseAt(p, rr, rr * 0.85, '#b26a24');
+    ctx.lineWidth = Math.max(0.6, rr * 0.45); ctx.beginPath(); ctx.ellipse(p.x, p.y, rr, rr * 0.85, 0, 0.3, Math.PI * 1.7); ctx.stroke();
+  }
+}
+// 불꽃 장갑: 손 둘레가 숨 쉬듯 주황으로 빛나고(더하기 합성) 손등 위로 작은 불길 둘이 흔들린다. 폰을 생각해 번짐 하나와 손마다 불길 둘만 그린다
+function gloveGlow(p, R, t) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  radialGlow(p, R, [[0, `rgba(255,150,50,${(0.38 + 0.12 * Math.sin(t * 3.4)).toFixed(3)})`], [0.55, 'rgba(255,90,20,0.14)'], [1, 'rgba(255,60,0,0)']]);
+  ctx.restore();
+}
+function gloveFlames(p, s, t, i) {   // p에서 화면 위로 솟는 불길 둘(s는 1m가 몇 px, i는 손마다 흔들림을 어긋낸다)
+  for (const [color, hk] of [['rgba(255,96,24,0.85)', 1], ['rgba(255,214,110,0.95)', 0.55]]) {
+    ctx.fillStyle = color; ctx.beginPath();
+    for (const e of [-1, 1]) {
+      const x = p.x + e * 0.018 * s, h = s * (0.05 + 0.012 * e) * (0.75 + 0.25 * Math.sin(t * 13 + i * 2.3 + e)) * hk, w = s * 0.012 * hk, sway = Math.sin(t * 8 + i + e) * s * 0.008;
+      ctx.moveTo(x - w, p.y); ctx.quadraticCurveTo(x - w * 0.8, p.y - h * 0.55, x + sway, p.y - h); ctx.quadraticCurveTo(x + w * 0.8, p.y - h * 0.55, x + w, p.y); ctx.closePath();
+    }
+    ctx.fill();
+  }
+}
+// 무지개 유니폼(8,000코인): 상의·바지를 몸에 비스듬히 놓은 일곱 빛 그러데이션으로 칠하고, 그 색이 12초에 한 바퀴 천천히 돈다.
+// 그러데이션은 화면 좌표라 소매·바지까지 이어지고, 그늘은 그리던 대로 위에 얹는다. 먼 쪽 소매·다리(shade)는 같은 색을 어둡게. c는 가슴(화면)
+function rainbowColors(col, c, t) {
+  const s = c.s, a = { x: c.x - 0.45 * s, y: c.y - 0.5 * s }, b = { x: c.x + 0.45 * s, y: c.y + 1.1 * s }, h0 = (t * 30) % 360;
+  const grad = (l) => gradientAlong(a, b, Array.from({ length: 7 }, (_, i) => [i / 6, `hsl(${Math.round(h0 + i * 45) % 360},80%,${l}%)`]));
+  const light = grad(60), dark = grad(46);
+  return (name) => (name === 'jersey' || name === 'pants' ? light : name === 'shade' || name === 'pantsShade' ? dark : col(name));
+}
+const rgbOf = (hex) => { const n = parseInt(hex.slice(1), 16); return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`; };
+
 // 한 번은 빛 테두리 색으로 조금 위에, 한 번은 제 색으로 그려서 조명을 등진 윤곽을 만든다
 // 사람 몸 그리기(2026-11-02 사용자 결정 '캐릭터가 목탁 같다' → 시안 A '깔끔한 두 톤 명암 + 얇은 윤곽선', 시안은 인프라 세션이 만듦).
 // 뼈대·동작(batterSkeleton, pitcherSkeleton, fielderSkeleton, runnerSkeleton, assembleFigure, bendJoint)은 그대로 두고 그 위에 입히는 몸만 그린다.
@@ -1560,7 +1698,9 @@ function drawBatterFigure(k, col, dy = 0) {
   if (!c0 || !p0) return;
   const lod = c0.s > 150 ? 2 : c0.s > 30 ? 1 : 0;   // 크기별 자세함: 2 타자(전부), 1 투수·주자·가까운 수비, 0 먼 수비(단순, 팔다리 12% 굵게)
   const look = k.plain ? {} : currentLook();   // 투수·수비수(plain)에게는 상점 물건을 입히지 않는다
-  const ufx = fxOf(look.uniform);   // 고가 유니폼(금장·네온) 무늬
+  const ufx = fxOf(look.uniform), gfx = fxOf(look.glove);   // 유니폼 무늬(금장·네온·줄무늬·올드·무지개), 장갑 효과(호피·불꽃)
+  const fancyU = ufx === 'legend' || ufx === 'neon';   // 깃·소매 끝에 금 파이핑이나 네온관을 두르는 고가 유니폼
+  if (ufx === 'rainbow') col = rainbowColors(col, c0, fxTime());
   const ax = k.axes ?? { lc: k.left(k.shTurn), fc: k.facing(k.shTurn), lp: k.left(k.hipTurn), fp: k.facing(k.hipTurn) };
   const Ls = n2(c0.x < view.w / 2 ? 0.35 : -0.35, -1);   // 화면에서 빛이 오는 쪽(위, 경기장 가운데 쪽)
   const lw = Math.max(0.5, Math.min(2.4, 0.011 * c0.s));
@@ -1632,7 +1772,7 @@ function drawBatterFigure(k, col, dy = 0) {
     const m = limb(pts, front);
     fill(m.outline, col(far ? 'pantsShade' : 'pants'), false);
     shadeLimb(m);
-    if ((lod >= 1 || ufx) && m.C.length > 2) {   // 바지 바깥 옆줄(보조색): 골반에서 더 먼 쪽 가장자리를 따라간다. 고가 유니폼은 작게 보여도 그린다
+    if ((lod >= 1 || fancyU) && m.C.length > 2) {   // 바지 바깥 옆줄(보조색): 골반에서 더 먼 쪽 가장자리를 따라간다. 금장·네온은 작게 보여도 그린다
       const mid = Math.floor(m.C.length / 2), off = (q) => Math.abs(dot2({ x: q.x - p0.x, y: q.y - p0.y }, perp));
       const outerL = off(m.L[mid]) > off(m.R[mid]), sgn = outerL ? 1 : -1;
       const edge = (u) => m.C.map((c) => { const r = (outerL ? c.rl : c.rr) * u; return { x: c.x + sgn * c.n.x * r, y: c.y + sgn * c.n.y * r }; });
@@ -1645,6 +1785,11 @@ function drawBatterFigure(k, col, dy = 0) {
         goldCord(edge(0.7), Math.max(0.8, 0.011 * c0.s), side === 'l' ? 0.4 : 1.3, lod === 2);
       } else if (ufx === 'neon') neonLine(edge(0.48), NEON.cyan, Math.max(0.8, 0.009 * c0.s), neonBreath(), lod === 2 ? (side === 'l' ? 0 : 0.8) : null, lod === 2);   // 안쪽으로 들여 번짐도 바지 안
       else {
+        if (ufx === 'stripe' && c0.s > 70) {   // 줄무늬: 팀 색 세로 줄 다섯(금장의 금 줄과 같은 자리 셈)
+          ctx.strokeStyle = hexAlpha(col('accent'), 0.5); ctx.lineWidth = Math.max(0.5, 0.0045 * c0.s); ctx.beginPath();
+          for (const u of [-0.64, -0.32, 0, 0.32, 0.64]) m.C.forEach((c, i) => { const r = (c.rl + c.rr) / 2 * u, x = c.x + sgn * c.n.x * r, y = c.y + sgn * c.n.y * r; if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+          ctx.stroke();
+        }
         const line = edge(0.8);
         ctx.strokeStyle = col('accent'); ctx.lineWidth = Math.max(0.6, 0.009 * c0.s); ctx.lineJoin = 'round';
         ctx.beginPath(); line.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.stroke();
@@ -1729,7 +1874,7 @@ function drawBatterFigure(k, col, dy = 0) {
       // 소매 끝 단(보조색 줄)은 소매가 옆으로 누워 보일 때만. 끝에서 본 소매를 가로지르면 끈처럼 보였다
       const e = m.L.length - 1, s0 = slv[0], s1 = slv[slv.length - 1];
       if (lod >= 1 && e > 0 && Math.hypot(s1.x - s0.x, s1.y - s0.y) > 1.6 * s1.r) {
-        if (ufx) {   // 고가 유니폼 소매 끝: 금 파이핑·분홍 네온. 끝을 들이고 굵기만큼 소매 쪽으로 옮겨 소매 밖으로 안 나가게
+        if (fancyU) {   // 고가 유니폼 소매 끝: 금 파이핑·분홍 네온. 끝을 들이고 굵기만큼 소매 쪽으로 옮겨 소매 밖으로 안 나가게
           const d = n2(s0.x - s1.x, s0.y - s1.y), w = Math.max(0.8, 0.009 * c0.s), cut = ufx === 'neon' ? 0.22 : 0.14;
           const cuff = [cut, 1 - cut].map((u) => ({ x: lerp(m.L[e].x, m.R[e].x, u) + d.x * w * 0.8, y: lerp(m.L[e].y, m.R[e].y, u) + d.y * w * 0.8 }));
           if (ufx === 'legend') goldCord(cuff, w, side === 'l' ? 2.1 : 0.9, lod === 2); else neonLine(cuff, NEON.pink, w * 0.85, neonBreath(0.6), null, lod === 2);
@@ -1749,7 +1894,9 @@ function drawBatterFigure(k, col, dy = 0) {
       ctx.fillStyle = col('pocket'); ctx.beginPath(); ctx.ellipse(0.03 * hp.s, 0.01 * hp.s, 0.055 * hp.s, 0.05 * hp.s, 0, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     } else {
+      if (gfx === 'fire' && !k.bare && lod >= 1) gloveGlow(hp, 0.08 * hp.s, fxTime());   // 친 뒤 뛰는 주자의 불꽃 장갑은 번짐만
       ellipseAt(hp, 0.036 * hp.s, 0.04 * hp.s, col(k.bare ? 'skin' : 'glove'));
+      if (gfx === 'leopard' && !k.bare && lod >= 1) leopardSpots(hp.x, hp.y, 0.036 * hp.s, 0.04 * hp.s, false);
       if (k.ball === side) ellipseAt({ x: hp.x, y: hp.y - 0.03 * hp.s }, 0.037 * hp.s, 0.037 * hp.s, '#ffffff');
     }
   }
@@ -1806,12 +1953,13 @@ function drawBatterFigure(k, col, dy = 0) {
     fill(jersey, col('jersey'), false);
     shadeTorso(J);
     if (lod === 2) backDetail();
-    if (ufx === 'legend' && c0.s > 70) pinstripes([[0.2, 0.155, 0.108], [0.42, 0.147, 0.104], [0.66, 0.167, 0.116], [0.86, 0.18, 0.124], [1.0, 0.184, 0.121], [1.07, 0.155, 0.097]]);
+    const ink = ufx === 'stripe' ? [rgbOf(col('accent')), [0.22, 0.38, 0.55]] : [];   // 줄무늬 유니폼은 팀 색 줄을 금장보다 진하게
+    if ((ufx === 'legend' || ufx === 'stripe') && c0.s > 70) pinstripes([[0.2, 0.155, 0.108], [0.42, 0.147, 0.104], [0.66, 0.167, 0.116], [0.86, 0.18, 0.124], [1.0, 0.184, 0.121], [1.07, 0.155, 0.097]], ...ink);
     stroke(jersey);
     if (ufx === 'neon') neonSeams(J, lod === 0 ? 2 : 4);
     fill(outlineOf(Pn), col('pants'));
     shadeTorso(Pn);
-    if (ufx === 'legend' && lod === 2) pinstripes([[-0.16, 0.145, 0.106], [-0.04, 0.166, 0.121], [0.1, 0.163, 0.114], [0.24, 0.157, 0.11]]);
+    if ((ufx === 'legend' || ufx === 'stripe') && lod === 2) pinstripes([[-0.16, 0.145, 0.106], [-0.04, 0.166, 0.121], [0.1, 0.163, 0.114], [0.24, 0.157, 0.11]], ...ink);
     const b1 = level(0.17, 0.168, 0.12), b2 = level(0.235, 0.166, 0.118);   // 벨트
     if (b1.lo && b1.hi && b2.lo && b2.hi) {
       ctx.fillStyle = col('belt'); ctx.beginPath(); ctx.moveTo(b1.lo.x, b1.lo.y); ctx.lineTo(b1.hi.x, b1.hi.y); ctx.lineTo(b2.hi.x, b2.hi.y); ctx.lineTo(b2.lo.x, b2.lo.y); ctx.closePath(); ctx.fill();
@@ -1836,7 +1984,7 @@ function drawBatterFigure(k, col, dy = 0) {
   // 금장 세로 줄무늬: 단면(반폭 w·반두께 d, 몸통보다 조금 작게) 둘레 18곳을 높이마다 이어 긋고, 그 면이 카메라를 보는 만큼만 진하게 긋는다.
   // 옆으로 돌아간 줄은 옅어지다 사라져서 윤곽 밖으로 안 나가고, 몸이 돌면 줄도 같이 돈다. 진하기 3단계로 묶어 단계마다 한 번에 긋는다(그리기 호출을 줄인다).
   // 뒤쪽 반은 가운데 높이에서 먼저 걸러 점을 만들지 않고, 작게 보이는 주자는 12줄만 긋는다
-  function pinstripes(lv) {
+  function pinstripes(lv, rgb = '226,186,80', al = [0.1, 0.2, 0.3]) {
     const F = lv.map(([v, w, d]) => ({ ...frameAt(v), w, d })), n = lod === 2 ? 18 : 12, tiers = [[], [], []], M = F[F.length >> 1];
     const see = ({ a, f, c, w, d }, cs, sn, p) => {
       const nx = a[0] * cs / w + f[0] * sn / d, ny = a[1] * cs / w + f[1] * sn / d, nz = a[2] * cs / w + f[2] * sn / d, tx = camSk[0] - p[0], ty = camSk[1] - p[1], tz = camSk[2] - p[2];
@@ -1857,7 +2005,7 @@ function drawBatterFigure(k, col, dy = 0) {
     ctx.lineWidth = Math.max(0.5, 0.0045 * c0.s);
     tiers.forEach((list, i) => {
       if (!list.length) return;
-      ctx.strokeStyle = `rgba(226,186,80,${[0.1, 0.2, 0.3][i]})`; ctx.beginPath();
+      ctx.strokeStyle = `rgba(${rgb},${al[i]})`; ctx.beginPath();
       for (const pts of list) pts.forEach((q, j) => (j ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
       ctx.stroke();
     });
@@ -1884,7 +2032,8 @@ function drawBatterFigure(k, col, dy = 0) {
     const ring = [];
     for (let j = 0; j <= n; j++) { const i = (s + j) % n; if (vis[i] <= 0) break; const q = P(pts[i]); if (q) ring.push(q); }
     if (ufx === 'legend') goldCord(ring, Math.max(0.8, 0.012 * c0.s), 0.2, lod === 2);
-    else neonLine(ring, NEON.pink, Math.max(0.8, 0.009 * c0.s), neonBreath(0.6), null, lod === 2);
+    else if (ufx === 'neon') neonLine(ring, NEON.pink, Math.max(0.8, 0.009 * c0.s), neonBreath(0.6), null, lod === 2);
+    else { const cap = ctx.lineCap; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; strokePoly(ring, Math.max(0.8, 0.014 * c0.s), col('accent')); ctx.lineCap = cap; }   // 올드: 팀 색 깃
   }
 
   function drawNeckHead() {
@@ -1892,7 +2041,7 @@ function drawBatterFigure(k, col, dy = 0) {
     const neck = limb(samples(V.add(k.chest, V.mul(up, 0.1)), V.add(k.head, V.mul(up, -0.07)), 2, (t) => ({ r: lerp(0.06, 0.053, t) })), null);
     fill(neck.outline, col('skin'));
     shadeLimb(neck);
-    if (ufx) collar();
+    if (fancyU || ufx === 'retro') collar();
     if (k.cap) capHead(); else helmet();
   }
   // 투수·수비수: 얼굴(폭 0.15m), 야구 모자, 이마 높이의 챙. 얼굴이 카메라 반대쪽이면 챙을 먼저, 뒷머리를 그린다
@@ -1923,12 +2072,10 @@ function drawBatterFigure(k, col, dy = 0) {
     const h = P(k.head);
     if (!h) return;
     const s = h.s, side = k.side ?? batSide(), brim3 = k.brim ?? V.add(k.head, [0.03, -0.04, 0.12]), b = P(brim3), fx = fxOf(look.helmet);
-    if (fx === 'astro') {   // 바이저 쪽을 정하려고 얼굴이 카메라를 보는 정도를 3D로 잰다(타자는 타자 뼈대 좌표의 카메라)
-      const camL = k.world ? [cam.x, cam.y, cam.z] : [-batterShift(), cam.y, cam.z];
-      drawHelmet(h, s * 0.86, b, col, fx, lod >= 1, side, V.dot(unit3(V.sub(brim3, k.head)), unit3(V.sub(camL, k.head))));
-      return;
-    }
-    if (fx && fx !== 'crown') { drawHelmet(h, s * 0.86, b, col, fx, true, side); return; }   // 왕관은 타격 헬멧 그대로 그리고 위에 얹는다
+    // 우주인 바이저·판다 눈 둘레 쪽을 정하려고 얼굴이 카메라를 보는 정도를 3D로 잰다(타자는 타자 뼈대 좌표의 카메라)
+    const face = () => { const camL = k.world ? [cam.x, cam.y, cam.z] : [-batterShift(), cam.y, cam.z]; return V.dot(unit3(V.sub(brim3, k.head)), unit3(V.sub(camL, k.head))); };
+    if (fx === 'astro') { drawHelmet(h, s * 0.86, b, col, fx, lod >= 1, side, face()); return; }
+    if (fx && fx !== 'crown' && fx !== 'halo') { drawHelmet(h, s * 0.86, b, col, fx, true, side, fx === 'panda' ? face() : 1); return; }   // 왕관·천사는 타격 헬멧 그대로 그리고 위에 얹는다
     const c = col('helmet'), bd = b ? Math.sign(b.x - h.x) || side : side, rx = 0.106 * s, ry = 0.112 * s, cy = h.y - 0.012 * s;
     if (lod >= 1) {
       ellipseAt({ x: h.x - bd * 0.012 * s, y: h.y + 0.08 * s }, 0.062 * s, 0.032 * s, FIG_HAIR);
@@ -1944,6 +2091,7 @@ function drawBatterFigure(k, col, dy = 0) {
     ctx.fill();
     ellipseAt({ x: h.x + Ls.x * rx * 0.4, y: cy - ry * 0.5 }, rx * 0.38, ry * 0.2, 'rgba(255,255,255,0.35)');
     if (fx === 'crown') drawCrown(h.x, cy, rx, ry, lod >= 1, side);
+    else if (fx === 'halo') drawHalo(h.x, cy, rx, ry, lod >= 1);
   }
 
   const parts = [];
@@ -1958,14 +2106,17 @@ function drawBatterFigure(k, col, dy = 0) {
     if (!hp || !tp) return;
     drawBat(hp, tp, 0.034 * hp.s, 0.068 * tp.s, tp.s, col, fxOf(look.bat), true);
     const ang = Math.atan2(tp.y - hp.y, tp.x - hp.x);
+    if (gfx === 'fire') gloveGlow(h2 ? { x: (hp.x + h2.x) / 2, y: (hp.y + h2.y) / 2 } : hp, 0.13 * hp.s, fxTime());
     for (const q of [hp, h2]) {   // 장갑 낀 두 손이 배트를 감싸 쥔다(손가락 마디 두 줄)
       if (!q) continue;
       ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(ang);
       ctx.fillStyle = col('glove'); ctx.beginPath(); ctx.ellipse(0, 0, 0.047 * q.s, 0.042 * q.s, 0, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
+      if (gfx === 'leopard' && lod >= 1) leopardSpots(0, 0, 0.047 * q.s, 0.042 * q.s, lod === 2);
       if (lod === 2) { ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = Math.max(1, 0.005 * q.s); for (const o of [-0.015, 0.015]) { ctx.beginPath(); ctx.moveTo(o * q.s, -0.035 * q.s); ctx.lineTo(o * q.s, 0.035 * q.s); ctx.stroke(); } }
       ctx.restore();
     }
+    if (gfx === 'fire' && lod >= 1) [hp, h2].forEach((q, i) => q && gloveFlames({ x: q.x, y: q.y - 0.03 * q.s }, q.s, fxTime(), i));
   } });
   parts.sort((a, b) => b.depth - a.depth).forEach((p) => p.draw());
 }
@@ -1978,7 +2129,7 @@ function drawFigureShadow(k) {
   }
 }
 
-const SWING_GLOW = { fire: '255,140,50', lightning: '120,200,255', ice: '200,240,255', beam: '0,196,212' };
+const SWING_GLOW = { fire: '255,140,50', lightning: '120,200,255', ice: '200,240,255', beam: '0,196,212', phoenix: '255,120,30' };
 function drawBatter(tau, pre = null) {
   const k = batterSkeleton(tau, pre);
   // 스윙 잔상: 누른 순간을 맞는 순간으로 보여 줘서 방망이가 한 장면 만에 맞는 자리로 간다. 당긴 자리(-110도)부터 지금까지 지나간 자국을
@@ -1991,12 +2142,13 @@ function drawBatter(tau, pre = null) {
       for (let a = k.yaw; a >= -110; a -= 8) out.push([m * (hx + r1 * Math.cos(a * DEG)), k.hand[2] + r1 * Math.sin(a * DEG), y(r1)]);
       return out;
     };
-    if (fx === 'diamond') {   // 다이아몬드는 프리즘처럼 바깥 빨강에서 안쪽 보라까지 여섯 줄 무지개
+    if (fx === 'diamond' || fx === 'rainbow') {   // 다이아몬드·무지개는 프리즘처럼 바깥 빨강에서 안쪽 보라까지 여섯 줄 무지개
       for (let j = 0; j < 6; j++) fill3d(band(lerp(BAT_LEN, 0.3, j / 6), lerp(BAT_LEN, 0.3, (j + 1) / 6)), `hsla(${j * 52},95%,62%,${(0.44 * fade).toFixed(3)})`);
     } else {
-      const rgb = SWING_GLOW[fx];   // 불꽃·번개·얼음·광선 배트는 잔상도 그 색으로 남는다
+      const rgb = SWING_GLOW[fx];   // 불꽃·번개·얼음·광선·불사조 배트는 잔상도 그 색으로 남는다
       fill3d(band(BAT_LEN, 0.3), `rgba(${rgb ?? '255,255,255'},${(rgb ? 0.48 : 0.34) * fade})`);
       if (fx === 'beam') { ctx.save(); ctx.globalCompositeOperation = 'lighter'; fill3d(band(BAT_LEN, 0.6), `rgba(120,255,250,${(0.42 * fade).toFixed(3)})`); ctx.restore(); }   // 빛 막대가 지나간 바깥쪽은 빛처럼 밝게
+      if (fx === 'phoenix') { ctx.save(); ctx.globalCompositeOperation = 'lighter'; fill3d(band(BAT_LEN, 0.58), `rgba(255,205,90,${(0.4 * fade).toFixed(3)})`); ctx.restore(); }   // 불사조는 바깥쪽이 금빛으로 달아오른다
     }
   }
   drawFigureShadow(k);
@@ -2195,6 +2347,71 @@ const BAT_BURSTS = {
     for (let i = 0; i < 6; i++) {
       const ang = r() * Math.PI * 2, v = 2 + 2 * r(), rot = r() * Math.PI + a * 8, p = flyAt(c, ang, v, a, 0.3, 3), l = U * 0.022, ca = Math.cos(rot) * l, sa = Math.sin(rot) * l;
       ctx.fillStyle = `rgba(215,244,255,${(1 - k).toFixed(3)})`; ctx.beginPath(); ctx.moveTo(p.x + ca, p.y + sa); ctx.lineTo(p.x - sa * 0.55, p.y + ca * 0.55); ctx.lineTo(p.x - ca, p.y - sa); ctx.lineTo(p.x + sa * 0.55, p.y - ca * 0.55); ctx.closePath(); ctx.fill();
+    }
+  },
+  // 바게트(2026-11-10): 밀가루가 하얗게 퍼지고 '빵!' 글자가 튀어나오며(빵이 터지는 소리와 빵), 빵 부스러기(갈색 껍질·노란 속살)가 돌며 튀어 떨어진다
+  baguette(c, a, k, seed) {
+    const U = c.s, r = mulberry32(seed + 19), al = k > 0.7 ? 1 - (k - 0.7) / 0.3 : 1;
+    radialGlow(c, U * (0.1 + 0.3 * easeOut(k)), [[0, `rgba(255,252,242,${(0.75 * (1 - k) ** 1.5).toFixed(3)})`], [0.6, `rgba(248,238,215,${(0.35 * (1 - k) ** 1.5).toFixed(3)})`], [1, 'rgba(248,238,215,0)']]);
+    ctx.globalAlpha = al;
+    for (let i = 0; i < 14; i++) {
+      const ang = -Math.PI / 2 + (r() - 0.5) * Math.PI * 1.8, v = 1.8 + 2.6 * r(), rot = r() * 6 + (r() - 0.5) * 14 * a, sz = U * (0.012 + 0.016 * r()), crust = r() < 0.55;
+      const p = flyAt(c, ang, v, a, 0.32, 6), ca = Math.cos(rot) * sz, sa = Math.sin(rot) * sz;
+      ctx.fillStyle = crust ? '#c07a32' : '#f3d79c'; ctx.beginPath();
+      ctx.moveTo(p.x - ca + sa * 0.5, p.y - sa - ca * 0.5); ctx.lineTo(p.x + ca * 0.8 + sa * 0.7, p.y + sa * 0.8 - ca * 0.7); ctx.lineTo(p.x + ca - sa * 0.4, p.y + sa + ca * 0.4); ctx.lineTo(p.x - ca * 0.4 - sa * 0.8, p.y - sa * 0.4 + ca * 0.8);
+      ctx.closePath(); ctx.fill();
+    }
+    const pop = k < 0.14 ? easeOut(k / 0.14) * 1.15 : k < 0.28 ? lerp(1.15, 1, (k - 0.14) / 0.14) : 1, R = U * 0.14 * pop, y = c.y - U * (0.06 + 0.08 * k);
+    ctx.font = font(R * 0.8, 900); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = Math.max(2, R * 0.14); ctx.strokeStyle = '#ffffff'; ctx.strokeText('빵!', c.x, y); ctx.fillStyle = '#a8621f'; ctx.fillText('빵!', c.x, y);
+    ctx.globalAlpha = 1;
+  },
+  // 무지개(2026-11-10): 맞은 자리에서 일곱 빛 반원 띠가 위로 피어나 퍼지며 옅어지고, 일곱 빛 반짝이가 흩어진다
+  rainbow(c, a, k, seed) {
+    const U = c.s, r = mulberry32(seed + 23), R = U * (0.1 + 0.3 * easeOut(Math.min(1, k * 1.5))), bw = U * 0.02;
+    ctx.lineWidth = bw; ctx.lineCap = 'butt'; ctx.globalAlpha = 0.85 * (1 - k) ** 1.3;
+    RAINBOW.forEach((col, i) => {   // 막 터질 때는 안쪽 띠 반지름이 0보다 작아서 건너뛴다(arc는 음수 반지름이면 오류를 낸다)
+      const rr = R - i * bw * 0.95;
+      if (rr > 0.5) { ctx.strokeStyle = col; ctx.beginPath(); ctx.arc(c.x, c.y, rr, Math.PI * 1.06, Math.PI * 1.94); ctx.stroke(); }
+    });
+    ctx.globalAlpha = 1 - k;
+    for (let i = 0; i < 12; i++) {
+      const ang = r() * Math.PI * 2, v = 1.6 + 2.6 * r(), ph = r() * 6, p = flyAt(c, ang, v, a, 0.3, 1.5);
+      drawSparkle(p, U * 0.03 * (0.6 + 0.4 * Math.sin(a * 26 + ph)) * (1 - 0.4 * k), RAINBOW[i % 7]);
+    }
+    ctx.globalAlpha = 1;
+  },
+  // 불사조(2026-11-10, 8,000코인): 하얗게 달아오른 불덩이에서 불꽃 날개 한 쌍이 0.15초 만에 양옆 위로 활짝 펼쳐지며 떠오르고, 위로 솟는 몸통 불꽃과
+  // 아래로 흘러내리는 꼬리 깃 셋이 있으며, 금빛 불씨가 떠오르다 사라진다. 날개는 어깨에서 바깥 위로 휘는 앞 가장자리(팔)를 따라 깃 일곱 장이 붙고,
+  // 안쪽 깃은 아래로 처지고 바깥 깃일수록 길게 위로 뻗는다(한 점에서 사방으로 퍼지게 했더니 별처럼 보였다). 모두 더하는 빛(lighter)이고, 겹마다 색을 한 번만 만든다
+  phoenix(c, a, k, seed) {
+    const U = c.s, r = mulberry32(seed + 29), open = easeOut(Math.min(1, k / 0.3)), al = k < 0.55 ? 1 : 1 - (k - 0.55) / 0.45, o = { x: c.x, y: c.y - U * 0.1 * easeOut(k) };
+    ctx.globalCompositeOperation = 'lighter';
+    radialGlow(o, U * (0.08 + 0.16 * open), [[0, `rgba(255,250,215,${al.toFixed(3)})`], [0.35, `rgba(255,190,70,${(0.8 * al).toFixed(3)})`], [1, 'rgba(255,80,20,0)']]);
+    const leaf = (p, v, L, bw) => {   // p에서 v 쪽으로 길이 L, 가운데 반폭 bw인 깃 하나(끝은 조금 바깥으로 휜다)
+      const q = { x: -v.y, y: v.x }, m = { x: p.x + v.x * L * 0.5, y: p.y + v.y * L * 0.5 };
+      ctx.moveTo(p.x - q.x * bw * 0.4, p.y - q.y * bw * 0.4);
+      ctx.quadraticCurveTo(m.x - q.x * bw * 1.3, m.y - q.y * bw * 1.3, p.x + v.x * L + q.x * bw * 0.3, p.y + v.y * L + q.y * bw * 0.3);
+      ctx.quadraticCurveTo(m.x + q.x * bw * 1.3, m.y + q.y * bw * 1.3, p.x + q.x * bw * 0.4, p.y + q.y * bw * 0.4);
+      ctx.closePath();
+    };
+    PHOENIX.forEach(([color, hk, wk]) => {
+      ctx.fillStyle = color; ctx.globalAlpha = al; ctx.beginPath();
+      for (const side of [-1, 1]) for (let j = 0; j < 7; j++) {   // fr 0 어깨 ~ 1 날개 끝. 접혀 있을 때(open 0)는 깃이 모두 아래를 본다
+        const fr = j / 6, base = { x: o.x + side * U * 0.25 * fr * open, y: o.y - U * (0.12 * fr + 0.1 * fr * fr) * open };
+        const ang = lerp(1.35, lerp(1.05, -0.75, fr), open) + 0.06 * Math.sin(a * 24 + j);
+        leaf(base, { x: side * Math.cos(ang), y: Math.sin(ang) }, U * (0.11 + 0.19 * fr) * (0.4 + 0.6 * open) * hk, U * 0.03 * (1 - 0.3 * fr) * wk);
+      }
+      leaf({ x: o.x, y: o.y + U * 0.04 }, { x: 0, y: -1 }, U * 0.16 * (0.5 + 0.5 * open) * hk, U * 0.034 * wk);   // 몸통: 위로 솟는 불꽃
+      for (let i = 0; i < 3; i++) { const ang = Math.PI / 2 + (i - 1) * 0.32 + 0.08 * Math.sin(a * 18 + i * 2); leaf(o, { x: Math.cos(ang), y: Math.sin(ang) }, U * (i === 1 ? 0.26 : 0.19) * open * hk, U * 0.02 * wk); }   // 꼬리 깃
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1; ctx.lineWidth = Math.max(1.2, U * 0.009);
+    for (let i = 0; i < 16; i++) {
+      const ang = -Math.PI / 2 + (r() - 0.5) * Math.PI * 1.6, v = 1.5 + 2.5 * r(), life = 0.5 + 0.5 * r(), kk = k / life;
+      if (kk >= 1) continue;
+      const p = flyAt(c, ang, v, a, 0.25, -2), q = flyAt(c, ang, v, Math.max(0, a - 0.035), 0.25, -2);
+      ctx.strokeStyle = `rgba(255,215,110,${(1 - kk).toFixed(3)})`; ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(p.x, p.y); ctx.stroke();
     }
   },
 };
@@ -3208,6 +3425,10 @@ function drawRecords() {
 // 로그인 안 했으면 이 기기에서 쌓아 이 브라우저에 남기고(walkoff.titleCounts·titles) 칭호 화면에만 보인다. 랭킹에는 계정 칭호만 나온다(메뉴 '역대'와 같은 계정 기준).
 // 계정 칭호와 쌓은 수는 /me와 /scores 답으로 남겨 둔다(walkoff.accountTitles·accountCounts)
 const myTitles = () => (loggedIn() ? store.get('accountTitles', []) : store.get('titles', []));
+// 대표 칭호(2026-11-10 패들렛 의견 '받은 칭호를 골라서 낄 수 있으면'): 로그인했으면 칭호 화면에서 고른 것(서버 /title, /me의 title을 walkoff.accountTitle에 둔다),
+// 안 골랐거나 이 기기면 받은 칭호 가운데 가장 높은 것. 메뉴 카드·랭킹 내 줄 배지가 같은 칭호를 쓴다(남의 줄은 서버가 같은 규칙으로 정해 준다)
+const pickedTitle = () => { const id = loggedIn() ? store.get('accountTitle', null) : null; return myTitles().includes(id) ? id : null; };
+const myTitle = () => pickedTitle() ?? topTitle(myTitles());
 const myCounts = () => cleanCounts(loggedIn() ? store.get('accountCounts', {}) : store.get('titleCounts', {}));
 const titleNames = (ids) => ids.map((id) => titleById(id)?.name).filter(Boolean);
 // 쌓아서 받는 칭호로 바꾸며(2026-11-06 사용자 결정) 이 기기에서 한 판으로 받은 칭호를 지운다. 규칙이 그대로인 첫 홈런만 남긴다(서버는 worker/migrations/0009)
@@ -3247,8 +3468,23 @@ function titleBadge(x, y, t, size) {
   return w;
 }
 const titleBadgeW = (label, size) => { ctx.font = font(size, 800); return ctx.measureText(label).width + 14; };
+// 칭호 화면에서 받은 칭호를 누르면 대표로 단다(서버 /title). 이미 단 칭호를 다시 누르면 자동(가장 높은 것)으로 돌린다
+let titleBusy = false;
+async function pickTitle(t) {
+  if (titleBusy) return;
+  const next = pickedTitle() === t.id ? null : t.id;
+  titleBusy = true;
+  try {
+    const res = await api('/title', { method: 'POST', body: { title: next } }), data = await res.json().catch(() => null);
+    if (res.status === 401) { logout('expired'); return; }
+    if (!res.ok || !data?.ok) { toast('대표 칭호를 바꾸지 못했어요. 잠시 뒤 다시 해 주세요'); return; }
+    store.set('accountTitle', data.title ?? null);
+    toast(next ? `대표 칭호 · ${t.name}` : `대표 칭호를 자동으로 돌렸어요 · ${titleById(myTitle())?.name ?? ''}`);
+  } catch { toast('대표 칭호를 바꾸지 못했어요. 잠시 뒤 다시 해 주세요'); } finally { titleBusy = false; }
+}
 function settleTitles(s, data) {   // /scores·/me 답(옛 서버는 칭호가 없어 그대로)
   if (Array.isArray(data?.titles)) store.set('accountTitles', data.titles.filter((id) => titleById(id)));
+  if (data && 'title' in data) store.set('accountTitle', titleById(data.title) ? data.title : null);   // /me만 준다(고른 대표 칭호, 없으면 자동)
   if (data?.counts && typeof data.counts === 'object') store.set('accountCounts', cleanCounts(data.counts));
   if (s && game.summary === s && Array.isArray(data?.newTitles)) game.newTitles = data.newTitles.filter((id) => titleById(id));
 }
@@ -3259,7 +3495,8 @@ function drawTitles() {
   let y = view.h * (m ? 0.07 : 0.09);
   text('칭호', cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 30 : 38;
-  text(`${have.length} / ${TITLES.length} · ${loggedIn() ? '받은 칭호 가운데 등급이 가장 높은 것이 랭킹에 보여요' : '로그인하면 칭호가 랭킹에 보여요'}`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.6)' });
+  const shown = loggedIn() ? myTitle() : null, picked = pickedTitle();
+  text(`${have.length} / ${TITLES.length} · ${loggedIn() ? '받은 칭호를 누르면 랭킹에 보이는 대표로 달아요' : '로그인하면 칭호가 랭킹에 보여요'}`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.6)' });
   const rowH = m ? 52 : 56, headH = m ? 34 : 38, ds = m ? 11 : 12;
   y = beginScroll(titleList, 'titles', y + (m ? 16 : 20), view.h - (m ? 110 : 120));
   for (const [tier, label] of TIERS) {
@@ -3273,7 +3510,9 @@ function drawTitles() {
       ctx.beginPath(); ctx.arc(x0 + 20, y + rowH / 2, m ? 7 : 8, 0, Math.PI * 2);
       if (got) { ctx.fillStyle = ink; ctx.fill(); } else { ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.5; ctx.stroke(); }
       text(t.name, x0 + 38, y + rowH * 0.36, { size: m ? 15 : 16, weight: 800, color: got ? ink : 'rgba(255,255,255,0.85)', align: 'left' });
-      text(got ? '받음' : `${n.toLocaleString()} / ${t.need.toLocaleString()}`, x0 + w - 14, y + rowH * 0.36, { size: m ? 12 : 13, weight: 700, color: got ? ink : 'rgba(255,255,255,0.6)', align: 'right' });
+      const state = t.id === shown ? (picked ? '대표' : '대표 · 자동') : '받음';   // 대표로 단 칭호(안 골랐으면 가장 높은 것이 자동으로 대표)
+      text(got ? state : `${n.toLocaleString()} / ${t.need.toLocaleString()}`, x0 + w - 14, y + rowH * 0.36, { size: m ? 12 : 13, weight: t.id === shown ? 900 : 700, color: got ? ink : 'rgba(255,255,255,0.6)', align: 'right' });
+      if (got && loggedIn()) scrollButton(titleList, { x: x0, y: y + 3, w, h: rowH - 6 }, `칭호 ${t.name}`, () => pickTitle(t));
       ctx.font = font(ds, 600);   // 작은 폰에서 긴 조건은 끝을 줄인다
       text(fitText(t.desc, w - 52), x0 + 38, y + rowH * 0.7, { size: ds, weight: 600, color: got ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.5)', align: 'left' });
       y += rowH;
@@ -3594,6 +3833,7 @@ function drawRankRow(y, x0, w, cells, highlight) {
 // 랭킹 목록·팀 창·칭호 화면이 화면보다 길면(작은 폰, 낮은 PC 창) 위아래를 잘라 그리고 끌어 올리기·휠로 넘긴다. 넘칠 때는 메뉴처럼 뗄 때 누르고
 // (끌다가 손가락 밑의 줄이 눌리지 않게), 더 있는 쪽 가장자리를 흐리게 하고 오른쪽에 위치 막대를 둔다. 탭이나 팀이 바뀌면(key) 처음부터
 const rankList = { scroll: 0, max: 0, drag: null, key: '', top: 0, bottom: 0 }, titleList = { scroll: 0, max: 0, drag: null, key: '', top: 0, bottom: 0 };
+const shopList = { scroll: 0, max: 0, drag: null, key: '', top: 0, bottom: 0 };   // 상점 물건 칸(물건이 많은 탭이 키가 작은 화면에 넘칠 때)
 const RANK_FADE = 28;   // 흐리게 하는 가장자리 높이(px)
 function beginScroll(L, key, top, bottom) {
   if (L.key !== key) Object.assign(L, { key, scroll: 0 });
@@ -3697,7 +3937,7 @@ function teamBoard(d, team) {
   if (!t) return null;
   const pts = (p) => p.best ?? p.total ?? 0;   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
   const list = d.players.filter((p) => p.team === team);
-  if (d.me?.team === team && !list.some((p) => p.me)) list.push({ rank: d.me.rank, nick: settings.nick || '-', team, best: pts(d.me), days: d.me.days, me: true, look: wallet.look, title: topTitle(myTitles()), outside: true });
+  if (d.me?.team === team && !list.some((p) => p.me)) list.push({ rank: d.me.rank, nick: settings.nick || '-', team, best: pts(d.me), days: d.me.days, me: true, look: wallet.look, title: myTitle(), outside: true });
   const rest = Math.max(0, t.players - list.length), restPts = Math.max(0, t.total - list.reduce((s, p) => s + pts(p), 0));
   let rank = 0;
   const rows = list.map((p, i) => {
@@ -3759,7 +3999,7 @@ async function syncAccount() {
     if (res.status === 401) { logout('expired'); return; }
     if (!res.ok) return;
     const acct = await res.json();
-    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountCounts'); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
+    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
     settings.playerId = acct.playerId; store.set('playerId', acct.playerId);
     setWallet(acct);
     settleTitles(null, acct);
@@ -3798,7 +4038,7 @@ async function pushProfile() {
 function logout(reason) {
   Object.assign(auth, { token: null, fresh: false });
   seedTicket.ready = null;   // 받아 둔 시드는 그 계정 것이다
-  store.remove('session'); store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountCounts'); accountBestAt = 0;   // 메뉴 최고 기록·칭호는 다시 이 기기 값으로
+  store.remove('session'); store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); accountBestAt = 0;   // 메뉴 최고 기록·칭호는 다시 이 기기 값으로
   resetWallet();   // 코인과 꾸미기는 계정에 남는다. 이 브라우저는 기본 모습으로
   toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
 }
@@ -3811,7 +4051,7 @@ async function deleteAccount() {
     if (!res.ok && res.status !== 401) throw new Error(`delete ${res.status}`);
     Object.assign(auth, { token: null, fresh: false });
     seedTicket.ready = null;
-    ['session', 'pending', 'playerId', 'accountBest', 'accountTitles', 'accountCounts'].forEach((k) => store.remove(k));
+    ['session', 'pending', 'playerId', 'accountBest', 'accountTitles', 'accountTitle', 'accountCounts'].forEach((k) => store.remove(k));
     resetWallet();
     settings.playerId = ensurePlayerId();
     goTitle();
@@ -3899,6 +4139,10 @@ const ITEM_LOOKS = {
   // 2026-11-03 사용자 요청 '고가로 퀄리티 있게'로 더한 고가 물건(1,500~6,000코인). 움직이는 효과를 따로 그린다
   'bat-beam': { name: '광선', colors: { bat: '#eafcff', batEnd: '#38c8ff' }, fx: 'beam' },
   'bat-diamond': { name: '다이아몬드', colors: { bat: '#e4f7ff', batEnd: '#9edcf6' }, fx: 'diamond' },
+  // 2026-11-10 사용자 요청 '상점 아이템 추가'로 더한 물건(보통 값 12개·비싼 것 4개, 가격은 오른쪽 칸 제안)
+  'bat-baguette': { name: '바게트', colors: { bat: '#e7ae62', batEnd: '#b8722c' }, fx: 'baguette' },
+  'bat-rainbow': { name: '무지개', colors: { bat: '#ff5d5d', batEnd: '#7b5cff' }, fx: 'rainbow' },
+  'bat-phoenix': { name: '불사조', colors: { bat: '#4a0d06', batEnd: '#ff9a2a' }, fx: 'phoenix' },
   'helmet-team': { name: '팀 색' },
   'helmet-black': { name: '검정 무광', colors: { helmet: '#202227' } },
   'helmet-white': { name: '흰색', colors: { helmet: '#eceef2' } },
@@ -3912,11 +4156,17 @@ const ITEM_LOOKS = {
   'helmet-dino': { name: '공룡', colors: { helmet: '#5fae4e' }, fx: 'dino' },
   'helmet-crown': { name: '왕관', fx: 'crown' },
   'helmet-astro': { name: '우주인', colors: { helmet: '#f2f4f8' }, fx: 'astro' },
+  'helmet-panda': { name: '판다', colors: { helmet: '#f3f2ee' }, fx: 'panda' },
+  'helmet-cat': { name: '고양이', colors: { helmet: '#f1b465' }, fx: 'cat' },
+  'helmet-halo': { name: '천사', fx: 'halo' },
   'glove-white': { name: '흰색', colors: { glove: '#e9e9ec' } },
   'glove-black': { name: '검정', colors: { glove: '#25272d' } },
   'glove-red': { name: '빨강', colors: { glove: '#d3232f' } },
   'glove-blue': { name: '파랑', colors: { glove: '#2a5bd0' } },
   'glove-neon': { name: '형광 노랑', colors: { glove: '#d8f53a' } },
+  'glove-gold': { name: '금색', colors: { glove: '#e3b322' } },
+  'glove-leopard': { name: '호피', colors: { glove: '#dca24c' }, fx: 'leopard' },
+  'glove-fire': { name: '불꽃', colors: { glove: '#c8361c' }, fx: 'fire' },
   'shoe-black': { name: '검정', colors: { shoe: '#121418' } },
   'shoe-white': { name: '흰색', colors: { shoe: '#eef0f3' } },
   'shoe-red': { name: '빨강', colors: { shoe: '#c81e2b' } },
@@ -3935,6 +4185,9 @@ const ITEM_LOOKS = {
   'uniform-alt': { name: '얼터(검정)', colors: { jersey: '#1d2026', shade: '#121418', pants: '#dcdfe5', pantsShade: '#b4b9c2' } },
   'uniform-legend': { name: '금장', colors: { jersey: '#17191f', shade: '#0d0e12', pants: '#17191f', pantsShade: '#0d0e12' }, fx: 'legend' },
   'uniform-neon': { name: '네온', colors: { jersey: '#111628', shade: '#090c18', pants: '#111628', pantsShade: '#090c18' }, fx: 'neon' },
+  'uniform-stripe': { name: '줄무늬', colors: { jersey: '#eff1f4', shade: '#c5c9d2', pants: '#eff1f4', pantsShade: '#c5c9d2' }, fx: 'stripe' },
+  'uniform-retro': { name: '올드', colors: { jersey: '#ece0c2', shade: '#c6b894', pants: '#ece0c2', pantsShade: '#c6b894' }, fx: 'retro' },
+  'uniform-rainbow': { name: '무지개', colors: { jersey: '#f2f2f6', shade: '#c8c9d2', pants: '#f2f2f6', pantsShade: '#c8c9d2' }, fx: 'rainbow' },
   'number-none': { name: '없음' },
   'number-on': { name: '등번호 달기' },
   'trail-none': { name: '없음' },
@@ -3945,6 +4198,9 @@ const ITEM_LOOKS = {
   'trail-star': { name: '별' },
   'trail-comet': { name: '혜성' },
   'trail-dragon': { name: '용' },
+  'trail-note': { name: '음표' },
+  'trail-blossom': { name: '벚꽃' },
+  'trail-golddragon': { name: '황금 용' },
   'sound-wood': { name: "나무 '딱'" },
   'sound-metal': { name: "알루미늄 '깡'" },
   'sound-toy': { name: "장난감 '뿅'" },
@@ -3954,6 +4210,7 @@ const ITEM_LOOKS = {
   'sound-drum': { name: "북 '둥'" },
   'sound-thunder': { name: "천둥 '콰광'" },
   'sound-8bit': { name: "8비트 '띠링'" },
+  'sound-duck': { name: "오리 '꽥'" },
 };
 const SHOP_ITEMS = ITEMS.map((it) => ({ ...it, ...ITEM_LOOKS[it.id] }));
 const shopItem = (id) => SHOP_ITEMS.find((i) => i.id === id) ?? null;
@@ -4024,13 +4281,13 @@ function drawBackNumber(k, P, col, jersey) {
   if (look.number !== 'number-on' || !Number.isInteger(look.no)) return;
   const str = String(look.no), fit = backNumberFit(k, P, str);
   if (!fit) return;
-  const light = isLight(col('jersey')), t = teamById(settings.team);
+  const ufx = fxOf(look.uniform), light = ufx !== 'rainbow' && isLight(col('jersey')), t = teamById(settings.team);   // 무지개 상의는 그러데이션이라 흰 글자
   ctx.save();
   if (jersey && smoothPath(jersey)) ctx.clip();   // 상의 밖으로는 그리지 않는다
   ctx.translate(fit.x, fit.y); ctx.scale(fit.sx, 1);
   ctx.font = font(fit.size, 900); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(2, 0.022 * fit.s);
-  const ufx = fxOf(look.uniform), h = fit.size / 2;
+  const h = fit.size / 2;
   if (ufx === 'legend') {   // 금장: 짙은 테두리 위에 위가 밝은 금(가운데에 비친 띠). 2.6초마다 빛 한 줄기가 비스듬히 훑고 지나간다(글자 모양에만 칠해진다)
     ctx.strokeStyle = GOLD.edge; ctx.strokeText(str, 0, 0);
     ctx.fillStyle = gradientAlong({ x: 0, y: -h }, { x: 0, y: h }, [[0, GOLD.light], [0.48, GOLD.mid], [0.52, GOLD.deep], [1, GOLD.mid]]); ctx.fillText(str, 0, 0);
@@ -4058,6 +4315,7 @@ function drawTrailDots(pts, kind, radiusOf) {
   }
   if (kind === 'trail-lightning') { drawBoltTrail(pts, radiusOf); return; }
   const t = fxTime();
+  if (kind === 'trail-note' || kind === 'trail-blossom') { drawPrettyTrail(pts, kind, radiusOf, t); return; }
   pts.forEach((q, i) => {
     const k = 1 - i / pts.length;   // 공에 가까울수록 크고 진하다
     if (kind === 'trail-heart' || kind === 'trail-star') {
@@ -4073,6 +4331,43 @@ function drawTrailDots(pts, kind, radiusOf) {
       : `rgba(255, ${Math.round(70 + 160 * k)}, ${Math.round(40 * k)}, ${(0.85 * k).toFixed(2)})`;
     ctx.fill();
   });
+}
+// 음표·벚꽃 꼬리(2026-11-10): 음표는 ♪ 모양(기운 머리·기둥·깃발)이 하나 건너 하나씩 흰빛·노랑·하늘색으로 흔들리며 남는다.
+// 벚꽃은 셋에 하나는 다섯 잎 꽃이 돌며 남고, 나머지는 잎 하나가 뒤집히듯 팔랑이며 옆으로 흩어지고 뒤로 떨어진다(오래된 자리일수록 멀리)
+const NOTE_COLORS = ['#ffffff', '#ffe36b', '#8fe3ff'], BLOSSOM = { petal: ['#ffc4d6', '#ff9fbf'], flower: '#ffb3ca', heart: '#fff0f4' };
+function petalPath(x, y, r, rot, w = 1) {   // 끝이 살짝 파인 둥근 꽃잎 하나를 지금 경로에 더한다(rot 쪽으로 r만큼, w는 폭 비율)
+  const c = Math.cos(rot), s = Math.sin(rot), P = (u, v) => [x + u * c - v * w * s, y + u * s + v * w * c];
+  ctx.moveTo(...P(0, 0));
+  ctx.bezierCurveTo(...P(r * 0.35, -r * 0.62), ...P(r * 1.05, -r * 0.5), ...P(r, -r * 0.1));
+  ctx.lineTo(...P(r * 0.82, 0)); ctx.lineTo(...P(r, r * 0.1));
+  ctx.bezierCurveTo(...P(r * 1.05, r * 0.5), ...P(r * 0.35, r * 0.62), ...P(0, 0));
+}
+function drawPrettyTrail(pts, kind, radiusOf, t) {
+  const cap = ctx.lineCap;
+  ctx.lineCap = 'round';
+  pts.forEach((q, i) => {
+    const k = 1 - i / pts.length, r0 = radiusOf(q) * (0.4 + 0.6 * k);
+    ctx.globalAlpha = 0.95 * k;
+    if (kind === 'trail-note') {
+      if (i % 2) return;
+      const r = r0 * 1.35, x = q.x + Math.sin(t * 7 + i) * r * 0.35, y = q.y - r * 0.2, col = NOTE_COLORS[(i / 2) % 3];
+      ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x - r * 0.32, y + r * 0.55, r * 0.42, r * 0.3, -0.45, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, r * 0.16);
+      ctx.beginPath(); ctx.moveTo(x + r * 0.06, y + r * 0.5); ctx.lineTo(x + r * 0.06, y - r * 0.9); ctx.quadraticCurveTo(x + r * 0.8, y - r * 0.55, x + r * 0.62, y - r * 0.05); ctx.stroke();
+      return;
+    }
+    if (i % 3 === 0) {   // 다섯 잎 꽃
+      const rot = t * 2 + i;
+      ctx.fillStyle = BLOSSOM.flower; ctx.beginPath();
+      for (let j = 0; j < 5; j++) petalPath(q.x, q.y, r0 * 1.15, rot + j * Math.PI * 0.4, 0.85);
+      ctx.fill();
+      ellipseAt(q, r0 * 0.3, r0 * 0.3, BLOSSOM.heart);
+      return;
+    }
+    const x = q.x + Math.sin(i * 1.9 + t * 2.5) * r0 * (0.4 + i * 0.12), y = q.y + i * r0 * 0.18;
+    ctx.fillStyle = BLOSSOM.petal[i % 2]; ctx.beginPath(); petalPath(x, y, r0 * 1.1, t * 3 + i * 1.3, 0.35 + 0.65 * Math.abs(Math.cos(t * 5 + i))); ctx.fill();
+  });
+  ctx.globalAlpha = 1; ctx.lineCap = cap;
 }
 function drawBoltTrail(pts, radiusOf) {
   if (pts.length < 2) return;
@@ -4104,7 +4399,8 @@ function drawBallTrail(r, t) {
 // 지난 자리는 화면에서 꼬리 길이(FANCY.len × 화면 높이)가 될 때까지 거슬러 모은다(최대 1.6초). 따라가는 카메라는 공을 바로 뒤에서 봐서
 // 0.26초 자리가 공 둘레 몇 px에 몰렸다. 카메라 FANCY.near m 안의 자리는 쓰지 않는다(바로 앞을 지나는 큰 덩어리가 되지 않게)
 const FANCY = { dt: 1 / 45, win: 1.6, len: 0.26, near: 2.5, maxPts: 80 };
-const fancyTrail = (kind) => kind === 'trail-comet' || kind === 'trail-dragon';
+const fancyTrail = (kind) => kind === 'trail-comet' || kind === 'trail-dragon' || kind === 'trail-golddragon';
+const dragonPal = (kind) => (kind === 'trail-dragon' ? DRAGON : kind === 'trail-golddragon' ? GOLD_DRAGON : null);   // 용 꼬리의 색(황금 용은 더 길다)
 const hash01 = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };   // 0~1 고정 난수(가루마다 늘 같은 값)
 
 // at(tt)는 그 시각 공의 화면 자리({x, y, s}). 지금 공에서 거슬러 모으며 공에서 잰 화면 길이 d를 붙인다. 친 순간(0초)보다 앞으로는 가지 않는다
@@ -4174,15 +4470,15 @@ function drawFancyBallTrail(r, t, kind) {
   const at = (tt) => { const f = flightPos(r, tt); return project(f.x, f.y, f.z); }, c = at(t);
   if (!c) return;
   const ball = camMoved() ? Math.max(BALL_R * 1.2 * c.s, view.h * CHASE.ballMin) : Math.max(2.5, BALL_R * 2 * c.s);
-  const dragon = kind === 'trail-dragon', U = Math.max(ball, view.mobile ? 3 : 3.5) * (dragon ? 1.15 : 1);
-  const P = resampleTrail(trailPath(at, t, view.h * FANCY.len, FANCY.win), Math.max(2.2, U * 0.7), dragon ? 1.5 : 2);   // 용은 덜 굵어진다(뒤에서 볼 때 가까운 몸이 머리를 덮었다)
+  const pal = dragonPal(kind), dragon = !!pal, U = Math.max(ball, view.mobile ? 3 : 3.5) * (dragon ? 1.15 : 1);
+  const P = resampleTrail(trailPath(at, t, view.h * FANCY.len * (pal?.len ?? 1), FANCY.win), Math.max(2.2, U * 0.7), dragon ? 1.5 : 2);   // 용은 덜 굵어진다(뒤에서 볼 때 가까운 몸이 머리를 덮었다)
   const place = (ts, age, k) => {   // 0.8~3m/s로 아무 쪽으로나 퍼지고 조금씩 가라앉는다
     const f = flightPos(r, ts), sp = (0.8 + 2.2 * hash01(k + 0.75)) * age, a = hash01(k + 0.125) * Math.PI * 2, b = hash01(k + 0.375) * 2 - 1, cb = Math.sqrt(1 - b * b);
     const q = project(f.x + Math.cos(a) * cb * sp, Math.max(0.03, f.y + b * sp - 1.2 * age * age), f.z + Math.sin(a) * cb * sp);
     return q && q.s < view.f / FANCY.near ? { x: q.x, y: q.y, k: clamp(q.s / c.s, 1, 2) } : null;
   };
   const dust = (each) => trailDust(t, dragon ? 0.7 : 0.9, dragon ? 0.04 : 0.018, place, each);
-  if (dragon) drawDragon(P, c, U, t, dust, r); else drawComet(P, c, U, t, dust);
+  if (dragon) drawDragon(P, c, U, t, dust, r, pal); else drawComet(P, c, U, t, dust);
 }
 
 // 혜성: 공 둘레의 밝은 머리(빛 무리와 천천히 도는 네 갈래 빛살), 길게 가늘어지는 꼬리(흰빛 → 푸른빛 → 투명, 겹친 띠 둘)와 옆으로 갈라지는 금빛 먼지 꼬리, 꼬리를 따라 흘러가는
@@ -4228,9 +4524,20 @@ function drawComet(P, c, U, t, dust) {
 // 용: 공(여의주)을 쫓는 붉은 용. 지난 길을 따라 꿈틀거리는 몸(빨강 비늘 줄이 번갈아 칠해지고 금빛 비늘 테, 금빛 배, 등 가시)이
 // 끝으로 갈수록 가늘어지며 흐려진다. 공 쪽 머리에는 뿔·수염·갈기가 있고 눈이 빛나며, 공 둘레에는 금빛 기운과 불씨가 돈다.
 // 등(가시·뿔) 쪽은 화면 위쪽이 되게 고르고, 거의 곧게 오르내릴 때는 고른 쪽을 지킨다(뿔이 깜빡이며 뒤집히지 않게)
-const DRAGON = { red: '#cf1d26', row: '#a8121c', gold: '#f2b632', belly: '#f7da8c', horn: '#ffe7a8', line: '#4e050a' };
+const DRAGON = { red: '#cf1d26', row: '#a8121c', gold: '#f2b632', belly: '#f7da8c', horn: '#ffe7a8', line: '#4e050a', a: (k) => `rgba(207,29,38,${k})`,
+  rowA: 'rgba(168,18,28,0)', bellyA: 'rgba(247,218,140,0)', goldA: 'rgba(242,182,50,0)', lineA: 'rgba(78,5,10,0)', edge: 'rgba(78,5,10,0.85)', plate: ['rgba(176,110,30,0.8)', 'rgba(176,110,30,0)'],
+  sheen: ['rgba(255,170,140,0.55)', 'rgba(255,170,140,0)'], fin: ['rgba(255,205,90,0.7)', 'rgba(255,120,40,0.62)'], mane: ['rgba(255,205,80,0.75)', 'rgba(255,150,40,0.75)'],
+  aura: ['rgba(255,240,200,0.55)', 'rgba(255,180,70,0.32)', 'rgba(255,110,30,0)'], ember: 'rgba(255,200,90,0.75)', dust: ['#ffe9a0', '#ffaa46'],
+  backHorn: '#c99a52', jaw: '#f3c35a', eyeGlow: ['rgba(255,240,150,0.9)', 'rgba(255,200,60,0)'], eye: '#fff6c2', pupil: '#3a0306', whisker: '#ffd36b', glitter: false };
+// 황금 용(10,000코인, 2026-11-10): 같은 용을 금빛으로 칠하고(비늘 테·가시는 흰 금, 윤곽은 짙은 청동, 눈은 붉게 빛난다) 몸이 1.35배 길며,
+// 몸을 따라 반짝임 다섯이 번갈아 빛나고 불티 대신 금가루가 반짝이며 흩어진다
+const GOLD_DRAGON = { ...DRAGON, red: '#efbd43', row: '#cf9420', gold: '#fff1b4', belly: '#fff7da', horn: '#fffbea', line: '#5a3905', a: (k) => `rgba(239,189,67,${k})`,
+  rowA: 'rgba(207,148,32,0)', bellyA: 'rgba(255,247,218,0)', goldA: 'rgba(255,241,180,0)', lineA: 'rgba(90,57,5,0)', edge: 'rgba(90,57,5,0.85)', plate: ['rgba(150,96,10,0.7)', 'rgba(150,96,10,0)'],
+  sheen: ['rgba(255,250,225,0.7)', 'rgba(255,250,225,0)'], fin: ['rgba(255,250,215,0.75)', 'rgba(255,200,70,0.65)'], mane: ['rgba(255,248,200,0.8)', 'rgba(255,200,70,0.75)'],
+  aura: ['rgba(255,252,225,0.6)', 'rgba(255,215,110,0.34)', 'rgba(255,170,40,0)'], ember: 'rgba(255,240,170,0.8)', dust: ['#fffbe6', '#ffd54a'],
+  backHorn: '#e8cf8a', jaw: '#ffe49a', eyeGlow: ['rgba(255,110,70,0.95)', 'rgba(255,60,30,0)'], eye: '#ffe2d2', pupil: '#5c0000', whisker: '#fff3c4', glitter: true, len: 1.35 };
 const dragonState = { owner: null, side: 0, dir: { x: 0, y: -1 } };
-function drawDragon(P, c, U, t, dust, owner) {
+function drawDragon(P, c, U, t, dust, owner, pal = DRAGON) {
   const W = U * 1.15, H = U * 5.2, gap = U * 1.35, L = P.length > 1 ? P[P.length - 1].d : 0, st = dragonState;
   if (st.owner !== owner) Object.assign(st, { owner, side: 0, dir: { x: 0, y: -1 } });
   // 머리와 목은 곧게: 머리 방향은 조금 먼 몸(gap + 1.8H)에서 공 쪽으로 잡고, 목까지는 그 방향 직선이다가 몸에서 지난 길로 넘어간다.
@@ -4242,9 +4549,9 @@ function drawDragon(P, c, U, t, dust, owner) {
   if (!st.side || Math.abs(nL.y) > 0.3) st.side = nL.y <= 0 ? 1 : -1;
   const side = st.side, v = { x: nL.x * side, y: nL.y * side };
   ctx.save(); ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = radialFrom(c, U * 3.4, [[0, 'rgba(255,240,200,0.55)'], [0.35, 'rgba(255,180,70,0.32)'], [1, 'rgba(255,110,30,0)']]);   // 여의주 기운
+  ctx.fillStyle = radialFrom(c, U * 3.4, [[0, pal.aura[0]], [0.35, pal.aura[1]], [1, pal.aura[2]]]);   // 여의주 기운
   ctx.beginPath(); ctx.arc(c.x, c.y, U * 3.4, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = 'rgba(255,200,90,0.75)'; ctx.beginPath();
+  ctx.fillStyle = pal.ember; ctx.beginPath();
   for (let i = 0; i < 3; i++) {   // 여의주 둘레를 도는 불씨
     const a = t * 3.2 + i * 2.094, x = c.x + Math.cos(a) * U * 1.7, y = c.y + Math.sin(a) * U * 1.7;
     ctx.moveTo(x + U * 0.32, y); ctx.arc(x, y, U * 0.32, 0, Math.PI * 2);
@@ -4252,16 +4559,16 @@ function drawDragon(P, c, U, t, dust, owner) {
   ctx.fill();
   dust((q, fr, h) => {   // 불티: 작고 밝은 노란 알갱이가 주황으로 식으며 사라진다(별가루처럼 색은 정해 두고 globalAlpha만 바꾼다)
     const r = Math.max(0.6, U * (0.1 + 0.16 * h) * q.k * (0.5 + 0.5 * fr));
-    ctx.globalAlpha = Math.min(1, 1.3 * fr); ctx.fillStyle = fr > 0.5 ? '#ffe9a0' : '#ffaa46';
-    ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = Math.min(1, 1.3 * fr); ctx.fillStyle = fr > 0.5 ? pal.dust[0] : pal.dust[1];
+    if (pal.glitter && h > 0.7 && r > 1) drawSparkle(q, r * 2.6 * (0.6 + 0.4 * Math.sin(t * 24 + h * 40)), pal.dust[0]); else { ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2); ctx.fill(); }
   });
   ctx.globalAlpha = 1;
   ctx.restore();
   const neck = gap + H * 0.78, bodyLen = L - neck;
-  if (bodyLen > U * 2) drawDragonBody(P, c, U, W, neck, bodyLen, side, t);
-  drawDragonHead({ x: c.x - f.x * gap, y: c.y - f.y * gap }, f, v, H, t);
+  if (bodyLen > U * 2) drawDragonBody(P, c, U, W, neck, bodyLen, side, t, pal);
+  drawDragonHead({ x: c.x - f.x * gap, y: c.y - f.y * gap }, f, v, H, t, pal);
 }
-function drawDragonBody(P, c, U, W, neck, bodyLen, side, t) {
+function drawDragonBody(P, c, U, W, neck, bodyLen, side, t, pal) {
   const lam = clamp(bodyLen * 0.5, U * 9, U * 24), amp = W * 0.95, B = [];
   for (const p of P) {   // 몸의 물결: 머리에서 꼬리로 흘러간다(목은 곧게)
     if (p.d < neck) continue;
@@ -4297,42 +4604,46 @@ function drawDragonBody(P, c, U, W, neck, bodyLen, side, t) {
     const b = B[Math.round((B.length - 1) * u0)], w = b.w, fx = -b.ny, fy = b.nx, dn = { x: -b.nx * side, y: -b.ny * side }, sw = Math.sin(t * 6 + ph0);
     const hip = { x: b.x + dn.x * w * 0.5, y: b.y + dn.y * w * 0.5 }, knee = { x: hip.x + dn.x * w * 1.1 + fx * w * (0.5 + 0.4 * sw), y: hip.y + dn.y * w * 1.1 + fy * w * (0.5 + 0.4 * sw) };
     const foot = { x: knee.x + dn.x * w * 0.7 - fx * w * (0.45 - 0.3 * sw), y: knee.y + dn.y * w * 0.7 - fy * w * (0.45 - 0.3 * sw) };
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = DRAGON.line; ctx.lineWidth = w * 0.95 + 1;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = pal.line; ctx.lineWidth = w * 0.95 + 1;
     ctx.beginPath(); ctx.moveTo(hip.x, hip.y); ctx.lineTo(knee.x, knee.y); ctx.lineTo(foot.x, foot.y); ctx.stroke();
-    ctx.strokeStyle = DRAGON.red; ctx.lineWidth = w * 0.95; ctx.stroke();
-    ctx.strokeStyle = DRAGON.gold; ctx.lineWidth = Math.max(0.7, w * 0.22); ctx.beginPath();
+    ctx.strokeStyle = pal.red; ctx.lineWidth = w * 0.95; ctx.stroke();
+    ctx.strokeStyle = pal.gold; ctx.lineWidth = Math.max(0.7, w * 0.22); ctx.beginPath();
     for (const a of [-0.6, 0, 0.6]) { const cs = Math.cos(a), sn = Math.sin(a), dx = fx * cs - fy * sn, dy = fx * sn + fy * cs; ctx.moveTo(foot.x, foot.y); ctx.lineTo(foot.x + (dx * 0.8 + dn.x * 0.4) * w * 0.8, foot.y + (dy * 0.8 + dn.y * 0.4) * w * 0.8); }
     ctx.stroke();
   }
   ribbonPath(B, wOf);   // 몸(다리 위로)
-  ctx.fillStyle = fade(DRAGON.red, 'rgba(207,29,38,0)'); ctx.fill();
-  ctx.fillStyle = fade(DRAGON.row, 'rgba(168,18,28,0)'); ctx.fill(rows);
+  ctx.fillStyle = fade(pal.red, pal.a(0)); ctx.fill();
+  ctx.fillStyle = fade(pal.row, pal.rowA); ctx.fill(rows);
   ribbonPath(B, (p) => wOf(p) * 0.3, (p) => -side * wOf(p) * 0.58);   // 금빛 배
-  ctx.fillStyle = fade(DRAGON.belly, 'rgba(247,218,140,0)'); ctx.fill();
+  ctx.fillStyle = fade(pal.belly, pal.bellyA); ctx.fill();
   const lw = (k) => Math.max(0.7, W * k);
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = fade(DRAGON.gold, 'rgba(242,182,50,0)'); ctx.lineWidth = lw(0.24); ctx.stroke(rims);
-  if (W > 3.5) { ctx.strokeStyle = fade('rgba(176,110,30,0.8)', 'rgba(176,110,30,0)'); ctx.lineWidth = lw(0.1); ctx.stroke(plates); }
+  ctx.strokeStyle = fade(pal.gold, pal.goldA); ctx.lineWidth = lw(0.24); ctx.stroke(rims);
+  if (W > 3.5) { ctx.strokeStyle = fade(pal.plate[0], pal.plate[1]); ctx.lineWidth = lw(0.1); ctx.stroke(plates); }
   ctx.beginPath();   // 등 쪽 윤기: 몸이 둥글어 보이게
   for (const p of B) { const o = side * wOf(p) * 0.5; ctx.lineTo(p.x + p.nx * o, p.y + p.ny * o); }
-  ctx.strokeStyle = fade('rgba(255,170,140,0.55)', 'rgba(255,170,140,0)'); ctx.lineWidth = lw(0.16); ctx.stroke();
-  ctx.fillStyle = fade(DRAGON.gold, 'rgba(242,182,50,0)'); ctx.fill(spikes);
-  ctx.strokeStyle = fade(DRAGON.line, 'rgba(78,5,10,0)'); ctx.lineWidth = lw(0.08); ctx.stroke(spikes);
+  ctx.strokeStyle = fade(pal.sheen[0], pal.sheen[1]); ctx.lineWidth = lw(0.16); ctx.stroke();
+  ctx.fillStyle = fade(pal.gold, pal.goldA); ctx.fill(spikes);
+  ctx.strokeStyle = fade(pal.line, pal.lineA); ctx.lineWidth = lw(0.08); ctx.stroke(spikes);
   ribbonPath(B, wOf);   // 윤곽
-  ctx.strokeStyle = fade('rgba(78,5,10,0.85)', 'rgba(78,5,10,0)'); ctx.lineWidth = lw(0.09); ctx.stroke();
+  ctx.strokeStyle = fade(pal.edge, pal.lineA); ctx.lineWidth = lw(0.09); ctx.stroke();
   const e = B[Math.round((B.length - 1) * 0.86)], bx = e.ny, by = -e.nx;   // 꼬리 끝 불꽃 지느러미(bx, by는 꼬리 쪽)
   ctx.globalCompositeOperation = 'lighter';
   for (let i = 0; i < 3; i++) {
     const ang = (i - 1) * 0.55 + 0.15 * Math.sin(t * 8 + i * 2), cs = Math.cos(ang), sn = Math.sin(ang), dx = bx * cs - by * sn, dy = bx * sn + by * cs;
     const len = W * e.k * (2.6 - 0.6 * Math.abs(i - 1)) * (0.85 + 0.15 * Math.sin(t * 11 + i)), wb = W * e.k * 0.32;
     const tip = { x: e.x + dx * len, y: e.y + dy * len }, mid = { x: e.x + dx * len * 0.45 - dy * wb, y: e.y + dy * len * 0.45 + dx * wb };
-    ctx.fillStyle = i === 1 ? 'rgba(255,205,90,0.7)' : 'rgba(255,120,40,0.62)';
+    ctx.fillStyle = i === 1 ? pal.fin[0] : pal.fin[1];
     ctx.beginPath(); ctx.moveTo(e.x + e.nx * wb, e.y + e.ny * wb); ctx.quadraticCurveTo(mid.x, mid.y, tip.x, tip.y); ctx.quadraticCurveTo(mid.x + dy * wb * 2, mid.y - dx * wb * 2, e.x - e.nx * wb, e.y - e.ny * wb); ctx.closePath(); ctx.fill();
+  }
+  if (pal.glitter) for (let j = 0; j < 5; j++) {   // 황금 용: 몸을 따라 다섯 자리가 번갈아 반짝인다
+    const tw = Math.sin(t * 5 + j * 2.4), p = B[Math.round((B.length - 1) * (0.08 + 0.17 * j))];
+    if (tw > 0.55) drawSparkle({ x: p.x + p.nx * side * p.w * 0.45, y: p.y + p.ny * side * p.w * 0.45 }, W * p.k * 1.7 * (tw - 0.55) / 0.45, 'rgba(255,255,235,0.95)');
   }
   ctx.globalCompositeOperation = 'source-over';
 }
 // 머리: o는 코끝, f는 앞(공 쪽), v는 머리 위(등 쪽), H는 머리 길이(px). (a, b)는 코끝에서 앞으로 a·위로 b(머리 길이 단위)
-function drawDragonHead(o, f, v, H, t) {
+function drawDragonHead(o, f, v, H, t, pal) {
   const P = (a, b) => ({ x: o.x + (f.x * a + v.x * b) * H, y: o.y + (f.y * a + v.y * b) * H });
   const shape = (pts, fill, line) => { if (smoothPath(pts.map(([a, b]) => P(a, b)))) { ctx.fillStyle = fill; ctx.fill(); if (line) { ctx.strokeStyle = line; ctx.lineWidth = Math.max(0.6, H * 0.025); ctx.stroke(); } } };
   const curve = (pts, w, color) => {
@@ -4340,38 +4651,38 @@ function drawDragonHead(o, f, v, H, t) {
     ctx.strokeStyle = color; ctx.lineWidth = Math.max(0.7, w * H); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(b.x, b.y, e.x, e.y); ctx.stroke();
   };
   ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  curve([[-0.8, 0.22], [-1.12, 0.5], [-1.5, 0.44]], 0.08, '#c99a52');   // 뒤쪽 뿔
+  curve([[-0.8, 0.22], [-1.12, 0.5], [-1.5, 0.44]], 0.08, pal.backHorn);   // 뒤쪽 뿔
   ctx.globalCompositeOperation = 'lighter';
   for (let i = 0; i < 4; i++) {   // 갈기: 머리 뒤로 흔들리는 불꽃 다발
     const a = -0.82 - i * 0.16, len = 0.5 + 0.12 * Math.sin(t * 9 + i * 1.7), up = 0.12 + 0.05 * i;
     const base1 = P(a + 0.08, up), base2 = P(a - 0.08, up - 0.12), tip = P(a - len, up + 0.18 + 0.06 * Math.sin(t * 7 + i)), mid = P(a - len * 0.45, up + 0.22);
-    ctx.fillStyle = i % 2 ? 'rgba(255,150,40,0.75)' : 'rgba(255,205,80,0.75)';
+    ctx.fillStyle = pal.mane[i % 2];
     ctx.beginPath(); ctx.moveTo(base1.x, base1.y); ctx.quadraticCurveTo(mid.x, mid.y, tip.x, tip.y); ctx.quadraticCurveTo(mid.x, mid.y, base2.x, base2.y); ctx.closePath(); ctx.fill();
   }
   ctx.globalCompositeOperation = 'source-over';
   for (const [a, b, c2, d2] of [[-0.86, -0.06, -1.3, -0.3], [-0.94, 0.04, -1.42, -0.12]]) {   // 볼 지느러미
-    const p0 = P(a, b - 0.05), p1 = P(c2, d2), p2 = P(a, b + 0.07); ctx.fillStyle = DRAGON.gold; ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.closePath(); ctx.fill();
+    const p0 = P(a, b - 0.05), p1 = P(c2, d2), p2 = P(a, b + 0.07); ctx.fillStyle = pal.gold; ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.closePath(); ctx.fill();
   }
-  shape([[-0.1, -0.13], [-0.5, -0.12], [-0.86, -0.12], [-0.7, -0.3], [-0.22, -0.31], [-0.05, -0.21]], '#f3c35a', DRAGON.line);   // 아래턱(입을 벌렸다)
+  shape([[-0.1, -0.13], [-0.5, -0.12], [-0.86, -0.12], [-0.7, -0.3], [-0.22, -0.31], [-0.05, -0.21]], pal.jaw, pal.line);   // 아래턱(입을 벌렸다)
   shape([[-0.1, -0.03], [-0.52, -0.07], [-0.5, -0.13], [-0.12, -0.14]], '#5a0a10');   // 입 안
   if (H > 18) for (const [a, b, d] of [[-0.15, -0.04, -1], [-0.13, -0.19, 1]]) {   // 송곳니
     const p0 = P(a, b), p1 = P(a - 0.03, b + d * 0.09), p2 = P(a - 0.07, b); ctx.fillStyle = '#fffaf0'; ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.closePath(); ctx.fill();
   }
-  shape([[0, 0.04], [-0.05, 0.16], [-0.28, 0.15], [-0.5, 0.3], [-0.7, 0.33], [-0.95, 0.22], [-1.04, 0.0], [-0.88, -0.13], [-0.5, -0.06], [-0.14, -0.04]], DRAGON.red, DRAGON.line);   // 머리
-  shape([[-0.06, 0.1], [-0.28, 0.15], [-0.46, 0.21], [-0.32, 0.08]], DRAGON.gold);   // 콧등 금빛 판
+  shape([[0, 0.04], [-0.05, 0.16], [-0.28, 0.15], [-0.5, 0.3], [-0.7, 0.33], [-0.95, 0.22], [-1.04, 0.0], [-0.88, -0.13], [-0.5, -0.06], [-0.14, -0.04]], pal.red, pal.line);   // 머리
+  shape([[-0.06, 0.1], [-0.28, 0.15], [-0.46, 0.21], [-0.32, 0.08]], pal.gold);   // 콧등 금빛 판
   const eye = P(-0.58, 0.14);
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = radialFrom(eye, H * 0.22, [[0, 'rgba(255,240,150,0.9)'], [1, 'rgba(255,200,60,0)']]); ctx.beginPath(); ctx.arc(eye.x, eye.y, H * 0.22, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = radialFrom(eye, H * 0.22, [[0, pal.eyeGlow[0]], [1, pal.eyeGlow[1]]]); ctx.beginPath(); ctx.arc(eye.x, eye.y, H * 0.22, 0, Math.PI * 2); ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
-  ellipseAt(eye, H * 0.075, H * 0.075, '#fff6c2');
-  if (H > 16) ellipseAt(eye, H * 0.022, H * 0.022, '#3a0306');
-  curve([[-0.46, 0.22], [-0.6, 0.32], [-0.74, 0.25]], 0.05, DRAGON.gold);   // 눈썹
-  curve([[-0.68, 0.26], [-1.02, 0.66], [-1.58, 0.6]], 0.1, DRAGON.horn);   // 앞쪽 뿔과 곁가지
-  curve([[-1.0, 0.56], [-1.08, 0.7], [-1.04, 0.84]], 0.06, DRAGON.horn);
+  ellipseAt(eye, H * 0.075, H * 0.075, pal.eye);
+  if (H > 16) ellipseAt(eye, H * 0.022, H * 0.022, pal.pupil);
+  curve([[-0.46, 0.22], [-0.6, 0.32], [-0.74, 0.25]], 0.05, pal.gold);   // 눈썹
+  curve([[-0.68, 0.26], [-1.02, 0.66], [-1.58, 0.6]], 0.1, pal.horn);   // 앞쪽 뿔과 곁가지
+  curve([[-1.0, 0.56], [-1.08, 0.7], [-1.04, 0.84]], 0.06, pal.horn);
   const wv = Math.sin(t * 4), wv2 = Math.sin(t * 3.3 + 1);
-  curve([[-0.1, -0.02], [-0.6, -0.5 + 0.12 * wv], [-1.75, -0.32 + 0.28 * wv2]], 0.045, '#ffd36b');   // 수염 둘
-  curve([[-0.12, 0.08], [-0.55, 0.55 + 0.1 * wv2], [-1.6, 0.3 + 0.25 * wv]], 0.04, '#ffd36b');
-  curve([[-0.42, -0.27], [-0.55, -0.42], [-0.72, -0.46]], 0.05, '#ffd36b');   // 턱수염
+  curve([[-0.1, -0.02], [-0.6, -0.5 + 0.12 * wv], [-1.75, -0.32 + 0.28 * wv2]], 0.045, pal.whisker);   // 수염 둘
+  curve([[-0.12, 0.08], [-0.55, 0.55 + 0.1 * wv2], [-1.6, 0.3 + 0.25 * wv]], 0.04, pal.whisker);
+  curve([[-0.42, -0.27], [-0.55, -0.42], [-0.72, -0.46]], 0.05, pal.whisker);   // 턱수염
   ctx.restore();
 }
 
@@ -4379,19 +4690,19 @@ function drawDragonHead(o, f, v, H, t) {
 function drawFancyIcon(pts, kind, radiusOf) {
   const c = pts[0], e = pts[pts.length - 1], sw = radiusOf(c) / 0.55, L = Math.hypot(e.x - c.x, e.y - c.y), t = fxTime();
   const P = resampleTrail([{ x: c.x, y: c.y, s: 1, d: 0 }, { x: e.x, y: e.y, s: 1, d: L }], 1.5), none = () => {};
-  if (kind === 'trail-dragon') drawDragon(P, c, sw * 0.16, t, none, 'icon'); else drawComet(P, c, sw * 0.24, t, none);
+  if (dragonPal(kind)) drawDragon(P, c, sw * 0.16, t, none, 'icon', dragonPal(kind)); else drawComet(P, c, sw * 0.24, t, none);
   ellipseAt(c, sw * 0.13, sw * 0.13, '#ffffff');
 }
 // 상점 큰 미리 보기: 공이 at(0~1)을 따라 날아간다(u초, 1.1초에 끝). 가루는 화면에서 퍼진다
 function drawFancyPreview(kind, at, u, ballR, box) {
-  const path = (tt) => at(tt / 1.1), c = path(u), t = fxTime(), dragon = kind === 'trail-dragon', U = ballR * (dragon ? 1.1 : 1);
-  const P = resampleTrail(trailPath(path, u, box.w * (dragon ? 0.55 : 0.5), 0.8), U * 0.6);
+  const path = (tt) => at(tt / 1.1), c = path(u), t = fxTime(), pal = dragonPal(kind), dragon = !!pal, U = ballR * (dragon ? 1.1 : 1);
+  const P = resampleTrail(trailPath(path, u, box.w * (dragon ? 0.55 * (pal.len ?? 1) : 0.5), 0.8), U * 0.6);
   const place = (ts, age, k) => {
     const q = path(ts), sp = (25 + 45 * hash01(k + 0.75)) * age, a = hash01(k + 0.125) * Math.PI * 2;
     return { x: q.x + Math.cos(a) * sp, y: q.y + Math.sin(a) * sp + 30 * age * age, k: 1 };
   };
   const dust = (each) => trailDust(u, dragon ? 0.7 : 0.9, dragon ? 0.04 : 0.018, place, each);
-  if (dragon) drawDragon(P, c, U, t, dust, 'preview'); else drawComet(P, c, U, t, dust);
+  if (dragon) drawDragon(P, c, U, t, dust, 'preview', pal); else drawComet(P, c, U, t, dust);
 }
 
 // 상점 화면(state 'shop'). view: 'shop'(파는 것 전부) | 'inventory'(내 물건: 가진 것만, 입기·기본으로 되돌리기)
@@ -4475,14 +4786,19 @@ function drawItemCard(r, it, on) {
   else if (it.slot === 'helmet') {
     const hc = c.helmet ?? (t ? tint(t.main, 0.75) : BATTER_COLOR.helmet);
     dot('rgba(255,255,255,0.1)'); drawHelmet({ x: sx, y: sy + sw * 0.22 }, sw * 0.52 / 0.13, null, () => hc, it.fx, true);
-  } else if (it.slot === 'glove') dot(c.glove, 'rgba(0,0,0,0.25)');
-  else if (it.slot === 'shoe') {   // 로켓 부츠 견본은 아래로 짧게 뿜고(칸 밖으로 안 나가게), 번개 운동화는 가끔 불꽃이 튄다
+  } else if (it.slot === 'glove') {   // 호피는 반점, 불꽃은 둘레 빛과 위로 솟는 불길(손 반지름 4.7cm를 칸 동그라미로 본다)
+    if (it.fx === 'fire') gloveGlow({ x: sx, y: sy }, sw * 1.6, fxTime());
+    dot(c.glove, 'rgba(0,0,0,0.25)');
+    if (it.fx === 'leopard') leopardSpots(sx, sy, sw * 0.9, sw * 0.9, true);
+    if (it.fx === 'fire') gloveFlames({ x: sx, y: sy - sw * 0.45 }, sw / 0.047 * 0.7, fxTime(), 0);
+  } else if (it.slot === 'shoe') {   // 로켓 부츠 견본은 아래로 짧게 뿜고(칸 밖으로 안 나가게), 번개 운동화는 가끔 불꽃이 튄다
     dot('rgba(255,255,255,0.1)');
     const rocket = it.fx === 'rocket', act = rocket ? { v: 2.5, back: { x: -0.3, y: 0.95 }, fore: 1, seed: 0 } : it.fx === 'bolt' ? { v: 0, seed: 1 } : null;
     drawShoe({ x: sx - sw * (rocket ? 0.1 : 0.33), y: sy + sw * (rocket ? -0.05 : 0.1) }, sw * 5.5, 1, col, it.fx, true, act);
   } else if (it.slot === 'uniform') {
-    const ring = it.fx === 'legend' ? GOLD.mid : it.fx === 'neon' ? 'rgba(40,238,255,0.95)' : t ? (c.jersey ? t.main : t.accent) : BATTER_COLOR.accent;
-    dot(c.jersey ?? (t ? t.main : BATTER_COLOR.jersey), ring);
+    const ring = it.fx === 'legend' ? GOLD.mid : it.fx === 'neon' ? 'rgba(40,238,255,0.95)' : it.fx === 'rainbow' ? '#ffffff' : t ? (c.jersey ? t.main : t.accent) : BATTER_COLOR.accent;
+    dot(it.fx === 'rainbow' ? rainbowColors(() => null, { x: sx - sw * 0.2, y: sy - sw * 0.45, s: sw * 1.1 }, fxTime())('jersey') : c.jersey ?? (t ? t.main : BATTER_COLOR.jersey), ring);
+    if (it.fx === 'stripe') for (const u of [-0.6, -0.3, 0, 0.3, 0.6]) { const h = Math.sqrt(1 - u * u) * sw * 0.9; segment({ x: sx + u * sw, y: sy - h }, { x: sx + u * sw, y: sy + h }, 1.2, 1.2, hexAlpha(t ? t.main : BATTER_COLOR.accent, 0.6)); }   // 팀 색 세로 줄
     if (it.fx === 'legend') {   // 금 줄무늬와 가끔 반짝임
       for (const u of [-0.56, -0.19, 0.19, 0.56]) { const h = Math.sqrt(1 - u * u) * sw * 0.84; segment({ x: sx + u * sw, y: sy - h }, { x: sx + u * sw, y: sy + h }, 1.2, 1.2, 'rgba(226,186,80,0.5)'); }
       const sp = (fxTime() / 2.3) % 1;
@@ -4496,7 +4812,7 @@ function drawItemCard(r, it, on) {
   }
   else if (it.slot === 'trail') {
     if (it.id === 'trail-none') dot('rgba(255,255,255,0.1)');
-    else drawTrailDots([0, 1, 2, 3].map((i) => ({ x: sx + sw * 0.9 - i * sw * 0.55, y: sy + i * sw * 0.25 })), it.id, () => sw * 0.55);
+    else { const note = it.id === 'trail-note'; drawTrailDots([0, 1, 2, 3].map((i) => ({ x: sx + sw * (note ? 0.55 : 0.9) - i * sw * 0.55, y: sy + i * sw * 0.25 })), it.id, () => sw * (note ? 0.42 : 0.55)); }   // 음표는 깃발이 이름 쪽으로 넘치지 않게 작게
   } else {
     dot('rgba(255,255,255,0.12)');
     text(it.slot === 'number' ? (it.id === 'number-on' ? (Number.isInteger(wallet.look.no) ? String(wallet.look.no) : '#') : '-') : '♪', sx, sy + 1, { size: m ? 13 : 15, weight: 800 });
@@ -4516,6 +4832,7 @@ function drawItemCard(r, it, on) {
 const PREVIEW_ZOOM = {
   bat: (k) => [k.hand, V.add(k.tip, [-0.12, 0.1, 0]), V.add(k.tip, [0.12, 0.1, 0]), V.add(k.head, [-0.3, 0.2, 0]), V.add(k.chest, [0.3, -0.15, 0])],
   helmet: (k) => [V.add(k.head, [-0.3, 0.38, 0]), V.add(k.head, [0.3, -0.3, 0])],
+  glove: (k) => [V.add(k.hand, [-0.3, -0.28, 0]), V.add(k.hand, [0.3, 0.3, 0])],   // 장갑은 배트를 쥔 두 손 둘레(2026-11-10 호피 무늬·불꽃 장갑을 보이려고 더함)
   shoe: (k) => [V.add(k.feet.l, [-0.25, 0.2, 0]), V.add(k.feet.l, [0.3, -0.1, 0]), V.add(k.feet.r, [-0.25, 0.2, 0]), V.add(k.feet.r, [0.3, -0.1, 0])],
   // 유니폼은 헬멧부터 발까지(위로 솟은 방망이 끝은 빼서 몸이 크게 보인다. 2026-11-03 금장·네온 무늬를 보이려고 더함)
   uniform: (k) => [V.add(k.head, [0, 0.2, 0]), k.hand, V.add(k.feet.l, [0, -0.08, 0]), V.add(k.feet.r, [0, -0.08, 0]), V.add(k.knees.l, [-0.15, 0, 0]), V.add(k.knees.r, [0.15, 0, 0])],
@@ -4614,8 +4931,10 @@ function drawShop() {
   const tcols = m ? 4 : 8, tw = (W - (tcols - 1) * 6) / tcols, th = m ? 30 : 34;
   // 폰은 물건 칸이 한 줄에 셋(2026-10-30 물건이 늘어 가장 많은 배트가 12개). 미리 보기 칸 높이는 물건이 가장 많은 탭도
   // 닫기 버튼까지 화면에 들어가게 남는 높이로 정한다(탭마다 칸 높이가 바뀌지 않게). 키가 작은 폰(640px)에서도 들어간다
+  // 2026-11-10 배트·헬멧이 17·16개가 되어 폰에서 여섯째 줄이 생겼다. 미리 보기 높이는 전처럼 다섯 줄(PC 넷)로 잡고, 그보다 많은 탭이 화면에 다 안 들어가면
+  // 그 탭의 물건 칸만 랭킹처럼 끌어 넘긴다(shopList. 칸 높이 44px는 줄이지 않는다)
   const icols = m ? 3 : 4, gap = m ? 6 : 8, iw = (W - (icols - 1) * gap) / icols, ih = m ? 44 : 54;
-  const maxRows = Math.ceil(Math.max(...SHOP_SLOTS.map(([s]) => SHOP_ITEMS.filter((i) => i.slot === s).length)) / icols);
+  const maxRows = Math.min(m ? 5 : 4, Math.ceil(Math.max(...SHOP_SLOTS.map(([s]) => SHOP_ITEMS.filter((i) => i.slot === s).length)) / icols));
   const below = (m ? 10 : 14) + Math.ceil(SHOP_SLOTS.length / tcols) * (th + 6) + (m ? 6 : 10) + maxRows * (ih + 8) + (m ? 6 : 10) + 114 + 8;
   const pv = { x: x0, y, w: W, h: clamp(Math.min(view.h * 0.27, view.h - y - below), 110, 300) };
   drawShopPreview(pv);
@@ -4626,12 +4945,16 @@ function drawShop() {
   });
   y += Math.ceil(SHOP_SLOTS.length / tcols) * (th + 6) + (m ? 6 : 10);
   const list = SHOP_ITEMS.filter((it) => it.slot === sh.tab && (sh.view === 'shop' || owns(it.id)));
+  const full = Math.ceil(list.length / icols) * (ih + 8), room = Math.max(ih + 8, view.h - y - (m ? 6 : 10) - 114 - 8), scroll = full - 8 > room;
+  const y0 = scroll ? beginScroll(shopList, `${sh.view}-${sh.tab}`, y, y + room) : y;
+  if (!scroll) shopList.max = 0;
   list.forEach((it, i) => {
-    const r = { x: x0 + (i % icols) * (iw + gap), y: y + Math.floor(i / icols) * (ih + 8), w: iw, h: ih };
+    const r = { x: x0 + (i % icols) * (iw + gap), y: y0 + Math.floor(i / icols) * (ih + 8), w: iw, h: ih };
     drawItemCard(r, it, sh.sel === it.id);
-    ui.buttons.push({ r, label: it.name, onTap: () => selectItem(it) });
+    if (scroll) scrollButton(shopList, r, it.name, () => selectItem(it)); else ui.buttons.push({ r, label: it.name, onTap: () => selectItem(it) });
   });
-  y += Math.ceil(list.length / icols) * (ih + 8) + (m ? 6 : 10);
+  if (scroll) endScroll(shopList, y0 + full - 8, x0 + W + (m ? 4 : 6));
+  y += (scroll ? room : full) + (m ? 6 : 10);
   drawShopAction(y);
 }
 
@@ -4711,10 +5034,10 @@ function drawTitle(time) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 줄을 더하면 끝 글자를 올려 읽은 사람에게도 NEW를 다시 띄운다), label은 화면 머리
-  { id: '2026-11-10c', label: '11/10', items: [
-    '수비수들이 드디어 숨을 쉬어요. 뛰다 멈출 때 몸이 휙 접히던 것과 땅볼 줍는 동작이 튀던 것도 고쳤어요.',
-    '유격수와 2루수가 이제 머리 위로 날아가는 공에 뛰어오르고, 앞에 떨어지는 공에는 몸을 날려요. 멍하니 서서 구경하던 시절은 끝났어요.',
-    '패들렛에 올라온 의견대로, 홈런 뒤에도 화면이 제자리로 돌아온 다음에 공이 날아오고, 결과 글자도 전광판에 묻히지 않게 또렷해졌어요.',
+  { id: '2026-11-10d', label: '11/10', items: [
+    '수비수들이 드디어 숨을 쉬고, 유격수와 2루수는 머리 위로 날아가는 공에 뛰어오르고 앞에 떨어지는 공엔 몸을 날려요. 멍하니 구경하던 시절은 끝났어요.',
+    '상점에 새 물건 16개가 들어왔어요. 맞으면 빵 소리가 나는 바게트 배트부터 불꽃 날개가 펼쳐지는 불사조 배트, 만 코인짜리 황금 용 꼬리까지 있어요.',
+    '패들렛에 올라온 의견대로 칭호를 골라 달 수 있고, 홈런 뒤에는 화면이 돌아온 다음에 공이 날아오며, 결과 글자도 또렷해졌어요.',
   ] },
   { id: '2026-11-06c', label: '11/6', items: [
     '랭킹에서 팀을 누르면 팀원마다 팀 점수를 얼마나 보탰는지 나와요. 우리 팀 에이스가 누군지 이제 숨길 수 없어요.',
@@ -4965,7 +5288,7 @@ function drawMenu() {
   if (best > 0) chips.push([['역대 ', soft], [best.toLocaleString(), gold]]);
   if (streak >= 2) chips.push([[String(streak), gold], ['일 연속', soft]]);
   if (coins != null) chips.push([['코인 ', soft], [coins.toLocaleString(), gold]]);
-  const top = titleById(topTitle(myTitles())), bw = top ? titleBadgeW(top.short, c.chip) + 8 : 0;   // 대표 칭호는 닉네임 옆 등급 색 배지(닉네임이 길면 줄인다)
+  const top = titleById(myTitle()), bw = top ? titleBadgeW(top.short, c.chip) + 8 : 0;   // 대표 칭호는 닉네임 옆 등급 색 배지(닉네임이 길면 줄인다)
   ctx.font = font(c.nick, 800);
   const nick = fitText(settings.nick || '-', close.x - 10 - tx - bw), nickY = chips.length ? by + c.badge * 0.3 : by + c.badge / 2;
   text(nick, tx, nickY, { size: c.nick, weight: 800, align: 'left' });
@@ -5546,7 +5869,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
 }
 
 let linkPress = null;   // 바깥 링크를 누른 손가락(pointerId)
-const dragList = () => ({ menu, ranking: rankList, titles: titleList })[game.state] ?? null;   // 끌어 넘기는 화면(넘치면 뗄 때 누른다)
+const dragList = () => ({ menu, ranking: rankList, titles: titleList, shop: shopList })[game.state] ?? null;   // 끌어 넘기는 화면(넘치면 뗄 때 누른다)
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
@@ -5575,7 +5898,7 @@ canvas.addEventListener('pointermove', (e) => {
 addEventListener('pointerup', (e) => {
   news.drag = null;
   const d = dragList()?.drag;
-  menu.drag = rankList.drag = null;
+  menu.drag = rankList.drag = titleList.drag = shopList.drag = null;
   if (d && !d.moved) primaryAction(d.t, d.x, d.y);
   if (linkPress != null && e.pointerId === linkPress) {   // 링크 위에서 뗐을 때만 연다
     linkPress = null;
@@ -5747,4 +6070,4 @@ prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
-  update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, countsOf, tap: primaryAction, paused: false };
+  update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, tap: primaryAction, paused: false };

@@ -9,7 +9,8 @@ import { validateEvent, recordEvent } from './stats.js';
 import { issueSeed, findSeed, useSeed } from './seeds.js';
 import { checkScenario } from './scenario.js';
 import { readBoard, saveDaily, updateBoard, renameInBoards, removeFromBoards } from './board.js';
-import { grantTitles, titlesIn, countsIn, gameCounts, topTitle } from './titles.js';
+import { grantTitles, titlesIn, countsIn, gameCounts, titleOf, pickedTitle, shownTitle, withTitle } from './titles.js';
+import { TITLE_IDS } from '../../js/core/titles.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -35,12 +36,13 @@ const SITE = 'https://hyunseungbeom.github.io/walkoff/';
 // 합계 방식이던 예전 게임(fa4649a까지)은 사람 점수를 total로 읽는다. 열어 둔 탭까지 다 바뀔 때까지 같은 값을 total로도 보낸다
 const withTotal = (p) => (p ? { ...p, total: p.best } : null);
 
-// 목록의 사람마다 입은 물건(2026-11-02 유저 피드백 '다른 사람이 무엇을 입었는지 보고 싶다')과 대표 칭호(2026-11-05, 받은 칭호 가운데 가장 높은 것).
+// 목록의 사람마다 입은 물건(2026-11-02 유저 피드백 '다른 사람이 무엇을 입었는지 보고 싶다')과 대표 칭호(2026-11-05, 받은 칭호 가운데 가장 높은 것.
+// 2026-11-10부터는 고른 칭호가 있으면 그것, shownTitle).
 // 산 물건만 입은 것으로 본다(lookOf). 계정이 없는 예전 기록은 없어서 게임이 기본 모습·칭호 없음으로 그린다. player_id는 UNIQUE라 목록 수(최대 50)만큼만 읽는다
 async function looksOf(db, ids) {
   if (!ids.length) return new Map();
   const { results } = await db.prepare(`SELECT player_id, owned, equipped, titles FROM accounts WHERE player_id IN (${ids.map(() => '?').join(', ')})`).bind(...ids).all();
-  return new Map(results.map((a) => [a.player_id, { look: lookOf(a.equipped, ownedOf(a.owned)), title: topTitle(titlesIn(a.titles)) }]));
+  return new Map(results.map((a) => [a.player_id, { look: lookOf(a.equipped, ownedOf(a.owned)), title: shownTitle(a.equipped, titlesIn(a.titles)) }]));
 }
 
 // 이번 주 순위와 지난주 1등(사람, 팀). 주마다 모아 둔 요약(board.js)으로 매긴다.
@@ -151,7 +153,7 @@ export default {
         return new Response(null, { status: 204, headers: HEADERS });
       }
 
-      const acct = ['/seeds', '/scores', '/scenario', '/me', '/shop/buy', '/shop/equip'].includes(url.pathname) ? await account(request, env, now) : null;
+      const acct = ['/seeds', '/scores', '/scenario', '/me', '/shop/buy', '/shop/equip', '/title'].includes(url.pathname) ? await account(request, env, now) : null;
       // 10구 도전 한 판의 시드와 일회용 표(seeds.js). 게임은 기다리지 않고 시작하려고 다음 판 표를 미리 받아 둔다
       if (url.pathname === '/seeds' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
@@ -196,7 +198,7 @@ export default {
       }
       if (url.pathname === '/me') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
-        if (method === 'GET') return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team, ...wallet(acct), titles: titlesIn(acct.titles), counts: countsIn(acct.counts) });
+        if (method === 'GET') return json({ ok: true, playerId: acct.player_id, nick: acct.nick, team: acct.team, ...wallet(acct), titles: titlesIn(acct.titles), counts: countsIn(acct.counts), title: pickedTitle(acct.equipped, titlesIn(acct.titles)) });
         if (method === 'PUT') {   // 팀·닉네임 바꾸기. 닉네임은 랭킹에 바로 보이게 지난 기록에도 고쳐 쓴다(팀은 그날 팀 그대로)
           const checked = validateProfile(await request.json().catch(() => null));
           if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
@@ -243,8 +245,17 @@ export default {
           if (!Number.isInteger(b.number) || b.number < 0 || b.number > 99) return json({ ok: false, error: 'bad_number' }, 400);
           look.no = b.number;
         } else if (it.slot === 'number') delete look.no;
-        await env.DB.prepare('UPDATE accounts SET equipped = ? WHERE player_id = ?').bind(JSON.stringify(look), acct.player_id).run();
+        await env.DB.prepare('UPDATE accounts SET equipped = ? WHERE player_id = ?').bind(JSON.stringify(withTitle(look, titleOf(acct.equipped))), acct.player_id).run();   // 고른 칭호는 그대로 둔다
         return json({ ok: true, ...wallet({ ...acct, equipped: JSON.stringify(look) }) });
+      }
+      if (url.pathname === '/title' && method === 'POST') {   // 대표 칭호 고르기(2026-11-10): 받은 칭호만 달고, null이면 자동(받은 칭호 가운데 가장 높은 것)으로 돌린다
+        if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        const id = (await request.json().catch(() => null))?.title ?? null, have = titlesIn(acct.titles);
+        if (id !== null && !TITLE_IDS.includes(id)) return json({ ok: false, error: 'unknown_title' }, 400);
+        if (id !== null && !have.includes(id)) return json({ ok: false, error: 'not_earned' }, 400);
+        const equipped = JSON.stringify(withTitle(lookOf(acct.equipped, ownedOf(acct.owned)), id));
+        await env.DB.prepare('UPDATE accounts SET equipped = ? WHERE player_id = ?').bind(equipped, acct.player_id).run();
+        return json({ ok: true, title: id, shown: shownTitle(equipped, have) });
       }
       return json({ ok: false, error: 'not_found' }, 404);
     } catch (e) {

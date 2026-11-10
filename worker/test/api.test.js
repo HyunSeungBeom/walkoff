@@ -374,3 +374,25 @@ test('칭호(2026-11-06 쌓아서 받기): 10구 판마다 전광판·공 순서
   const titleOf = (nick) => ranking.players.find((p) => p.nick === nick).title;
   assert.deepEqual([titleOf('가람'), titleOf('나래')], ['god', 'hit10']);   // 대표 칭호는 받은 것 가운데 등급이 가장 높은 것
 });
+
+test('대표 칭호 고르기(2026-11-10): 받은 칭호만 달고(안 받은·모르는 칭호는 거절), 안 고르면 가장 높은 것, 물건을 갈아입어도 남고, null이면 자동으로 돌아간다. /me와 /rankings에 보인다', async () => {
+  assert.equal((await call('POST', '/title', { body: { title: 'god' } })).status, 401);
+  const a = (await login('c1', 'p-device-0001')).hash.login, t = await seeded(a), lights = playedAs(t.seed, 'H');
+  const first = await (await call('POST', '/scores', { token: a, body: score(t, { nick: '가람', lights, score: rangeOf(t.seed, lights).min }) })).json();   // 기회 10번 모두 홈런: god·hit10·firsthr
+  assert.deepEqual([first.ok, ['god', 'hit10', 'firsthr'].every((id) => first.titles.includes(id)), first.titles.includes('hrking')], [true, true, false]);
+  const pick = async (title) => { const r = await call('POST', '/title', { token: a, body: { title } }); return [r.status, await r.json()]; };
+  const shown = async () => [(await me(a)).title, (await (await call('GET', '/rankings')).json()).players.find((p) => p.nick === '가람').title];   // [/me의 고른 칭호, 랭킹 배지]
+  assert.deepEqual(await shown(), [null, 'god']);   // 안 고르면 가장 높은 것
+  assert.deepEqual(await pick('firsthr'), [200, { ok: true, title: 'firsthr', shown: 'firsthr' }]);
+  assert.deepEqual(await shown(), ['firsthr', 'firsthr']);
+  assert.deepEqual((await pick('hrking')).map((x, i) => (i ? x.error : x)), [400, 'not_earned']);   // 안 받은 칭호
+  assert.deepEqual((await pick('no-such-title')).map((x, i) => (i ? x.error : x)), [400, 'unknown_title']);
+  assert.deepEqual(await shown(), ['firsthr', 'firsthr']);   // 거절하면 그대로
+  await env.DB.prepare('UPDATE accounts SET coins = 500').run();   // 물건을 사서 갈아입어도 고른 칭호는 남는다(전에는 /shop/equip이 칸을 통째로 다시 썼다)
+  await call('POST', '/shop/buy', { token: a, body: { item: 'bat-red' } });
+  assert.equal((await (await call('POST', '/shop/equip', { token: a, body: { item: 'bat-red' } })).json()).look.bat, 'bat-red');
+  assert.deepEqual(await shown(), ['firsthr', 'firsthr']);
+  assert.deepEqual(await pick(null), [200, { ok: true, title: null, shown: 'god' }]);   // 다시 자동으로
+  assert.deepEqual(await shown(), [null, 'god']);
+  assert.equal((await me(a)).look.bat, 'bat-red');   // 칭호를 바꿔도 입은 물건은 그대로
+});

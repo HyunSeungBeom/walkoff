@@ -10,6 +10,14 @@ export { topTitle };
 export function titlesIn(raw) {
   try { const v = JSON.parse(raw ?? '[]'); return Array.isArray(v) ? TITLE_IDS.filter((id) => v.includes(id)) : []; } catch { return []; }
 }
+// 대표 칭호 고르기(2026-11-10 패들렛 의견 '받은 칭호를 골라서 원하는 걸로 낄 수 있으면'): 고른 칭호 id는 입은 물건 칸(accounts.equipped JSON)의 title에 둔다.
+// 받은 칭호일 때만 쓰고, 안 골랐거나 고른 칭호가 없어졌으면(규칙을 바꿔 지운 경우) 받은 칭호 가운데 가장 높은 것을 보인다
+export function titleOf(equippedJson) {   // 칸에 적힌 고른 칭호(모르는 값은 버린다)
+  try { const id = JSON.parse(equippedJson ?? '{}')?.title; return TITLE_IDS.includes(id) ? id : null; } catch { return null; }
+}
+export const pickedTitle = (equippedJson, have) => { const id = titleOf(equippedJson); return id && have.includes(id) ? id : null; };
+export const shownTitle = (equippedJson, have) => pickedTitle(equippedJson, have) ?? topTitle(have);
+export const withTitle = (look, title) => (title ? { ...look, title } : look);   // 입은 물건 칸에 다시 쓸 값(물건을 갈아입어도 고른 칭호가 남게)
 // 계정 칸의 값(JSON 글)을 쌓은 수로. 망가진 값은 빈 것으로
 export function countsIn(raw) {
   try { return cleanCounts(JSON.parse(raw ?? '{}')); } catch { return {}; }

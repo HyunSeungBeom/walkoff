@@ -40,7 +40,7 @@ async function rankingOf(rows, mine = null) {
 // 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다.
 // account.allTime: 계정의 역대 최고(다른 기기에서 친 판 포함). 실제 서버처럼 /rankings?player=와 /scores 답에 allTime으로 주고, 받은 점수로 올린다
 // account.titles·counts: 계정이 받은 칭호와 쌓은 수. 실제 서버처럼 /scores가 받은 전광판·표의 공 순서·점수로 수를 쌓아(core countsOf) 닿은 칭호를
-// newTitles·titles·counts로 주고, /me에도 titles·counts를 준다
+// newTitles·titles·counts로 주고, /me에도 titles·counts를 준다. account.title: 고른 대표 칭호(/title로 바꾸고 /me의 title로 준다, 2026-11-10)
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
@@ -49,7 +49,7 @@ async function mockApi(page, opts = {}) {
   const { makeSequence, pitcherHand } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'pitches.js')).href);
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
-  const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null, titles: [...(account.titles ?? [])], counts: { ...(account.counts ?? {}) } };
+  const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null, titles: [...(account.titles ?? [])], counts: { ...(account.counts ?? {}) }, title: account.title ?? null };
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
     const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
@@ -60,7 +60,7 @@ async function mockApi(page, opts = {}) {
       return new Promise((done) => setTimeout(done, 300)).then(() => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>kakao</title>' }));
     }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
-    if (['/seeds', '/me', '/scores', '/scenario', '/shop/buy', '/shop/equip'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    if (['/seeds', '/me', '/scores', '/scenario', '/shop/buy', '/shop/equip', '/title'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
     if (url.pathname === '/scenario') {   // 끝내기 상황: 실제 서버 코드(replayScenario)로 표의 시드로 판을 다시 돌려 끝·점수를 정하고 코인을 준다
       if (opts.scenarioFail) return reply({ ok: false, error: 'server_error' }, 500);
       const { token, bats, moves } = JSON.parse(req.postData() || '{}'), ticket = tickets.find((t) => t.token === token);
@@ -80,7 +80,7 @@ async function mockApi(page, opts = {}) {
       return (opts.seedHold ? new Promise((done) => heldSeeds.push(done)) : Promise.resolve()).then(() => reply({ ok: true, ...t }));
     }
     if (url.pathname === '/me' && req.method() === 'PUT' && opts.failProfile) return reply({ ok: false, error: 'server_error' }, 500);   // 팀·닉네임 저장 실패(테스트 중에 바꿀 수 있게 요청 때 읽는다)
-    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles], counts: { ...record.counts } } : { ok: true });
+    if (url.pathname === '/me') return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles], counts: { ...record.counts }, title: record.title } : { ok: true });
     if (url.pathname === '/scores') {
       if (opts.scoreFail) return reply({ ok: false, error: 'server_error' }, 500);
       const { score, mode, token, lights } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
@@ -104,6 +104,13 @@ async function mockApi(page, opts = {}) {
       if (shop.coins < it.price) return reply({ ok: false, error: 'not_enough_coins', ...wallet() }, 400);
       shop.coins -= it.price; shop.owned.push(it.id);
       return reply({ ok: true, ...wallet() });
+    }
+    if (url.pathname === '/title') {   // 대표 칭호: 실제 서버처럼 받은 칭호만, null이면 자동(가장 높은 것)
+      const id = JSON.parse(req.postData() || '{}').title ?? null;
+      if (id !== null && !TITLE_IDS.includes(id)) return reply({ ok: false, error: 'unknown_title' }, 400);
+      if (id !== null && !record.titles.includes(id)) return reply({ ok: false, error: 'not_earned' }, 400);
+      record.title = id;
+      return reply({ ok: true, title: id, shown: id ?? TITLE_IDS.find((x) => record.titles.includes(x)) ?? null });
     }
     if (url.pathname === '/shop/equip') {
       const b = JSON.parse(req.postData() || '{}'), it = ITEMS.find((i) => i.id === b.item);
@@ -858,7 +865,7 @@ test.describe('화면', () => {
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '칭호'));
     expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['첫 홈런', '1 / 50']));   // 닉네임 옆 배지와 '칭호' 줄의 값
     await tap(page, '칭호');
-    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['칭호', '1 / 50 · 받은 칭호 가운데 등급이 가장 높은 것이 랭킹에 보여요', '전설 · 0 / 15', '보통 · 1 / 4', '첫 홈런', '홈런 1번', '받음',
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['칭호', '1 / 50 · 받은 칭호를 누르면 랭킹에 보이는 대표로 달아요', '전설 · 0 / 15', '보통 · 1 / 4', '첫 홈런', '홈런 1번', '대표 · 자동',
       '홈런왕', '홈런 2,000개', '1 / 2,000', '⭐야구의신⭐', '끝내기 홈런', '아웃왕', '0 / 200']));   // 서버가 쌓은 수(홈런 1개)로 얼마나 남았는지
     await page.keyboard.press('Escape');
     await seedReady(page);
@@ -918,6 +925,27 @@ test.describe('화면', () => {
     await tap(page, '랭킹 줄 1');
     await page.waitForTimeout(150);
     expect((await drawnTexts(page)).some((t) => t.startsWith('홈런왕 · '))).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  test('대표 칭호 고르기(2026-11-10 패들렛 의견): 로그인했으면 칭호 화면에서 받은 칭호를 눌러 대표로 달고(서버 /title, 메뉴 카드 배지), 다시 누르면 자동(가장 높은 것)으로 돌아간다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { titles: ['god', 'hit10', 'firsthr'] } } });
+    await page.waitForFunction(() => walkoff.store.get('accountTitles', []).length === 3);   // /me로 받은 칭호
+    expect(await page.evaluate(() => walkoff.myTitle())).toBe('god');   // 안 골랐으면 가장 높은 것
+    await page.evaluate(() => walkoff.openMenu());
+    await tap(page, '칭호');
+    await page.waitForFunction(() => walkoff.game.state === 'titles' && walkoff.ui.buttons.some((b) => b.label === '칭호 10할 타자'));
+    expect(await page.evaluate(() => walkoff.ui.buttons.some((b) => b.label === '칭호 홈런왕'))).toBe(false);   // 안 받은 칭호는 누를 수 없다
+    expect(await drawnTexts(page)).toContain('대표 · 자동');
+    await tap(page, '칭호 10할 타자');
+    await expect.poll(() => page.evaluate(() => walkoff.myTitle())).toBe('hit10');
+    expect(await drawnTexts(page)).toContain('대표');
+    await tap(page, '칭호 10할 타자');   // 다시 누르면 자동으로
+    await expect.poll(() => page.evaluate(() => walkoff.myTitle())).toBe('god');
+    expect(errors.calls.filter((c) => c.path === '/title').map((c) => [c.method, c.body])).toEqual([['POST', { title: 'hit10' }], ['POST', { title: null }]]);
+    await page.evaluate(() => walkoff.store.set('accountTitle', 'firsthr'));   // 다른 기기에서 고른 칭호도 메뉴 카드에 보인다
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
+    await expect.poll(async () => (await drawnTexts(page)).includes('첫 홈런')).toBe(true);
     expect(errors).toEqual([]);
   });
 
@@ -1491,15 +1519,22 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('상점: 물건을 하나씩 골라 미리 입혀 봐도 오류가 없고, 물건이 가장 많은 탭도 닫기까지 화면에 들어간다(폰은 키가 작은 360×640)', { tag: '@min' }, async ({ page, isMobile }) => {
+  test('상점: 물건을 하나씩 골라 미리 입혀 봐도 오류가 없고, 물건이 가장 많은 탭도 닫기까지 화면에 들어간다(폰은 키가 작은 360×640. 2026-11-10부터 배트·헬멧은 물건 칸만 끌어 넘긴다)', { tag: '@min' }, async ({ page, isMobile }) => {
     if (isMobile) await page.setViewportSize({ width: 360, height: 640 });
     const errors = await open(page);
     await page.evaluate(() => walkoff.openShop('shop'));
     for (const [slot, label] of await page.evaluate(() => walkoff.SHOP_SLOTS)) {
       await tap(page, label);
       const names = await page.evaluate((slot) => walkoff.SHOP_ITEMS.filter((i) => i.slot === slot).map((i) => i.name), slot);
-      await expect.poll(() => page.evaluate((names) => walkoff.ui.buttons.filter((b) => names.includes(b.label)).length, names)).toBe(names.length);
-      for (const name of names) {   // 누른 칸의 물건이 골라져야 한다(칸 자리가 맞는지)
+      await expect.poll(() => page.evaluate((names) => walkoff.ui.buttons.filter((b) => names.includes(b.label)).length, names)).toBeGreaterThan(0);
+      const scrolls = await page.evaluate(() => walkoff.shopList.max > 0);
+      if (!scrolls) expect(await page.evaluate((names) => walkoff.ui.buttons.filter((b) => names.includes(b.label)).length, names)).toBe(names.length);
+      expect(scrolls, label).toBe(!!isMobile && (slot === 'bat' || slot === 'helmet'));   // 360×640의 여섯째 줄만 넘친다(PC 1440×900은 다 들어간다)
+      for (const name of names) {   // 누른 칸의 물건이 골라져야 한다(칸 자리가 맞는지). 안 보이는 칸은 끌어 넘겨 보이게 한다
+        if (!(await page.evaluate((name) => walkoff.ui.buttons.some((b) => b.label === name), name))) {
+          await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 5000, cancelable: true })));
+          await page.waitForFunction((name) => walkoff.ui.buttons.some((b) => b.label === name), name);
+        }
         await tap(page, name);
         await expect.poll(() => page.evaluate(() => walkoff.SHOP_ITEMS.find((i) => i.id === walkoff.game.shop.sel)?.name)).toBe(name);
       }
@@ -3524,7 +3559,7 @@ test.describe('고가 공 꼬리·타격음', () => {
       const fp = walkoff.fieldPlay(g.outcome).ball(g.flightT), b = walkoff.project(fp.x, fp.y, fp.z);
       const shot = (trail) => { walkoff.wallet.look.trail = trail; walkoff.render(now / 1000); return x2d.getImageData(0, 0, c.width, c.height).data; };
       const base = shot('trail-none'), out = {};
-      for (const trail of ['trail-comet', 'trail-dragon']) {
+      for (const trail of ['trail-comet', 'trail-dragon', 'trail-golddragon']) {
         const img = shot(trail);
         let far = 0;
         for (let i = 0; i < img.length; i += 12) {
@@ -3538,14 +3573,15 @@ test.describe('고가 공 꼬리·타격음', () => {
     });
     expect(reach['trail-comet']).toBeGreaterThan(0.12);
     expect(reach['trail-dragon']).toBeGreaterThan(0.12);
+    expect(reach['trail-golddragon']).toBeGreaterThan(reach['trail-dragon']);   // 황금 용은 몸이 더 길다(2026-11-10)
     await page.waitForFunction(() => walkoff.game.flightT > walkoff.chaseEnd(walkoff.game.outcome) + 0.05);   // 끝까지 오류 없이
     await page.evaluate(() => walkoff.openShop('shop'));   // 상점 미리 보기(공이 꼬리를 달고 날아간다)도
     await tap(page, '공 꼬리');
-    for (const name of ['혜성', '용']) { await tap(page, name); await page.waitForTimeout(700); }
+    for (const name of ['혜성', '용', '황금 용']) { await tap(page, name); await page.waitForTimeout(700); }
     expect(errors).toEqual([]);
   });
 
-  test('천둥·8비트 타격음은 폭탄보다 크지 않고, 천둥은 1초 넘게 우르릉 이어지며 8비트는 짧게 끝난다', async ({ page }) => {
+  test('천둥·8비트·오리 타격음은 폭탄보다 크지 않고, 천둥은 1초 넘게 우르릉 이어지며 8비트·오리는 짧게 끝난다', async ({ page }) => {
     await page.addInitScript(() => {   // 게임 소리를 그대로 미리 녹음한다(2.4초)
       window.AudioContext = function () { window.__ac = new OfflineAudioContext(1, 44100 * 2.4, 44100); return window.__ac; };
     });
@@ -3563,12 +3599,15 @@ test.describe('고가 공 꼬리·타격음', () => {
         return { max, last };
       }, style);
     };
-    const bomb = await record('sound-bomb'), thunder = await record('sound-thunder'), chip = await record('sound-8bit');
+    const bomb = await record('sound-bomb'), thunder = await record('sound-thunder'), chip = await record('sound-8bit'), duck = await record('sound-duck');
     expect(thunder.max).toBeLessThanOrEqual(bomb.max);
     expect(chip.max).toBeLessThanOrEqual(bomb.max);
     expect(Math.min(thunder.max, chip.max)).toBeGreaterThan(0.03);   // 들리기는 한다
     expect(thunder.last).toBeGreaterThan(1.0);   // 콰광 뒤 우르릉
     expect(chip.last).toBeLessThan(0.4);         // 띠링
+    expect(duck.max).toBeLessThanOrEqual(bomb.max);   // 꽥(2026-11-10)
+    expect(duck.max).toBeGreaterThan(0.03);
+    expect(duck.last).toBeLessThan(0.5);
     expect(errors).toEqual([]);
   });
 });
@@ -3586,7 +3625,51 @@ test.describe('맞는 순간 효과', () => {
     expect(await hit('bat-fire', 0)).toEqual({ kind: 'hr', burst: 'fire' });     // seed 42 첫 공은 제때 치면 홈런
     expect(await hit('bat-ice', 115)).toEqual({ kind: 'foul', burst: 'ice' });   // 파울도 맞힌 공이라 터진다
     expect(await hit('bat-wood', 0)).toEqual({ kind: 'hr', burst: null });       // 효과 없는 배트
+    for (const [bat, fx] of [['bat-phoenix', 'phoenix'], ['bat-rainbow', 'rainbow'], ['bat-baguette', 'baguette']]) expect(await hit(bat, 0)).toEqual({ kind: 'hr', burst: fx });   // 2026-11-10 더한 배트
     expect(await hit('bat-beam', -200)).toEqual({ kind: 'whiff', burst: null }); // 헛스윙
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('상점 물건 16개(2026-11-10)', () => {
+  test('새 물건은 상점 미리 보기에서 오류 없이 그리고, 소리를 빼면 그 칸의 기본 물건과 다르게 그린다(PC·폰)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const r = await page.evaluate(() => {
+      const w = walkoff, c = document.querySelector('canvas'), x2d = c.getContext('2d'), now = performance.now(), realNow = performance.now;
+      w.paused = true; performance.now = () => now;   // 시계를 멈춰 같은 장면을 견준다
+      w.openShop('shop');
+      const shot = (id) => {   // 미리 보기 칸(종류 탭 위)만 해시한다(아래 물건 칸은 고른 칸 테두리가 달라서 뺀다)
+        const it = w.SHOP_ITEMS.find((i) => i.id === id); Object.assign(w.game.shop, { tab: it.slot, sel: id, demo: now - 1050 }); w.render(now / 1000);
+        const bottom = Math.floor(w.ui.buttons.find((b) => b.label === '배트').r.y * w.view.dpr) - 4, d = x2d.getImageData(0, 0, c.width, bottom).data;
+        let h = 0; for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] + d[i + 1] * 7 + d[i + 2] * 13) >>> 0; return h;
+      };
+      const NEW = ['bat-baguette', 'bat-rainbow', 'bat-phoenix', 'helmet-panda', 'helmet-cat', 'helmet-halo', 'glove-gold', 'glove-leopard', 'glove-fire', 'uniform-stripe', 'uniform-retro', 'uniform-rainbow', 'trail-note', 'trail-blossom', 'trail-golddragon', 'sound-duck'];
+      const same = [];
+      for (const id of NEW) { const it = w.SHOP_ITEMS.find((i) => i.id === id), base = w.SHOP_ITEMS.find((i) => i.slot === it.slot && i.price === 0).id; if (shot(id) === shot(base)) same.push(id); }
+      performance.now = realNow; w.paused = false;
+      return { same, count: w.SHOP_ITEMS.length, names: NEW.map((id) => w.SHOP_ITEMS.find((i) => i.id === id)?.name ?? null) };
+    });
+    expect(r.count).toBe(85);
+    expect(r.names.every(Boolean)).toBe(true);   // 이름·모양(ITEM_LOOKS)이 모두 있다
+    expect(r.same).toEqual(['sound-duck']);      // 소리만 그림이 같다
+    expect(errors).toEqual([]);
+  });
+
+  test('효과 배트 모두 맞는 순간 효과가 막 터질 때부터 끝까지 어느 장면에서도 오류가 없다(0.01초마다. 무지개 띠는 처음에 안쪽 반지름이 음수였다)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const bad = await page.evaluate(() => {
+      const w = walkoff, now = performance.now(), realNow = performance.now, out = [];
+      w.paused = true; performance.now = () => now; w.openShop('shop');
+      for (const it of w.SHOP_ITEMS.filter((i) => i.slot === 'bat' && i.fx)) {
+        for (let k = 0; k <= 55; k++) {
+          Object.assign(w.game.shop, { tab: 'bat', sel: it.id, demo: now - 1000 - k * 10 });   // 배트 탭 미리 보기는 1초에 공을 맞힌다
+          try { w.render(now / 1000); } catch (e) { out.push(`${it.id} ${k / 100}초 ${e.message}`); break; }
+        }
+      }
+      performance.now = realNow; w.paused = false;
+      return out;
+    });
+    expect(bad).toEqual([]);
     expect(errors).toEqual([]);
   });
 });
