@@ -2515,8 +2515,8 @@ test.describe('수비', () => {
           if (r.kind === 'whiff' || r.kind === 'foul' || r.kind === 'hr') continue;
           const pl = walkoff.fieldPlay(r), key = `${r.type === 'ground' ? 'ground' : 'air'}/${r.kind === 'out' ? 'out' : 'hit'}`, c = (t[key] ??= { n: 0, dive: 0, top: 0, doubles: 0, miss: 0, missElse: 0 });
           c.n++;
-          // 2루타에서 공 앞 외야수가 떨어지는 공에 몸을 날렸다가 놓치는 것(ev.miss)은 따로 센다
-          const missDive = (pos, e) => pos === pl.ev.miss && e.t0 < pl.ev.land + 0.3;
+          // 2루타에서 공 앞 외야수가 떨어지는 공에 몸을 날렸다가 놓치는 것(ev.miss)과 공 쪽 키스톤이 뜬 안타를 잡으려다 놓치는 것(ev.tries)은 따로 센다
+          const missDive = (pos, e) => (pos === pl.ev.miss && e.t0 < pl.ev.land + 0.3) || !!pl.ev.tries?.some((x) => x.pos === pos && Math.abs(e.t0 - x.t) < 0.6);
           if (Object.entries(pl.acts).some(([pos, l]) => l.some((e) => e.name === 'dive' && !missDive(pos, e)))) c.dive++;
           const xbh = r.kind === 'double' || r.kind === 'triple';
           if (xbh) c.doubles++;
@@ -2821,6 +2821,56 @@ test.describe('수비', () => {
     expect(d.same).toBe(true);
     expect(d.minW).toBeGreaterThan(0.3);   // 전에는 0(어깨가 한 점으로 모였다 펴졌다)
     expect(d.maxTurn).toBeLessThan(30);    // 전에는 한 장면에 180도 가까이 휙 돌았다
+    expect(errors).toEqual([]);
+  });
+
+  test('키스톤 반응: 안타가 된 뜬공·직선타에 공 쪽 2루수·유격수가 뛰어오르거나 몸을 날려 아슬아슬하게 놓치고(공에 닿지 않는다), 아니면 쫓거나 커버·중계 자리로 바로 간다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const w = walkoff, t = { air: 0, leap: 0, dive: 0, nearGlove: 0, nearBody: 0, idle: 0, offGlove: 0, throws: 0, kinds: new Set() };
+      const d3 = (p, b) => Math.hypot(p[0] - b.x, p[1] - b.y, p[2] - b.z), F = (pos) => w.DEFENSE.find((f) => f.pos === pos);
+      for (let sd = 1; sd <= 8; sd++) {
+        const seq = w.makeSequence(sd, w.pitcherHand(sd) === 'L');
+        for (let i = 0; i < 16; i++) for (let dt = -90; dt <= 90; dt += 6) for (const bats of ['R', 'L']) {
+          const r = w.judgeSwing(seq[i], dt, bats);
+          if (!(r.type === 'line' || r.type === 'fly') || !['single', 'double', 'triple'].includes(r.kind)) continue;
+          const kind = r.kind, pl = w.fieldPlay(r), K = F(Math.max(-43, Math.min(43, r.spray)) < 0 ? '유격수' : '2루수');
+          t.air++; if (r.kind !== kind) t.kinds.add(r.kind);   // 수비 그림은 판정을 바꾸지 않는다
+          const tr = pl.ev.tries?.[0];
+          if (tr) {
+            t[tr.how]++;
+            let g = Infinity, b = Infinity;
+            for (let s = Math.max(0, tr.t - 0.5); s <= tr.t + 0.5; s += 1 / 240) {
+              const ball = pl.ball(s); if (s > pl.ev.land) continue;
+              const k = w.actorSkeleton(pl, K, s);
+              g = Math.min(g, d3(k.hands.l, ball), d3(k.hands.r, ball)); b = Math.min(b, d3(k.pelvis, ball), d3(k.chest, ball), d3(k.head, ball));
+            }
+            if (g < 0.2) t.nearGlove++;
+            if (b < 0.3) t.nearBody++;
+          }
+          // 맞고 2.4초가 지나도록 첫 동작(뛰기·옆걸음·점프·다이빙)이 없으면 멍하니 선 것(전에는 뜬 안타의 56%)
+          const first = pl.acts[K.pos].find((e) => e.k !== 'pose' || e.track);
+          if ((first ? first.t0 : pl.end) > 2.4) t.idle++;
+          for (const [tt, pos] of [[pl.ev.relayAt, pl.ev.relay], [pl.ev.arrive, pl.ev.receiver]]) {   // 중계·베이스 송구는 받는 글러브에 닿는다
+            if (tt == null || !F(pos)) continue;
+            t.throws++; if (d3(w.actorSkeleton(pl, F(pos), tt).hands.l, pl.ball(tt)) > 0.3) t.offGlove++;
+          }
+        }
+      }
+      return { ...t, kinds: [...t.kinds] };
+    });
+    expect(d.air).toBeGreaterThan(2000);
+    expect((d.leap + d.dive) / d.air).toBeGreaterThan(0.08);   // 전에는 0(머리 위 직선타에도 서 있었다)
+    expect((d.leap + d.dive) / d.air).toBeLessThan(0.3);
+    expect(d.leap).toBeGreaterThan(20);
+    expect(d.dive).toBeGreaterThan(100);
+    expect(d.nearGlove).toBe(0);   // 판정이 안타라 글러브·몸은 공에 닿지 않는다
+    expect(d.nearBody).toBe(0);
+    expect(d.idle / d.air).toBeLessThan(0.02);
+    expect(d.throws).toBeGreaterThan(d.air);
+    expect(d.offGlove).toBe(0);
+    expect(d.kinds).toEqual([]);
     expect(errors).toEqual([]);
   });
 });

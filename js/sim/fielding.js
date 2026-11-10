@@ -110,6 +110,11 @@ const THROW_LEN = 0.45, THROW_AT = 0.55, DIVE_LEN = 0.6, DIVE_HIT = 0.55, GETUP_
 const FLINCH_NEAR = 2, FLINCH_LEN = 0.6, FLINCH_LEAD = 0.18, FLINCH_STEP = 0.15;
 const LOB_WAIT = 0.9, LOB_SPEED = 28, LOB_LEN = 0.6, LOB_ARC = 0.06;
 const SLUMP_DELAY = 0.2, SLUMP_LEN = 0.7, SLUMP_HOLD = 2.4, RISE_LEN = 0.9;
+// 안타가 된 뜬공·직선타에 공 쪽 키스톤이 잡으려 한다(2026-11-10 사용자 '유격수, 2루수가 뜬공 잡을 만한 거 점프도 안 하고 가만히 있고').
+// 옆으로 빠르게(초속 LEAP_VH m 넘게) LEAP_MIN~LEAP_MAX m 높이로 지나가는 공은 뛰어오르고(글러브는 LEAP_TOP m까지), 그보다 낮은 공은 몸을 날린다.
+// 달려서 TRY_SHORT m 안까지 닿는 공만 하고 글러브는 공 MISS m 앞에서 멈춘다(판정은 안타). CHASE_SHORT m 안이면 몇 걸음 쫓다 선다
+const LEAP_MIN = 1.5, LEAP_MAX = 4.2, LEAP_TOP = 2.65, LEAP_VH = 15, LEAP_LEN = 0.75, LEAP_PEAK = 0.42, LEAP_SIDE = 0.5;
+const TRY_SHORT = 1.3, CHASE_SHORT = 6, MISS = 0.35, RUNUP = 3.5, TRY_DIVE = DIVE_GLOVE + 1.3;   // TRY_DIVE: 날기 시작한 자리에서 글러브가 닿는 거리
 // 움찔: 몸을 낮췄다가 공이 지날 때 공 반대쪽으로 뛰어올라 다리를 접고 글러브를 공 쪽 아래로 내린 뒤 내려앉아 선다.
 // s는 공이 지나는 쪽(+1 왼쪽, -1 오른쪽, 0 가랑이 사이), g는 글러브 손(+1 왼손, 좌완은 -1). 홈 쪽을 본 자세 기준이다
 const FLINCH = new Map();
@@ -128,11 +133,31 @@ function flinchTrack(s, g) {
 }
 // 몸 앞(키의 -z)으로 나는 다이빙. 엉덩이는 달려온 빠르기 v0로 날기 시작해 글러브가 공에 닿을 때(DIVE_HIT) F m를 날고, 땅에 떨어져 미끄러지며 선다.
 // 발·손은 엉덩이를 따라간다(팔다리 길이는 그대로). 전에는 다이빙 첫 장면이 멈춰 있어 달려오던 몸이 잠깐 섰다가 튀어 나갔다
-const diveTrack = (F, v0 = 0) => {
+// lift m를 주면 몸이 그만큼 높이 떠서(동작 40%에 가장 높고 80%에 원래 높이) 가슴 높이로 지나가는 직선타에 글러브를 뻗는다
+const diveTrack = (F, v0 = 0, lift = 0) => {
   const tc = DIVE_HIT * DIVE_LEN, T2 = DIVE_LEN - tc, a = 2 * (F - v0 * tc) / (tc * tc), vc = Math.max(0, v0 + a * tc), slide = Math.min(vc * T2 / 2, 0.3 * F);
   const z = (t) => (t <= tc ? v0 * t + 0.5 * a * t * t : F + slide * (1 - (1 - (t - tc) / T2) ** 2));
-  return Object.assign((u) => { const v = FTRACK.dive(u).slice(), dz = -z(clamp(u, 0, 1) * DIVE_LEN) - v[2]; for (const i of [2, 8, 11, 14, 17]) v[i] += dz; return v; }, { end: F + slide });
+  return Object.assign((u) => {
+    const v = FTRACK.dive(u).slice(), dz = -z(clamp(u, 0, 1) * DIVE_LEN) - v[2];
+    for (const i of [2, 8, 11, 14, 17]) v[i] += dz;
+    if (lift) { const up = lift * Math.sin(Math.PI * clamp(u / 0.8, 0, 1)); for (const i of [1, 7, 10, 13, 16]) v[i] += up; }
+    return v;
+  }, { end: F + slide });
 };
+// 머리 위로 지나가는 공에 뛰어오른다(키 좌표 g: 가장 높이 떴을 때 글러브 자리, J: 엉덩이가 오르는 높이). 웅크렸다가 LEAP_PEAK에 가장 높이 뜨고
+// 내려앉아 무릎을 굽힌다. 공 쥔 손은 몸을 잡느라 반대쪽 위로 든다
+function leapTrack(g, J) {
+  const s = Math.sign(g[0]) || 1, top = 0.92 + J;
+  return makeTrack([
+    [0, fpose({ pel: [0, 0.74, 0.04], lean: 0.32, lf: [0.17, 0.03, 0], rf: [-0.17, 0.03, 0.02], gl: [0.18, 0.95, -0.32], bh: [-0.18, 0.92, -0.26] })],
+    [0.2, fpose({ pel: [0.04 * s, 0.98, 0], lean: 0.08, lf: [0.16, 0.08, 0], rf: [-0.16, 0.08, 0.02], gl: [lerp(0.18, g[0], 0.55), lerp(0.95, g[1], 0.55), lerp(-0.32, g[2], 0.55)], bh: [-0.2 * s, 1.35, -0.1] })],
+    [LEAP_PEAK, fpose({ pel: [0.1 * s, top, 0], lean: -0.06, tilt: -0.1, lf: [0.15, 0.03 + 0.85 * J, 0.06], rf: [-0.13, 0.03 + 0.7 * J, 0.14], gl: g, bh: [-0.24 * s, top + 0.45, 0.05] })],
+    [0.72, fpose({ pel: [0.05 * s, 0.92 + 0.35 * J, 0], lean: 0.05, lf: [0.16, 0.03 + 0.3 * J, 0.03], rf: [-0.15, 0.03 + 0.25 * J, 0.08], gl: [g[0] * 0.7, g[1] - 0.55, g[2] * 0.6], bh: [-0.24 * s, 1.2, -0.05] })],
+    [1, fpose({ pel: [0, 0.8, 0.04], lean: 0.28, lf: [0.18, 0.03, 0], rf: [-0.18, 0.03, 0.02], gl: [0.22, 1.0, -0.25], bh: [-0.2, 0.95, -0.18] })],
+  ]);
+}
+// 마당 자리 p를 at에서 face 방향을 본 키 좌표(x 왼쪽, z 뒤)로(fielderSkeleton의 거꾸로)
+const toLocal = (at, face, p) => { const rho = face - 1.5 * Math.PI, c = Math.cos(rho), s = Math.sin(rho), dx = p[0] - at[0], dz = p[1] - at[1]; return [c * dx + s * dz, -s * dx + c * dz]; };
 // 토스는 0.45초 동작의 55%에 놓는다. 달려가며 잡는 동작은 잡기 0.25초 전부터 그동안 달리던 걸음에서 섞어 이어진다(2026-11-09 0.15초에서 늘림: 그 사이에
 // 글러브와 발을 옮기느라 손발이 뛸 때의 1.7배 빠르기로 튀었다. 잡고 놓는 때는 그대로다). 수비수는 초속 9m씩 줄여 선다. 크로 홉은 던지기 앞 0.35초에 0.4m
 const TOSS_LEN = 0.45, TOSS_AT = 0.55, PICK_LEAD = 0.25, FIELD_BRAKE = 9, HOP_LEN = 0.35, HOP_D = 0.4;
@@ -251,8 +276,8 @@ function buildPlay(r, o = {}) {
     const d = flatDist(from, to);
     let gait = gaitOf(f), start = t0;
     const jog = sprintTime(d, FIELD_JOG.top, FIELD_JOG.tau) + 0.6;
-    if (d >= 2.5 && t0 + jog <= deadline - 0.3) { gait = FIELD_JOG; start = Math.max(t0, deadline - 1 - jog); }
-    else if (t0 + sprintTime(d, top, tau) + 0.8 < deadline - 2) start = deadline - 2 - sprintTime(d, top, tau);
+    if (d >= 2.5 && t0 + jog <= deadline - 0.3) { gait = FIELD_JOG; start = o.early ? t0 : Math.max(t0, deadline - 1 - jog); }   // early: 바로 출발해 가서 기다린다(2루 커버·중계)
+    else if (!o.early && t0 + sprintTime(d, top, tau) + 0.8 < deadline - 2) start = deadline - 2 - sprintTime(d, top, tau);
     const t1 = run(f, to, start, { gait, look: o.look });
     if (endPose) pose(f, t1, to, o.face ?? faceTo(to, o.faceTo ?? [0, 0.3]), endPose, { name: o.name ?? 'ready', look: o.look });
     return t1;
@@ -296,8 +321,8 @@ function buildPlay(r, o = {}) {
     return { tRel, tArr, face, waited: t0 - t00 };
   };
   // 받는 사람: 마감 전에 그 자리에 가서 던지는 쪽을 보고 서 있다가, 공이 닿기 0.25초 전에 받는 자세(1루는 몸 뻗기)
-  const receive = (f, at, from, tArr, recvPose = FPOSE.cover, name = 'cover') => {
-    arriveBy(f, at, tArr - 0.3, FPOSE.cover, { faceTo: from, name: 'cover' });
+  const receive = (f, at, from, tArr, recvPose = FPOSE.cover, name = 'cover', o = {}) => {
+    arriveBy(f, at, tArr - 0.3, FPOSE.cover, { faceTo: from, name: 'cover', early: o.early });
     pose(f, Math.max(freeAt(f), tArr - 0.25), at, faceTo(at, from), recvPose, { name, still: true });
   };
   // 공 처리가 끝나면 베이스 둘레의 수비수가 to로 비켜 서서(2.5m 안이면 옆걸음) look 쪽을 본다. 공을 쥐었으면 든 채로(2026-11-03 사용자 '주루 다듬기' 2·3번).
@@ -357,6 +382,89 @@ function buildPlay(r, o = {}) {
     anim(f, tLaunch, launch, df, track, DIVE_LEN, { name: 'dive' });
     anim(f, tLaunch + DIVE_LEN + 0.3, stepToward(launch, ballAt, track.end), df, FTRACK.getUp, GETUP_LEN, { name: 'getUp' });
   };
+  // from에서 to까지 뛰어(2.5m 안이면 옆걸음) 서는 데 걸리는 시간(run과 같은 걸음)
+  const travel = (f, from, to) => {
+    const d = flatDist(from, to), G = gaitOf(f);
+    return d < 0.05 ? 0 : d < 2.5 ? Math.max(0.3, 1.15 * sprintTime(d, G.top, G.tau)) : runTrack({ gait: G, route: [from, to], total: d, until: Infinity, delay: 0, brake: FIELD_BRAKE }).T.at(-1);
+  };
+  // 안타가 된 뜬공·직선타에 키스톤이 잡으려다 놓친다(LEAP_*·TRY_*). 공이 처음으로 닿는 때(없으면 가장 덜 모자란 때)와 방법을 찾는다.
+  // 뛰어오르기는 옆으로 빠르게 지나가는 공(직선타)만이고, 떨어지는 공은 LEAP_MIN m 아래로 내려왔을 때 몸을 날린다
+  const airTry = (f, fly, tEnd) => {
+    const from = where(f), react = Math.max(freeAt(f), reactOf(f)), [top, tau] = speedOf(f);
+    let first = null, best = null;
+    for (let t = react + 0.3; t <= tEnd + 1e-9; t += 1 / 60) {
+      const q = fly(t), n = fly(Math.min(tEnd, t + 0.02)), leap = q.y >= LEAP_MIN && q.y <= LEAP_MAX && Math.hypot(n.x - q.x, n.z - q.z) / 0.02 > LEAP_VH;
+      if (!leap && q.y >= LEAP_MIN) continue;
+      const lead = leap ? LEAP_PEAK * LEAP_LEN : DIVE_HIT * DIVE_LEN;
+      const c = { t, q, how: leap ? 'leap' : 'dive', short: flatDist(from, [q.x, q.z]) - sprintDist(t - lead - react, top, tau) - (leap ? LEAP_SIDE : TRY_DIVE) };
+      if (!best || c.short < best.short) best = c;
+      if (!first && c.short <= 0) first = c;
+    }
+    return first ?? best;
+  };
+  // 공 자리 b를 공 길(홈에서 나가는 줄)에서 from 쪽으로 push m 옮긴다(넣어 본 동작이 공에 닿으면 늘린다, clearOf)
+  const awayFrom = (from, b, push) => { const d = unitTo([0, 0.3], b), cr = d[0] * (from[1] - 0.3) - d[1] * from[0], n = cr >= 0 ? [-d[1], d[0]] : [d[1], -d[0]]; return [b[0] + n[0] * push, b[1] + n[1] * push]; };
+  // 뛰어올라 놓치기: 홈 쪽을 보고 공 밑으로 가서 뛴다. 글러브가 못 닿는 높이면 공이 지날 때 가장 높이 뜨고(공은 글러브 위로),
+  // 닿는 높이면 늦게 떠서 공이 지날 때 글러브가 0.45m 아래에서 올라가는 중이고 몸은 공 길에서 0.6m 비켜 있다. 내려앉으면 떨어지는 쪽을 본다
+  const leapMiss = (f, q, tPass, land, push = 0) => {
+    const from = where(f), react = Math.max(freeAt(f), reactOf(f)), b = awayFrom(from, [q.x, q.z], push), over = q.y > LEAP_TOP + 0.2;
+    const J = over ? 0.55 : clamp(0.2 + 0.5 * (q.y - 1.6), 0.2, 0.55);
+    const plan = (S) => {
+      const face = faceTo(S, [0, 0.3]), [bx, bz] = toLocal(S, face, b), g = [clamp(bx, -0.35, 0.55), over ? LEAP_TOP : Math.min(LEAP_TOP, q.y + 0.1), clamp(bz, -0.4, 0.15)];
+      const track = leapTrack(g, J);
+      let uPass = LEAP_PEAK;
+      if (!over) for (let u = LEAP_PEAK; u > 0.02; u -= 0.01) { uPass = u; if (track(u)[13] <= q.y - 0.45) break; }
+      return { face, track, uPass };
+    };
+    let S = stepToward(from, b, Math.max(0, flatDist(from, b) - (over ? 0.1 : 0.6))), p = plan(S);
+    const avail = tPass - p.uPass * LEAP_LEN - react;
+    for (let k = 0; k < 8 && flatDist(from, S) > 0.05 && travel(f, from, S) > avail; k++) S = stepToward(from, S, flatDist(from, S) * 0.8);   // 못 가면 갈 수 있는 데서 뛴다
+    if (travel(f, from, S) > avail) S = from;
+    p = plan(S);
+    const tUp = tPass - p.uPass * LEAP_LEN, t1 = flatDist(from, S) > 0.05 ? run(f, S, Math.max(react, tUp - travel(f, from, S)), { look: 'ball' }) : react;
+    if (t1 < tUp - 0.2) pose(f, t1, S, p.face, readyOf(f), { name: 'ready', look: 'ball' });
+    const t2 = Math.max(t1, tUp);
+    anim(f, t2, S, p.face, p.track, LEAP_LEN, { name: 'leap', look: 'ball' });
+    pose(f, t2 + LEAP_LEN, S, faceTo(S, land), readyOf(f), { name: 'watch', look: 'ball' });
+  };
+  // 몸을 날려 놓치기: 글러브가 공에 가장 가까울 때(가슴 높이 공은 몸이 떠서 동작의 40%, 낮은 공은 DIVE_HIT) 공 MISS m 앞에서 멈춘다.
+  // 남는 시간이 많으면(판정 다듬기 전의 넉넉한 공) 공 쪽 RUNUP m 앞까지 먼저 가서 기다렸다가 달려 들어 몸을 날린다. 일어나면 떨어진 쪽을 본다
+  const tryDive = (f, q, tPass, land, push = 0) => {
+    const from = where(f), react = Math.max(freeAt(f), reactOf(f)), [top, tau] = speedOf(f), b = awayFrom(from, [q.x, q.z], push);
+    const lift = clamp(q.y - 0.5, 0, 0.7), hitU = lift > 0.05 ? 0.4 : DIVE_HIT, tLaunch = tPass - hitU * DIVE_LEN;
+    const u = unitTo(from, b), F = clamp(flatDist(from, b) - MISS - DIVE_GLOVE - 0.3, 0.4, 1.3);
+    const gd = fielderSkeleton([0, 0], faceTo(from, b), diveTrack(F, top * 0.8, lift)(hitU)).hands.l;   // 날기 시작한 자리에서 그때 글러브까지
+    let launch = [b[0] - gd[0] - u[0] * MISS, b[1] - gd[2] - u[1] * MISS];
+    const avail = tLaunch - react;
+    if (avail <= 0.05 || sprintTime(flatDist(from, launch), top, tau) > avail) launch = stepToward(from, launch, sprintDist(Math.max(0, avail), top, tau));   // 못 미치면 갈 수 있는 데서 날아 더 크게 놓친다
+    const wait = stepToward(launch, from, RUNUP), tRun = tLaunch - sprintTime(RUNUP, top, tau);
+    if (flatDist(from, launch) > RUNUP + 0.5 && react + travel(f, from, wait) < tRun - 0.3) arriveBy(f, wait, tRun, readyOf(f), { faceTo: b, look: 'ball' });
+    const s = where(f), t0 = Math.max(freeAt(f), react, tLaunch - sprintTime(flatDist(s, launch), top, tau));
+    if (flatDist(s, launch) > 0.05) run(f, launch, t0, { stop: false, look: 'ball', force: true });
+    const df = faceTo(launch, b), track = diveTrack(F, top * (1 - Math.exp(-Math.max(0, tLaunch - t0) / tau)), lift);
+    anim(f, tLaunch, launch, df, track, DIVE_LEN, { name: 'dive' });
+    const lie = stepToward(launch, b, track.end), up = tLaunch + DIVE_LEN + 0.3;
+    anim(f, up, lie, df, FTRACK.getUp, GETUP_LEN, { name: 'getUp' });
+    pose(f, up + GETUP_LEN, lie, faceTo(lie, land), readyOf(f), { name: 'watch', look: 'ball' });
+  };
+  // 넣은 동작이 t0~t1 동안 공(ballAt)과 얼마나 떨어지나: 손 0.25m·몸 0.35m(머리 0.3m)를 뺀 가장 작은 값. 재느라 만든 숨쉬기 값(play.alive)은 지운다
+  const clearOf = (f, ballAt, t0, t1) => {
+    let c = Infinity;
+    for (let t = t0; t <= t1; t += 1 / 90) {
+      const k = actorSkeleton(play, f, t), b = ballAt(t), d = (p) => Math.hypot(p[0] - b.x, p[1] - b.y, p[2] - b.z);
+      c = Math.min(c, d(k.hands.l) - 0.25, d(k.hands.r) - 0.25, d(k.pelvis) - 0.35, d(k.chest) - 0.35, d(k.head) - 0.3);
+    }
+    delete play.alive;
+    return c;
+  };
+  // 몇 걸음 쫓다 선다(떨어지는 자리 3m 앞까지, CHASE_SHORT m까지만)
+  const chaseAir = (f, land, tLand) => { const from = where(f); arriveBy(f, stepToward(from, land, clamp(flatDist(from, land) - 3, 0, CHASE_SHORT)), tLand, readyOf(f), { faceTo: land, look: 'ball' }); };
+  // 공 쪽 키스톤이 할 일(중계·줍기)이 없으면 공과 2루 사이로 나가 송구를 본다. 송구 길에서 자기 쪽으로 2.5m 비켜 선다(전에는 제자리에서 공만 봤다)
+  const lineUp = (f, got, tBy) => {
+    const n = unitTo(BASE2, got.at), mid = stepToward(BASE2, got.at, clamp(0.35 * flatDist(BASE2, got.at), 5, 14)), h = homeOf(f);
+    const s = Math.sign(n[0] * (h[1] - mid[1]) - n[1] * (h[0] - mid[0])) || 1;
+    arriveBy(f, [mid[0] - n[1] * 2.5 * s, mid[1] + n[0] * 2.5 * s], tBy, readyOf(f), { faceTo: got.at, look: 'ball', early: true });
+  };
   // 서서 잡기(1루 경주의 set): 공 길에 먼저 가서 공이 오는 쪽(홈)을 보고 낮게 잡는다. 잡는 자세의 글러브가 공 자리에 오게 선다
   const fieldSet = (f, C, T, target = BASE1) => {
     const c = [C.x, C.z], face = faceTo(c, [0, 0.3]), gl = fielderSkeleton([0, 0], face, FPOSE.fieldLow).hands.l, body = [c[0] - gl[0], c[1] - gl[2]];
@@ -375,7 +483,8 @@ function buildPlay(r, o = {}) {
     const u = flatDist(from, c) > 0.5 ? unitTo(from, c) : unitTo(c, [0, 0.3]), uL = [-u[1], u[0]], rc = kind === 'plant' ? [-0.3, 0.85] : bare ? [-0.2, 0.88] : [0.25, 0.9];
     const B = [c[0] - u[0] * rc[1] - uL[0] * rc[0], c[1] - u[1] * rc[1] - uL[1] * rc[0]], d = flatDist(from, B), G = { ...gaitOf(f) };
     if (sprintTime(d, G.top, G.tau) > T - react) G.top = Math.min(G.top * 1.12, d / Math.max(0.2, T - react - G.tau) + 0.3);   // 글러브 자리만큼 모자라면 조금 빨리
-    const start = Math.max(react, T - sprintTime(d, G.top, G.tau)), v = G.top * (1 - Math.exp(-(T - start) / G.tau)), face = faceTo(B, target);
+    // 달리기는 잡는 동작(T - PICK_LEAD)보다 먼저 시작한다. 공이 바로 앞이면 전에는 달리기가 동작보다 늦게 시작해 동작을 덮었다가 풀리며 몸이 튀었다
+    const start = Math.min(Math.max(react, T - sprintTime(d, G.top, G.tau)), T - PICK_LEAD - 0.02), v = G.top * (1 - Math.exp(-(T - start) / G.tau)), face = faceTo(B, target);
     const bd = Math.hypot(B[0], B[1]) || 1, out = (u[0] * B[0] + u[1] * B[1]) / bd, room = out > 0.2 ? (fenceDist(Math.atan2(B[0], B[1]) / DEG) - 1.5 - bd) / out : Infinity;   // 담장 쪽으로 가면 담장 1.5m 앞까지만 미끄러진다
     run(f, B, start, { stop: false, gait: G, look: 'ball', force: true });
     const pk = pickTrack(kind, B, face, u, v, C, ex, bare, room);
@@ -427,15 +536,15 @@ function buildPlay(r, o = {}) {
     let th;
     if (relayMan) {
       const R = stepToward(base, got.at, clamp(0.45 * flatDist(got.at, base), 18, 35)), th1 = throwTo(picker, got.at, relayMan, R, FPOSE.cover, got.throwAt, speed);
-      receive(relayMan, R, got.at, th1.tArr);
+      receive(relayMan, R, got.at, th1.tArr, FPOSE.cover, 'cover', { early: true });
       pose(relayMan, th1.tArr + 0.2, R, faceTo(R, base), FPOSE.hold, { name: 'hold' });   // 받아서 베이스 쪽으로 돈다(주자가 아직이면 들고 기다린다)
       th = throwTo(relayMan, R, recv, bagAt(R), FPOSE.cover, th1.tArr + 0.45, THROW_IN * 0.7, undefined, { after });
-      receive(recv, bagAt(R), R, th.tArr);
+      receive(recv, bagAt(R), R, th.tArr, FPOSE.cover, 'cover', { early: true });
       Object.assign(play.ev, { relay: relayMan.pos, relayAt: th1.tArr });
       th = { ...th, tRel: th1.tRel };
     } else {
       th = throwTo(picker, got.at, recv, bagAt(got.at), FPOSE.cover, got.throwAt, speed, undefined, { after });
-      receive(recv, bagAt(got.at), got.at, th.tArr);
+      receive(recv, bagAt(got.at), got.at, th.tArr, FPOSE.cover, 'cover', { early: true });   // 베이스에 들어가는 사람은 공이 빠지면 바로 간다(전에는 2초 넘게 남으면 늦게 출발했다)
     }
     // 2루타·3루타: 받자마자(0.15초 뒤) 공을 든 채 주자 반대쪽 옆으로 1.8m 비켜 서서, 미끄러졌다 일어서는 주자와 몸이 겹치지 않게 한다.
     // 자기 자리 쪽으로 비키면 주자 몸을 가로질러 지나갈 때가 있었다(주자가 서는 자리는 runnerAt과 같다)
@@ -673,13 +782,40 @@ function buildPlay(r, o = {}) {
       if (b.t < a.t) { picker = ob; ic = b; } else ic = a;
       play.ev.miss = O.pos;
     }
-    if (flatDist(L, [0, 0]) < 48) {   // 얕게 떨어진 공: 가까운 내야수가 뒤로 쫓아간다. 거의 닿을 만하면 몸을 날려도 못 닿고, 일어나 주울 수도 있다
+    // 공 쪽 키스톤(유격수·2루수): 닿을 만한 공은 뛰어오르거나 몸을 날려 놓치고, 조금 멀면 몇 걸음 쫓다 선다(전에는 얕게 떨어진 공에 각도가 가장
+    // 가까운 내야수 한 명만 쫓아가서, 머리 위로 지나가는 직선타에 서 있었다). 앞에 떨어져 자기 쪽으로 굴러오는 공은 몸을 날리지 않고 달려 나와 줍는다
+    const kt = airTry(near2, (t) => flightPos(r, t), dur), outw = unitTo([0, 0.3], L);
+    let ksDove = false;
+    if (kt && kt.short <= TRY_SHORT) {
+      const kd = unitTo(where(near2), [kt.q.x, kt.q.z]), into = kt.how === 'dive' && kt.t > dur - 0.15 && kd[0] * outw[0] + kd[1] * outw[1] < -0.3;
+      if (into) chaseAir(near2, L, dur);
+      else {   // 넣어 본 동작이 공에 닿으면(자기 쪽으로 날아오는 공) 공 길에서 비켜 다시 넣고, 네 번 안에 안 되면 쫓다 선다
+        const n0 = acts[near2.pos].length, m0 = moves.length, ballAt = (t) => (t < dur ? flightPos(r, t) : roll.at(t));
+        let push = 0, ok = false;
+        for (let k = 0; k < 4 && !ok; k++) {
+          if (k) { acts[near2.pos].length = n0; moves.length = m0; }
+          if (kt.how === 'leap') leapMiss(near2, kt.q, kt.t, L, push); else tryDive(near2, kt.q, kt.t, L, push);
+          const c = clearOf(near2, ballAt, Math.max(reactOf(near2), kt.t - 0.45), Math.min(kt.t + 0.5, dur + 0.8));   // 공이 지나는 앞뒤만 잰다(맞는 순간 한 번 계산하는 시간)
+          ok = c >= 0; push += Math.max(0.15, 0.1 - c);
+        }
+        if (ok) { ksDove = kt.how === 'dive'; play.ev.tries = [{ pos: near2.pos, how: kt.how, t: kt.t, short: kt.short }]; }
+        else { acts[near2.pos].length = n0; moves.length = m0; chaseAir(near2, L, dur); }
+      }
+    } else if (kt && kt.short <= CHASE_SHORT) chaseAir(near2, L, dur);
+    if (flatDist(L, [0, 0]) < 48) {   // 얕게 떨어진 공: 3루수·1루수 쪽이면 그가 뒤로 쫓아간다. 거의 닿을 만하면 몸을 날려도 못 닿고(키스톤이 몸을 날렸으면 쫓기만), 일어나 주울 수도 있다
       const fi = [SS, B2, B3, B1].reduce((b, x) => (Math.abs(x.a - side) < Math.abs(b.a - side) ? x : b));
-      const short = flatDist(homeOf(fi), L) - RUN_REACH - sprintDist(dur - reactOf(fi), ...speedOf(fi));
-      if (Math.abs(short - 1.0) < 0.8) diveMiss(fi, L, dur);
-      else arriveBy(fi, stepToward(homeOf(fi), L, clamp(flatDist(homeOf(fi), L) - 3, 0, 9)), dur, readyOf(fi), { faceTo: L, look: 'ball' });
-      const icI = interceptRoll(roll, where(fi), freeAt(fi), ...speedOf(fi), dur + 0.35, 0.35, SET_REACH);
-      if (icI.t < ic.t) { picker = fi; ic = icI; }
+      if (fi === B3 || fi === B1) {
+        const short = flatDist(homeOf(fi), L) - RUN_REACH - sprintDist(dur - reactOf(fi), ...speedOf(fi));
+        if (!ksDove && Math.abs(short - 1.0) < 0.8) diveMiss(fi, L, dur);
+        else arriveBy(fi, stepToward(homeOf(fi), L, clamp(flatDist(homeOf(fi), L) - 3, 0, 9)), dur, readyOf(fi), { faceTo: L, look: 'ball' });
+        const icI = interceptRoll(roll, where(fi), freeAt(fi), ...speedOf(fi), Math.max(dur + 0.35, freeAt(fi) + 0.3), 0.35, SET_REACH);
+        if (icI.t < ic.t) { picker = fi; ic = icI; }
+      }
+    }
+    if (acts[near2.pos].length || flatDist(L, [0, 0]) < 48) {
+      // 줍는 때는 쫓아간 자리에 닿은 뒤다(전에는 아직 뛰는 중에 줍기 동작이 시작해 그 자리로 미끄러졌다)
+      const icK = interceptRoll(roll, where(near2), freeAt(near2), ...speedOf(near2), Math.max(dur + 0.35, freeAt(near2) + 0.3), 0.35, SET_REACH);
+      if (icK.t < ic.t) { picker = near2; ic = icK; }
     }
     if (goHome) { picker = byPos(hp.pickup.pos); ic = { t: hp.pickup.t, at: hp.pickup.at }; }   // 판정(core hitPickup)과 같은 외야수·같은 때
     const got = pickUp(picker, roll.at, ic.t);
@@ -687,6 +823,7 @@ function buildPlay(r, o = {}) {
     Object.assign(play.ev, { land: dur, pickup: ic.t, fielder: picker.pos });
     const th = r.kind === 'triple' ? toThird(picker, got) : goHome ? toHome(picker, got, hp) : toSecond(picker, got);
     if (goHome) { const d = Math.max(hp.arrive + TAG_TIME, hp.runner); play.ev.decide = d; if (Math.abs(hp.margin) < 0.2) closeCall(d, HOME_PLATE, hp.safe); }
+    if (!goHome && r.kind !== 'triple' && picker !== near2 && picker !== cover2 && !play.ev.relay) lineUp(near2, got, th.tRel + 0.3);
     if (r.kind === 'triple') arriveBy(cover2, bag2(got.at), th.tArr, FPOSE.cover, { faceTo: got.at, name: 'cover' });   // 3루타도 2루는 비우지 않는다
     if (picker !== O) arriveBy(O, backupSpot(O, got.at, 8), ic.t, FPOSE.backup, { faceTo: got.at, name: 'backup' });
     else { const ob = otherOF(O); arriveBy(ob, backupSpot(ob, got.at, 10), ic.t, FPOSE.backup, { faceTo: got.at, name: 'backup' }); }
@@ -836,8 +973,11 @@ function entrySkeleton(play, f, e, t) {
 // 동작이 바뀌면 앞 자세에서 BLEND초 동안 섞는다. 뛰기 시작·멈추기·서 있는 자세로 크게 돌아설 때는 도는 각만큼 TURN_MORE초까지 더 천천히 돈다(180도면 0.33초, 다음 동작 전까지).
 // 잡기·던지기는 공이 정한 때에 맞춰야 해서 정한 시간 그대로다(BLEND, 달려가며 잡기는 e.blend = PICK_LEAD). 도는 각은 동작마다 한 번 재 둔다(e.turn: 섞는 동안 뛰는 몸이 흔들려도 도는 쪽이 바뀌지 않게)
 export function actorSkeleton(play, f, t) {
-  const { e, prev, i } = actorEntry(play, f, t);
+  const { e, i } = actorEntry(play, f, t);
   if (!e) return entrySkeleton(play, f, readyEntry(f), t);
+  let j = i - 1;   // 길이가 0인 앞 동작(곧바로 다음 동작이 시작해 안 보인 자세)은 건너뛰고 그 앞 동작에서 섞는다(일어나자마자 뛸 때 몸이 한 장면에 35도 돌았다)
+  while (j > 0 && play.acts[f.pos][j].t0 >= e.t0) j--;
+  const prev = j >= 0 ? play.acts[f.pos][j] : null;
   const k = entrySkeleton(play, f, e, t), since = t - e.t0, base = e.blend ?? BLEND;
   if (since >= base + TURN_MORE) return k;
   const from = (q) => (prev ? entrySkeleton(play, f, prev, Math.min(q, prev.t1 ?? q)) : f === PITCHER_F ? pitcherSkeleton(port.pitchT(), !!port.lefty()) : entrySkeleton(play, f, readyEntry(f), q));
