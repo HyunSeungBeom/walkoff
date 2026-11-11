@@ -5974,6 +5974,7 @@ function finish(r) {
     game.gained = scenarioPoints(r);   // 10구와 같은 점수(볼·연속 보너스·2배는 없다, core scenarioPoints)
     game.score += game.gained;
     game.scnBefore = JSON.parse(JSON.stringify(game.scn));   // 결과 글자 전까지는 공이 맞기 전 상황판을 그린다
+    r.onBase = game.scnBefore.bases.some(Boolean);   // 누상에 주자가 있으면 아웃 뒤 공을 돌리지 않는다(수비 일정 fieldPlay를 만들기 전에)
     game.scnEvent = applyScenario(game.scn, r);
     game.scnWinT = game.scn.end === 'win' ? walkoffTime(r) : null;   // 끝내기 승리면 이긴 점수가 홈을 밟을 때 끝 화면으로(update)
   } else {

@@ -1,12 +1,13 @@
 // 지금 주자 자리(2026-11-06 코드 나누기 4단계에서 main.js에서 옮김): 친 타자가 맞은 뒤 t초에 있는 자리(runnerAt)와 멈춘 뒤의 다리(runAfter),
 // 끝내기 상황 누상 주자의 뛰기 계획(scenarioRuns)과 t초의 자리(baseRunnersAt), 끝내기가 정해지는 때(walkoffTime). 공이 맞기 전 상황판은 인자로 받는다
-import { clamp, polar } from '../core/math.js';
+import { clamp, DEG, polar } from '../core/math.js';
 import { BASE1, BASE2, BASE3, MOUND } from '../core/field.js';
 import { HOME_PLATE, leadAt, RUN_JUMP, RUN_TAU, RUNNER_ROUTES, SLIDE_BRAKE as BASE_SLIDE } from '../core/scenario.js';
+import { catchTime } from '../core/flight.js';
 import { port } from './port.js';
 import { flatDist, smooth, stepToward, unitTo } from './geom.js';
 import { JOG, makeLeg, routeState, runTrack, SPRINT, standingRunner, TROT } from './route.js';
-import { batsOf, headFirstAt, HF_DIVE, HF_UP, runPlan, runStartOf, SLIDE_DOWN, SLIDE_IN, SLIDE_UP } from './batter.js';
+import { batsOf, headFirstAt, HF_DIVE, HF_UP, runnerReach, runPlan, runStartOf, SLIDE_DOWN, SLIDE_IN, SLIDE_UP } from './batter.js';
 import { fieldPlay } from './fielding.js';
 
 // 친 타자가 멈춘 뒤의 다리(2026-11-03 사용자 '주루 다듬기' 1·4·5번). 없으면 null(2루타·3루타는 미끄러져 베이스에 선다):
@@ -59,8 +60,25 @@ function afterState(a, tt) {
   if (a.down) run.look = [run.dir[0], -0.55, run.dir[1]];
   return run;
 }
+// 아웃된 타자는 고개를 젓는다(2026-11-11 사용자 '넘겨 ㄱㄱ', 작업 글 walkoff-motion.md '친 뒤 동작 묶음'): 땅볼 아웃은 1루를 밟고, 뜬공 아웃은 잡히고 SHAKE_DELAY초 뒤,
+// 머리부터 미끄러진 아웃은 일어나 나가기 시작할 때부터 SHAKE_LEN초 동안 조금 숙인 채 좌우로 SHAKE_DEG도씩 초당 SHAKE_HZ번 젓는다(그동안 속도를 줄여 선다).
+// 화면에 작게 보여서 실제보다 크게 젓는다. 몸이 가는 자리와 1루를 밟는 때는 그대로다
+const SHAKE_DELAY = 0.15, SHAKE_LEN = 1.3, SHAKE_DEG = 42, SHAKE_HZ = 2.2;
+function shakeFrom(r) {
+  if (r.shakeAt !== undefined) return r.shakeAt;
+  const plan = runPlan(r), dp = r.scnPlay?.dp;
+  let t = null;
+  if (plan && r.kind === 'out' && !(dp?.out2 && !dp.out1)) t = plan.dive ? runAfter(r).t0 : r.type === 'ground' ? runnerReach(r, BASE1) + SHAKE_DELAY : catchTime(r) + SHAKE_DELAY;
+  return (r.shakeAt = t);
+}
 // 맞은 뒤 t초에 친 타자가 있는 자리와 보는 쪽. 아직 안 뛰거나 뛰지 않는 결과면 null
 export function runnerAt(r, t) {
+  const run = runState(r, t), s = run ? shakeFrom(r) : null;
+  if (s == null || t < s || t >= s + SHAKE_LEN) return run;
+  const u = t - s, a = SHAKE_DEG * DEG * Math.sin(2 * Math.PI * SHAKE_HZ * u) * smooth(u / 0.12) * (1 - smooth((u - SHAKE_LEN + 0.3) / 0.3)), c = Math.cos(a), sn = Math.sin(a), d = run.dir;
+  return { ...run, look: [d[0] * c - d[1] * sn, -0.4, d[0] * sn + d[1] * c] };
+}
+function runState(r, t) {
   const plan = r && runPlan(r);
   const t0 = runStartOf(batsOf(r));
   if (!plan || t < t0) return null;

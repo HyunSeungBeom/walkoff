@@ -2906,7 +2906,7 @@ test.describe('수비', () => {
           if (!(r.type === 'line' || r.type === 'fly') || !['single', 'double', 'triple'].includes(r.kind)) continue;
           const kind = r.kind, pl = w.fieldPlay(r), K = F(Math.max(-43, Math.min(43, r.spray)) < 0 ? '유격수' : '2루수');
           t.air++; if (r.kind !== kind) t.kinds.add(r.kind);   // 수비 그림은 판정을 바꾸지 않는다
-          const tr = pl.ev.tries?.[0];
+          const tr = pl.ev.tries?.find((x) => x.pos === K.pos);   // 3루수·1루수 시도(2026-11-11)는 아래 테스트가 본다
           if (tr) {
             t[tr.how]++;
             let g = Infinity, b = Infinity;
@@ -2940,6 +2940,139 @@ test.describe('수비', () => {
     expect(d.throws).toBeGreaterThan(d.air);
     expect(d.offGlove).toBe(0);
     expect(d.kinds).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  // 2026-11-11 친 뒤 동작 묶음(작업 글 walkoff-motion.md). 전에는 3루수·1루수가 키스톤 반응 없이 머리 위 직선타에도 서 있었다
+  test('3루수·1루수 반응: 곁을 지나는 뜬 안타에 뛰어오르거나 몸을 날려 아슬아슬하게 놓치고(공에 닿지 않는다), 아니면 쫓다가 1루·3루로 돌아간다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const w = walkoff, t = { air: 0, near: 0, idle: 0, leap: 0, dive: 0, nearGlove: 0, nearBody: 0, tried: 0, home: 0, throws: 0, offGlove: 0 };
+      const d3 = (p, b) => Math.hypot(p[0] - b.x, p[1] - b.y, p[2] - b.z), F = (pos) => w.DEFENSE.find((f) => f.pos === pos);
+      for (let sd = 1; sd <= 8; sd++) {
+        const seq = w.makeSequence(sd, w.pitcherHand(sd) === 'L');
+        for (let i = 0; i < 16; i++) for (let dt = -90; dt <= 90; dt += 6) for (const bats of ['R', 'L']) {
+          const r = w.judgeSwing(seq[i], dt, bats);
+          if (!(r.type === 'line' || r.type === 'fly') || !['single', 'double', 'triple'].includes(r.kind)) continue;
+          const pl = w.fieldPlay(r);
+          t.air++;
+          for (const [pos, bag] of [['3루수', w.BASE3], ['1루수', w.BASE1]]) {
+            const f = F(pos), h = w.actorState(null, f, 0).spot, first = pl.acts[pos].find((e) => e.k !== 'pose' || e.track);
+            // 4.2m 아래로 7m 안을 지나는 공인데 맞고 2.4초가 지나도록 첫 동작이 없으면 멍하니 선 것
+            let near = false;
+            for (let s = 0.3; s <= pl.ev.land && !near; s += 1 / 30) { const b = pl.ball(s); near = b.y < 4.2 && Math.hypot(b.x - h[0], b.z - h[1]) < 7; }
+            if (near) { t.near++; if ((first ? first.t0 : pl.end) > 2.4) t.idle++; }
+            const tr = pl.ev.tries?.find((x) => x.pos === pos);
+            if (!tr) continue;
+            t[tr.how]++;
+            let g = Infinity, b = Infinity;
+            for (let s = Math.max(0, tr.t - 0.5); s <= Math.min(tr.t + 0.5, pl.ev.land); s += 1 / 240) {
+              const ball = pl.ball(s), k = w.actorSkeleton(pl, f, s);
+              g = Math.min(g, d3(k.hands.l, ball), d3(k.hands.r, ball)); b = Math.min(b, d3(k.pelvis, ball), d3(k.chest, ball), d3(k.head, ball));
+            }
+            if (g < 0.2) t.nearGlove++;
+            if (b < 0.3) t.nearBody++;
+            if (pl.ev.fielder === pos || pl.ev.receiver === pos) continue;   // 공을 줍거나 받은 사람은 그 일을 한다
+            t.tried++; const sp = w.actorState(pl, f, 30).spot; if (Math.hypot(sp[0] - bag[0], sp[1] - bag[1]) < 4) t.home++;   // 마지막에 선 자리
+          }
+          for (const [tt, pos] of [[pl.ev.relayAt, pl.ev.relay], [pl.ev.arrive, pl.ev.receiver]]) {   // 3루타의 3루수도 받는 글러브에 공이 닿는다
+            if (tt == null || !F(pos)) continue;
+            t.throws++; if (d3(w.actorSkeleton(pl, F(pos), tt).hands.l, pl.ball(tt)) > 0.3) t.offGlove++;
+          }
+        }
+      }
+      return t;
+    });
+    expect(d.near).toBeGreaterThan(300);
+    expect(d.idle).toBe(0);                    // 전에는 37판
+    expect(d.leap).toBeGreaterThan(60);        // 전에는 둘 다 0
+    expect(d.dive).toBeGreaterThan(100);
+    expect((d.leap + d.dive) / d.air).toBeLessThan(0.2);
+    expect(d.nearGlove).toBe(0);               // 판정이 안타라 글러브·몸은 공에 닿지 않는다
+    expect(d.nearBody).toBe(0);
+    expect(d.home / d.tried).toBeGreaterThan(0.97);   // 잡으려 한 뒤 베이스(4m 안)로 돌아간다
+    expect(d.throws).toBeGreaterThan(d.air);
+    expect(d.offGlove).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  test('친 뒤 동작: 홈런이면 내야수가 돌아서서 몸을 젖혀 넘어가는 공을 올려다보고 외야수는 멈춰 서서 보며, 뜬공을 잡으면 글러브를 치고, 아웃 뒤에는 카메라를 그대로 둔 채 공을 돌려 투수에게 주고(누상에 주자가 있으면 안 함), 아웃된 타자는 고개를 젓는다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const errors = await open(page);
+    const d = await page.evaluate(() => {
+      const w = walkoff, F = (pos) => w.DEFENSE.find((f) => f.pos === pos), d3 = (p, b) => Math.hypot(p[0] - b.x, p[1] - b.y, p[2] - b.z), fc = (k) => k.axes?.fc ?? k.facing(k.shTurn);
+      const fence = (s) => 100 + 22 * Math.cos(Math.max(-43, Math.min(43, s)) * 2 * Math.PI / 180);
+      const t = { hr: 0, all: 0, turned: 0, lean: 0, back: 0, ofN: 0, ofStop: 0, catches: 0, slap: 0, inGlove: 0, ifCatch: 0, ifSlap: 0, of: 0, ofToP: 0, ground: 0, around: 0, aroundOff: 0, toP: 0, lateFocus: 0, outs: 0, shake: 0, onBase: 0 };
+      for (let sd = 1; sd <= 6; sd++) {
+        const seq = w.makeSequence(sd, w.pitcherHand(sd) === 'L');
+        for (let i = 0; i < 16; i++) for (let dt = -90; dt <= 90; dt += 6) {
+          const r = w.judgeSwing(seq[i], dt, 'R');
+          if (r.kind === 'hr') {   // 공이 담장을 넘을 때(over) 내야수가 공 쪽을 보고 몸을 젖혔고, 관중석에 떨어지고(fall) 3초 뒤에는 마운드 쪽으로 돌아섰다
+            const pl = w.fieldPlay(r), fz = fence(r.spray);
+            let over = 0, fall = 0;
+            for (let s = 0; s < 9; s += 0.01) { const b = pl.ball(s); if (!over && Math.hypot(b.x, b.z) >= fz) over = s; if (b.hidden) { fall = s; break; } }
+            t.hr++;
+            for (const pos of ['3루수', '유격수', '2루수', '1루수']) {
+              const f = F(pos), k = w.actorSkeleton(pl, f, over), b = pl.ball(over), to = [b.x - k.pelvis[0], b.z - k.pelvis[2]], v = fc(k);
+              t.all++;
+              if ((v[0] * to[0] + v[2] * to[1]) / Math.hypot(...to) > 0.5) t.turned++;
+              if ((k.chest[0] - k.pelvis[0]) * v[0] + (k.chest[2] - k.pelvis[2]) * v[2] < -0.05) t.lean++;
+              const kb = w.actorSkeleton(pl, f, fall + 3), m = [-kb.pelvis[0], 18.44 - kb.pelvis[2]], vb = fc(kb);
+              if ((vb[0] * m[0] + vb[2] * m[1]) / Math.hypot(...m) > 0.5) t.back++;
+            }
+            const side = Math.max(-43, Math.min(43, r.spray)), O = ['좌익수', '중견수', '우익수'].map(F).reduce((a, f) => (Math.abs(f.a - side) < Math.abs(a.a - side) ? f : a));
+            if (!pl.acts[O.pos].some((e) => e.name === 'leap')) { t.ofN++; if (w.actorState(pl, O, fall + 0.35).pose !== 'run') t.ofStop++; }   // 카메라가 타석으로 돌아올 때는 멈춰 서서 본다
+          }
+          if (r.kind !== 'out') continue;
+          const pl = w.fieldPlay(r);
+          const a0 = pl.ev.around && pl.segs.find((q) => q.t0 > pl.ev.around.t0 + 0.05)?.t0;   // 공 돌리기로 공이 글러브에서 나간 뒤로는 카메라 목표가 움직이지 않는다
+          if (a0 != null) { const f0 = pl.focus(a0); for (let s = a0; s < a0 + 6; s += 0.1) { const f1 = pl.focus(s); if (Math.hypot(f1.x - f0.x, f1.y - f0.y, f1.z - f0.z) > 0.3) { t.lateFocus++; break; } } }
+          if (r.type !== 'ground') {   // 잡고 1.3초 안(늦게 시작하면 끝날 때까지)에 공 쥔 손이 글러브를 치고(10cm 안), 0.9초까지 공은 글러브에 있다
+            const X = F(pl.ev.fielder), tc = pl.ev.catch;
+            let slap = false, held = true;
+            for (let s = tc + 0.3; s <= Math.max(tc + 1.3, (pl.ev.slap ?? 0) + 0.6); s += 1 / 60) { const k = w.actorSkeleton(pl, X, s); if (Math.hypot(...k.hands.r.map((x, j) => x - k.hands.l[j])) < 0.1) slap = true; if (s < tc + 0.9 && d3(k.hands.l, pl.ball(s)) > 0.05) held = false; }
+            t.catches++; if (slap) t.slap++; if (held) t.inGlove++;
+            if (!pl.ev.lob) { t.ifCatch++; if (slap) t.ifSlap++; }   // 내야 뜬공은 늘 친다(외야수는 중계 송구 전에 끝날 때만, 달려가거나 몸을 날려 잡으면 바로 던진다)
+            if (pl.ev.lob) { t.of++; if (pl.ev.around?.to.at(-1) === '투수') t.ofToP++; }
+          } else {   // 땅볼 아웃: 공을 받는 사람마다 그때 공이 글러브에 있고, 마지막에 마운드 앞 투수가 받는다
+            t.ground++;
+            const a = pl.ev.around;
+            if (a) {
+              t.around++;
+              let last = null;
+              for (const q of pl.segs) if (q.by && q.t0 > a.t0 + 0.05) { last = q; if (d3(w.actorSkeleton(pl, q.by, q.t0).hands.l, pl.ball(q.t0)) > 0.3) t.aroundOff++; }
+              const sp = last && w.actorState(pl, last.by, last.t0 + 1).spot;
+              if (last?.by.pos === '투수' && Math.hypot(sp[0], sp[1] - 16.94) < 1) t.toP++;
+            }
+            const q = w.judgeSwing(seq[i], dt, 'R'); q.onBase = true;   // 끝내기 상황처럼 누상에 주자가 있으면 공을 돌리지 않는다
+            if (w.fieldPlay(q).ev.around) t.onBase++;
+          }
+          // 아웃된 타자: 1루를 밟고(뜬공은 잡히고) 0.15초 뒤부터 1.3초 동안 고개(챙)가 뛰는 쪽에서 좌우로 30도 넘게 두 번 넘게 오간다
+          const s0 = (r.type === 'ground' ? w.runnerReach(r, w.BASE1) : w.catchTime(r)) + 0.15, ys = [];
+          for (let s = s0; s <= s0 + 1.3; s += 1 / 60) { const q = w.runnerAt(r, s); if (!q) continue; const k = w.runnerSkeleton(q), b = [k.brim[0] - k.head[0], k.brim[2] - k.head[2]]; ys.push(Math.atan2(q.dir[0] * b[1] - q.dir[1] * b[0], q.dir[0] * b[0] + q.dir[1] * b[1]) * 180 / Math.PI); }
+          let n = 0, lo = Infinity, hi = -Infinity, dir = 0;
+          for (let j = 1; j < ys.length; j++) { const dd = Math.sign(ys[j] - ys[j - 1]); if (dd && dd !== dir) { if (dir && Math.abs(ys[j - 1] - (dir > 0 ? lo : hi)) > 30) n++; dir = dd; lo = hi = ys[j - 1]; } lo = Math.min(lo, ys[j]); hi = Math.max(hi, ys[j]); }
+          t.outs++; if (n >= 2) t.shake++;
+        }
+      }
+      return t;
+    });
+    expect(d.hr).toBeGreaterThan(150);
+    expect(d.turned / d.all).toBeGreaterThan(0.98);   // 전에는 0.7%(홈 쪽을 본 채 고개만 뒤로 돌았다)
+    expect(d.lean / d.all).toBeGreaterThan(0.98);
+    expect(d.back / d.all).toBeGreaterThan(0.98);
+    expect(d.ofStop / d.ofN).toBeGreaterThan(0.98);   // 전에는 35%(카메라가 돌아올 때 아직 뛰고 있었다)
+    expect(d.slap / d.catches).toBeGreaterThan(0.6);   // 전에는 0
+    expect(d.ifSlap).toBe(d.ifCatch);
+    expect(d.inGlove).toBe(d.catches);
+    expect(d.ofToP).toBe(d.of);                        // 외야 뜬공은 중계수가 받아 투수에게 준다
+    expect(d.around / d.ground).toBeGreaterThan(0.98); // 전에는 0(1루수가 몸을 뻗은 채 멈춰 있었다)
+    expect(d.aroundOff).toBe(0);
+    expect(d.toP).toBe(d.around);
+    expect(d.lateFocus).toBe(0);                       // 공을 돌려도 카메라는 따라가지 않는다(다음 공 와인드업이 기다리지 않게)
+    expect(d.onBase).toBe(0);
+    expect(d.shake / d.outs).toBeGreaterThan(0.95);    // 전에는 0
     expect(errors).toEqual([]);
   });
 });
