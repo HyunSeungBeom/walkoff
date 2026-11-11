@@ -17,8 +17,8 @@ export const WINDUP = 1.0;   // 와인드업 시작부터 공을 놓기까지(�
 // tilt는 글러브 쪽으로 기울인 정도(라디안). 공을 놓을 때 몸통을 글러브 쪽으로 기울여 던지는 어깨가 올라가서 팔이 머리 위로 넘어오는 것처럼 보인다
 const PITCH_KEYS = [
   [0, { pel: [0.03, 0.95, 0.02], hip: 180, sh: 180, lean: 0.05, tilt: 0, lf: [0, 0.03, -0.42], rf: [0.02, 0.03, 0.15], gl: [-0.2, 1.28, -0.05], bh: [-0.18, 1.26, 0.02] }],
-  [0.18, { pel: [0.04, 0.96, 0.05], hip: 178, sh: 176, lean: 0.03, tilt: 0, lf: [-0.04, 0.14, -0.3], rf: [0.02, 0.03, 0.15], gl: [-0.21, 1.32, -0.03], bh: [-0.19, 1.3, 0.04] }],
-  [0.4, { pel: [0.05, 0.98, 0.08], hip: 172, sh: 168, lean: -0.04, tilt: 0, lf: [-0.18, 0.62, -0.08], rf: [0.02, 0.03, 0.15], gl: [-0.22, 1.36, 0], bh: [-0.2, 1.34, 0.06] }],
+  [0.18, { pel: [0.04, 0.96, 0.05], hip: 176, sh: 173, lean: 0.03, tilt: 0, lf: [-0.04, 0.14, -0.3], rf: [0.02, 0.03, 0.15], gl: [-0.21, 1.34, -0.03], bh: [-0.19, 1.32, 0.04] }],
+  [0.4, { pel: [0.05, 0.98, 0.08], hip: 164, sh: 157, lean: -0.04, tilt: 0, lf: [-0.18, 0.66, -0.08], rf: [0.02, 0.03, 0.15], gl: [-0.22, 1.41, 0], bh: [-0.2, 1.39, 0.06] }],   // 2026-11-11: 다리를 들며 몸을 2루 쪽으로 더 감고 손을 턱 쪽으로 올린다
   [0.58, { pel: [0.03, 0.88, -0.5], hip: 200, sh: 178, lean: 0, tilt: 0, lf: [0.02, 0.28, -1.15], rf: [0.02, 0.03, 0.15], gl: [0, 1.38, -0.95], bh: [-0.3, 0.85, 0.35] }],
   [0.75, { pel: [0.03, 0.82, -0.95], hip: 240, sh: 195, lean: 0.1, tilt: 0.08, lf: [0.05, 0.03, -1.6], rf: [0, 0.05, 0.12], gl: [0.1, 1.38, -1.5], bh: [-0.32, 1.76, -0.5] }],
   [0.9, { pel: [0.03, 0.8, -1.15], hip: 262, sh: 240, lean: 0.28, tilt: 0.2, lf: [0.05, 0.03, -1.6], rf: [-0.02, 0.1, 0], gl: [0.18, 1.2, -1.38], bh: [-0.42, 1.62, -0.85] }],
@@ -77,11 +77,20 @@ function assembleFigure(v, W, R, yawOf, lefty = false) {
   return { world: true, noBat: true, plain: true, cap: true, bare: true, side: 1, front: 0, mitt: mittHand, ballHand, e: 0, shTurn: shYaw, hipTurn: hipYaw,
     pelvis, chest, hips, shoulders, feet, knees, elbows, hands, hand: ball, tip: ball, yaw: 0, left, facing, head };
 }
-// t초의 투수 뼈대(화면 기준 좌표). 키는 마운드 위 좌표이고 좌완은 좌우를 거울로 뒤집는다
-export function pitcherSkeleton(t, lefty = false) {
-  const m = lefty ? -1 : 1;
-  const k = assembleFigure(pitchTrack(t), (x, y, z) => [m * x, 0.25 + y, MOUND + z], (q) => [m * q[0], q[1], q[2]], (deg) => (lefty ? 180 - deg : deg) * DEG, lefty);
-  k.brim = V.add(k.head, [0, -0.03, -0.12]);   // 투수는 늘 홈(포수) 쪽을 본다
+// t초의 투수 뼈대(화면 기준 좌표). 키는 마운드 위 좌표이고 좌완은 좌우를 거울로 뒤집는다.
+// idle(화면 시계 초)을 주면 세트 자세로 서 있는 동안(와인드업 앞, 마운드로 돌아온 뒤) 숨을 쉬고, 와인드업 앞 0.5초에 포수 사인을 보고 한 번 끄덕인다
+// (2026-11-11 사용자 '딱딱하다'. 전에는 다음 공을 누를 때까지 굳어 있었다). 수비가 이어 그릴 때(fielding.js)는 idle 없이 부른다
+const SET_AGAIN = PITCH_KEYS[PITCH_KEYS.length - 1][0];
+export function pitcherSkeleton(t, lefty = false, idle = null) {
+  const m = lefty ? -1 : 1, v = pitchTrack(t).slice();   // 처음·끝 키는 키 배열 그대로라 사본에 더한다
+  if (idle != null && (t <= 0 || t >= SET_AGAIN)) {   // 숨: 골반·손이 조금 오르내리고 몸이 살짝 숙여진다
+    const b = Math.sin(1.9 * idle);
+    v[1] += 0.004 * b; v[5] += 0.015 * b; v[13] += 0.008 * b; v[16] += 0.008 * b;
+  }
+  const k = assembleFigure(v, (x, y, z) => [m * x, 0.25 + y, MOUND + z], (q) => [m * q[0], q[1], q[2]], (deg) => (lefty ? 180 - deg : deg) * DEG, lefty);
+  const u = (t + 0.47) / 0.27, nod = idle != null && u > 0 && u < 1 ? Math.sin(Math.PI * u) ** 2 : 0;   // 사인에 끄덕임(머리가 숙여졌다 돌아온다)
+  if (nod) k.head = V.add(k.head, [0, -0.05 * nod, -0.015 * nod]);
+  k.brim = V.add(k.head, [0, -0.03 - 0.09 * nod, -0.12 + 0.03 * nod]);   // 투수는 늘 홈(포수) 쪽을 본다
   return k;
 }
 // 테스트용: t초에 공을 쥔 손의 자리. 공을 놓는 순간에는 RELEASE와 같아야 공이 손에서 나간다

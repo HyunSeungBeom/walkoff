@@ -61,6 +61,11 @@ export function reasonFor(r, p, miss) {
   if (p.ty < 0.65 && r.type === 'ground') return '낮은 공은 땅볼이 되기 쉬워요';
   if (r.gap) return `${r.gap}을 빠져나갔어요`;
   if (Math.abs(r.dt) <= PERFECT_MS) return '타이밍은 완벽했어요';
+  // 공 자리대로 친 안타(2026-11-11 패들렛 의견 '팔을 쭉 빼서 치는 모션, 몸쪽 스윙', 그림은 main.js swingAim). 바깥쪽·몸쪽은 존 가운데에서 7cm 넘게,
+  // 민 쪽·당긴 쪽은 가운데 ±8도 밖(fieldArea의 중). 우타는 바깥쪽이 +x이고 1루 쪽(+)으로 밀어 친다
+  const lx = (r.bats === 'L' ? -1 : 1) * p.tx, pull = (r.bats === 'L' ? 1 : -1) * r.spray;
+  if (r.hit && lx > 0.07 && pull < -8) return '바깥쪽 공을 팔을 뻗어 밀어 쳤어요';
+  if (r.hit && lx < -0.07 && pull > 8) return '몸쪽 공을 몸을 열어 돌려 쳤어요';
   return r.dt > 0 ? '늦어서 밀어친 타구예요' : '빨라서 당겨친 타구예요';
 }
 

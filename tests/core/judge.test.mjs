@@ -30,6 +30,20 @@ test('core 판정은 결과 코드만 돌려주고, 이름·이유 글은 view/t
   assert.deepEqual(Object.keys(labelTake(take, p, 'R')).sort(), ['kind', 'name', 'points', 'reason', 'took']);
 });
 
+test('공 자리대로 친 안타는 그 까닭을 쓴다(2026-11-11 패들렛 의견): 바깥쪽 공을 밀어 친 안타, 몸쪽 공을 당겨 친 안타. 타이밍이 완벽하면 그 말이 먼저다', () => {
+  const pick = (seed, i, dt, bats) => { const p = makeSequence(seed, pitcherHand(seed) === 'L')[i]; return labelSwing(judgeSwing(p, dt, bats), p); };
+  assert.deepEqual([pick(12, 2, 20, 'R').name, pick(12, 2, 20, 'R').reason], ['우중간 2루타', '바깥쪽 공을 팔을 뻗어 밀어 쳤어요']);   // 우타 바깥쪽 슬라이더를 늦게
+  assert.deepEqual([pick(15, 4, 20, 'L').name, pick(15, 4, 20, 'L').reason], ['좌중간 2루타', '바깥쪽 공을 팔을 뻗어 밀어 쳤어요']);   // 좌타 바깥쪽 포크
+  assert.deepEqual([pick(8, 2, -20, 'R').name, pick(8, 2, -20, 'R').reason], ['좌중간 2루타', '몸쪽 공을 몸을 열어 돌려 쳤어요']);    // 우타 몸쪽 슬라이더를 빨리
+  const seen = { out: 0, in: 0 };
+  for (const { p, dt, bats } of grid()) {
+    const r = labelSwing(judgeSwing(p, dt, bats), p), lx = (bats === 'L' ? -1 : 1) * p.tx, pull = (bats === 'L' ? 1 : -1) * r.spray;
+    if (r.reason === '바깥쪽 공을 팔을 뻗어 밀어 쳤어요') { seen.out++; assert.ok(r.hit && lx > 0.07 && pull < -8 && Math.abs(r.dt) > PERFECT_MS, JSON.stringify(r)); }
+    if (r.reason === '몸쪽 공을 몸을 열어 돌려 쳤어요') { seen.in++; assert.ok(r.hit && lx < -0.07 && pull > 8 && Math.abs(r.dt) > PERFECT_MS, JSON.stringify(r)); }
+  }
+  assert.ok(seen.out > 500 && seen.in > 500, JSON.stringify(seen));
+});
+
 test('정타는 아웃이 되지 않는다(존 안 공, 타이밍 차이 15ms 안)', () => {
   let perfect = 0;
   for (let seed = 1; seed <= 120; seed++) {

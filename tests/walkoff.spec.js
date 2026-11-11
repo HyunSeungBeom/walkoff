@@ -1738,6 +1738,97 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('타자는 기다리는 동안 몸무게를 옮기고 숨 쉬며 배트를 까딱이고, 투수가 다리를 들면 까딱임이 잦아들며 몸무게를 뒷발에 싣는다(2026-11-11)', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const range = (set, f) => { const v = []; for (let t = 0; t <= 3.2; t += 0.04) v.push(f(walkoff.batterSkeleton(null, { idle: t, load: 0, set, n: 3 }))); return Math.max(...v) - Math.min(...v); };
+      const pel = walkoff.batterSkeleton(null, { idle: 0, load: 0, set: 0, n: 3 }).pelvis[2], back = walkoff.batterSkeleton(null, { idle: 0, load: 0, set: 1, n: 3 }).pelvis[2];
+      return { sway: range(0, (k) => k.pelvis[2]), breath: range(0, (k) => k.chest[1]), tip: range(0, (k) => k.tip[0]), tipSet: range(1, (k) => k.tip[0]), back: back - pel };
+    });
+    expect(r.sway).toBeGreaterThan(0.04);    // 몸무게를 앞뒤로(전에는 골반이 그대로였다)
+    expect(r.breath).toBeGreaterThan(0.012); // 숨
+    expect(r.tip).toBeGreaterThan(0.06);     // 배트 끝 까딱임(포수 쪽을 가리킨 배트가 좌우로)
+    expect(r.tipSet).toBeLessThan(r.tip * 0.3);   // 투수가 다리를 들면 자리를 잡는다
+    expect(r.back).toBeLessThan(0);          // 몸무게를 뒷발(포수 쪽)로
+    expect(errors).toEqual([]);
+  });
+
+  test('공 자리별 스윙(2026-11-11 패들렛 의견): 맞는 순간 배트가 공이 지나는 길을 지나고 두 팔이 손에 닿는다. 바깥쪽은 손을 뻗고 몸쪽은 당기며 엉덩이를 먼저 열고, 낮은 공은 무릎을 굽히고 배트 끝이 내려간다. 닿지 않는 공은 모자라고, 좌타는 거울이다', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const w = walkoff, shift = w.view.mobile ? 0.4 : 0, D = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      const seg = (p, a, b) => { const ab = [0, 1, 2].map((j) => b[j] - a[j]), ap = [0, 1, 2].map((j) => p[j] - a[j]), t = Math.max(0, Math.min(1, ap.reduce((s, v, j) => s + v * ab[j], 0) / ab.reduce((s, v) => s + v * v, 0))); return Math.hypot(...ap.map((v, j) => v - ab[j] * t)); };
+      const out = { path: 0, far: Infinity, reach: 0, hit: 0, n: 0 };
+      for (const bats of ['R', 'L']) {
+        w.setBats(bats);
+        const side = bats === 'L' ? -1 : 1, W = (q) => [side * (q[0] + shift), q[1], q[2]];
+        for (let seed = 1; seed <= 12; seed++) for (const p of w.makeSequence(seed, w.pitcherHand(seed) === 'L').slice(0, 12)) for (const dt of [-200, -60, 0, 40, 120]) {
+          const res = w.judgeSwing(p, dt, bats), a = w.swingAim(p, res), k = w.batterSkeleton(0, null, a), miss = Math.max(-0.25 - p.tx, p.tx - 0.25, 0.5 - p.ty, p.ty - 1.1, 0);
+          let d = Infinity;
+          for (let u = 0.9; u <= 1.05; u += 0.002) { const q = w.ballPos(p, u); d = Math.min(d, seg([q.x, q.y, q.z], W(k.hand), W(k.tip))); }
+          if (miss > 0.2) out.far = Math.min(out.far, d); else out.path = Math.max(out.path, d);
+          out.reach = Math.max(out.reach, D(k.hand, k.shoulders.l), D(k.hand, k.shoulders.r));
+          if (res.kind !== 'whiff') out.hit = Math.max(out.hit, seg(a?.hit ?? [0, 1, 0.3], W(k.hand), W(k.tip)));   // 전에는 늘 이 자리(HIT_SPOT)
+          out.n++;
+        }
+      }
+      w.setBats('R');
+      const pose = (tx, ty, bats = 'R') => { w.setBats(bats); const p = { type: 'fastball', kmh: 150, tx, ty, T: 0.75, n: 1, lefty: bats === 'L' }, a = w.swingAim(p, w.judgeSwing(p, 0, bats)), k = w.batterSkeleton(0, null, a); return { reach: k.hand[0] - k.chest[0], hip: k.hipTurn, pel: k.pelvis[1], tip: k.tip[1], hand: k.hand, hit: a?.hit ?? [0, 1, 0.3] }; };   // 좌타는 좌완 공(공 길도 거울)
+      const o = pose(0.2, 0.8), i = pose(-0.2, 0.8), hi = pose(0, 1.05), lo = pose(0, 0.55), oL = pose(-0.2, 0.8, 'L');
+      w.setBats('R');
+      return { ...out, outReach: o.reach - i.reach, hipOpen: i.hip - o.hip, crouch: hi.pel - lo.pel, tipDrop: hi.tip - lo.tip, mirror: D(o.hand, oL.hand), hitMirror: o.hit[0] + oL.hit[0] };
+    });
+    expect(r.n).toBe(1440);
+    expect(r.path).toBeLessThan(0.03);   // 배트 굵은 쪽이 공 길 3cm 안을 지난다(전에는 늘 같은 자리라 낮은 공은 30cm 넘게 떨어졌다)
+    expect(r.far).toBeGreaterThan(0.08); // 존에서 20cm 넘게 빠진 공은 닿지 않는다
+    expect(r.reach).toBeLessThan(0.59);  // 위팔 0.3 + 아래팔 0.29m(전에는 맞는 순간 앞팔이 12cm 모자랐다)
+    expect(r.hit).toBeLessThan(0.005);   // 친 공은 배트 위에서 출발한다
+    expect(r.outReach).toBeGreaterThan(0.12);   // 바깥쪽은 손을 몸에서 더 뻗는다(PC 0.15·폰 0.27m)
+    expect(r.hipOpen).toBeGreaterThan(10);      // 몸쪽은 엉덩이를 먼저 연다
+    expect(r.crouch).toBeGreaterThan(0.05);     // 낮은 공은 무릎을 굽힌다
+    expect(r.tipDrop).toBeGreaterThan(0.2);     // 낮은 공은 배트 끝이 내려간다
+    expect(r.mirror).toBeLessThan(1e-9);        // 좌타 바깥쪽(-x)은 우타 바깥쪽과 같은 자세를 거울로
+    expect(Math.abs(r.hitMirror)).toBeLessThan(1e-9);
+    expect(errors).toEqual([]);
+  });
+
+  test('친 공은 배트가 맞힌 자리에서 출발해 0.15초 뒤 판정의 길로 들어가고 맞는 순간 빛도 그 자리다. 헛스윙 뒤에는 배트를 내리고 고개를 저으며, 다음 공을 누르면 0.45초 동안 준비 자세로 돌아간다(2026-11-11)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.startGame('challenge'); });
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);   // seed 42 첫 공은 제때 치면 홈런
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    const hit = await page.evaluate(() => {
+      const g = walkoff.game, r = g.outcome, h = g.swingAim.hit, D = (a, b) => Math.hypot(a.x - b[0], a.y - b[1], a.z - b[2]), f = walkoff.flightPos(r, 0.15), q = walkoff.drawnFlight(r, 0.15);
+      return { kind: r.kind, start: D(walkoff.drawnFlight(r, 0), h), joined: Math.hypot(q.x - f.x, q.y - f.y, q.z - f.z), flash: D(g.contactPos, h) };
+    });
+    expect(hit).toEqual({ kind: 'hr', start: 0, joined: 0, flash: 0 });
+    // 헛스윙: 마무리 뒤 배트를 내리고(손이 어깨 아래로) 고개를 젓는다
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.startGame('challenge'); });
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, -200);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    const looks = [];
+    await expect.poll(async () => { const P = await page.evaluate(() => ({ ...walkoff.batterKeysNow(), rt: walkoff.game.resultT })); looks.push(Math.abs(P.look)); return P.rt > 1.5 ? P.hand[1] : 9; }, { intervals: [50], timeout: 5000 }).toBeLessThan(1.3);
+    expect(Math.max(...looks)).toBeGreaterThan(10);
+    await page.evaluate(() => walkoff.tap(performance.now()));   // 다음 공: 와인드업 앞 0.45초 동안 섞어 돌아간다
+    await expect.poll(() => page.evaluate(() => walkoff.game.state === 'windup' && walkoff.game.t > 0 ? Math.abs(walkoff.batterKeysNow().sh) : 99), { timeout: 5000 }).toBeLessThan(6);
+    expect(errors).toEqual([]);
+  });
+
+  test('투수는 세트 자세로 서 있는 동안 숨을 쉬고 와인드업 앞에 사인에 끄덕인다. 수비가 이어 그리는 투수(idle 없이)와 공을 놓는 손은 그대로다(2026-11-11)', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const w = walkoff, head = (t, idle) => w.pitcherSkeleton(t, false, idle).head[1], same = (t) => JSON.stringify(w.pitcherSkeleton(t, false, 0.7).hands) === JSON.stringify(w.pitcherSkeleton(t).hands);
+      return { nod: head(-0.5, 0) - head(-0.335, 0), breath: Math.abs(head(-1, 0) - head(-1, 0.8)), mid: [1.0, 1.5, 2.2].every(same), noIdle: head(-0.335) - head(-0.5) };
+    });
+    expect(r.nod).toBeGreaterThan(0.04);    // 머리가 숙여진다
+    expect(r.breath).toBeGreaterThan(0.003);
+    expect(r.mid).toBe(true);               // 공을 놓은 뒤(수비가 이어 그리는 때)는 숨을 더하지 않는다
+    expect(r.noIdle).toBe(0);               // idle 없이 부르면(수비) 끄덕이지 않는다
+    expect(errors).toEqual([]);
+  });
+
   test('친 타자는 결과대로 뛴다: 땅볼 아웃은 송구가 먼저 닿고, 뜬공은 잡히면 멈추고, 단타는 1루를 돌았다 돌아오고, 2루타는 미끄러져 2루에 서고, 홈런은 홈까지 돈다', async ({ page }) => {
     const errors = await open(page);
     const r = await page.evaluate(() => {

@@ -2,7 +2,7 @@
 // 바깥 연결(저장소·랭킹 서버·로그인·시드·소리·공유·통계·진동)은 js/infra/에서 가져온다(2026-11-03 코드 나누기 2단계, 2026-11-04 3단계, 2026-11-06 4단계. 나머지도 차례로 나눈다)
 import { clamp, DEG, easeOut, lerp, mulberry32, pickWeighted, polar } from './core/math.js';
 import { BALL_R, BASE1, BASE2, BASE3, FAIR_SPRAY, fenceDist, INFIELDERS, MOUND, OUTFIELDERS, RELEASE, ZONE } from './core/field.js';
-import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, zoneMiss } from './core/pitches.js';
+import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, REACH_M, zoneMiss } from './core/pitches.js';
 import { CHANCES, hitStreakBefore as hitStreakIn, hitStreakBonus, hrStreakBefore as hrStreakIn, hrStreakBonus, PERFECT_BONUS } from './core/score.js';
 import { groundPath, interceptGround, sprintTime } from './core/race.js';
 import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
@@ -549,8 +549,8 @@ const PITCHER_COLOR = { jersey: '#f4f5f9', shade: '#c9cfdb', pants: '#e7e9ef', n
 
 // 투수: 타자와 같은 3D 인형(drawBatterFigure)으로 그린다. 깊이대로 팔다리를 그려서 공 쥔 팔이 몸 뒤로 돌 때 몸에 가려진다.
 // 흰 유니폼에 상대 팀 색 모자·언더셔츠·스타킹, 글러브 손에는 큰 글러브, 공 쥔 손은 맨손이고 공을 쥐고 있으면 공도 그린다
-function drawPitcher(t, holdingBall, lefty) {
-  const k = pitcherSkeleton(t, lefty), C = pitcherColors();
+function drawPitcher(t, holdingBall, lefty, idle = null) {
+  const k = pitcherSkeleton(t, lefty, idle), C = pitcherColors();
   const base = project(k.pelvis[0], 0.25, k.pelvis[2] + 0.1);
   if (base) ellipseAt(base, 0.6 * base.s, 0.13 * base.s, 'rgba(0,0,0,0.3)');
   const pal = { jersey: C.jersey, shade: C.shade, pants: C.pants, pantsShade: C.shade, accent: C.navy, helmet: C.navy, brim: C.brim, belt: C.navy,
@@ -763,24 +763,119 @@ function batterSpan() {   // 테스트용: 칠 준비 자세의 몸(머리·손�
   return { min: Math.min(...xs), max: Math.max(...xs), w: view.w };
 }
 
+// 타자 자세는 키 값(몸·엉덩이 방향 sh·hip, 골반·가슴 자리, 앞어깨를 내린 길이 tilt, 두 발, 손, 배트 yaw·pitch, 팔꿈치 e, 고개 look·down)으로 정하고
+// 뼈대로 조립한다(batterBuild). 자리는 타자 뼈대 좌표(x는 바깥쪽이 +, z는 투수 쪽이 +, 좌타는 그릴 때 거울)이고, 섞을 때는 키 값을 섞는다(mixBatKeys).
 // tau: 스윙 뒤 지난 시간(초), null이면 준비 자세. 누른 순간을 맞는 순간으로 보여 준다
-// yaw는 배트 끝 방향(도): -90 포수 쪽, 0 1루 쪽(플레이트 위), 90 투수 쪽
-// pre는 준비 자세의 움직임(2026-11-02 사용자 요청 '타격을 더 부드럽고 자연스럽게', 전에는 공을 기다리는 동안 굳어 있었다):
-// idle(초)로 기다리는 동안 방망이를 1초에 0.7번 살짝 까딱이고, load(0~1)만큼 손을 포수 쪽으로 조금 높게 당긴다
-function batPose(tau, pre = null) {
-  let yaw, pitch, hand;
-  if (tau == null) {
-    const L = pre?.load ?? 0, w = pre ? (1 - L) * Math.sin(pre.idle * 4.4) : 0, w2 = pre ? (1 - L) * Math.sin(pre.idle * 4.4 + 1.2) : 0;
-    yaw = -100 - 12 * L + 6 * w; pitch = 55 + 7 * L + 4 * w2;
-    hand = [-0.84, 1.48 + 0.04 * L + 0.01 * w2, 0.04 - 0.1 * L];
-  } else {
-    const e = easeOut(tau / SWING_TIME), f = smooth((tau - SWING_TIME) / 0.4);   // 휘두른 뒤 0.4초 동안 힘을 빼며 마무리한다
-    yaw = lerp(5, 195, e) + 10 * f; pitch = lerp(-8, 45, e) - 6 * f;
-    hand = [lerp(-0.5, -1.0, e), lerp(1.02, 1.62, e) - 0.07 * f, lerp(0.3, 0.44, e)];   // 끝에는 손이 앞어깨(왼쪽) 위로 가고 방망이는 어깨 너머로 넘어간다
+// yaw는 배트 끝 방향(도): -90 포수 쪽, 0 1루 쪽(플레이트 위), 90 투수 쪽. pitch는 손에서 배트 끝이 올라간 각(음수면 끝이 내려간다)
+const batAt = (x, y, z) => [BATTER_X + x, y, BATTER_Z + z];
+
+// 준비 자세(2026-11-02 사용자 요청 '타격을 더 부드럽고 자연스럽게', 2026-11-11 '딱딱하다'로 더함). pre: idle(화면 시계 초), load(0~1, 공을 놓으면 손을 당기고
+// 앞발을 내디딘다), set(0~1, 투수가 다리를 들면 자리를 잡는다), n(공 번호, 판마다 조금씩 다른 박자를 정한다. 무작위 없이 hash01).
+// 기다리는 동안 방망이를 까딱이고(1초에 0.6~0.8번, 세기가 조금씩 오르내린다) 숨을 쉬며 몸무게를 앞뒤로 옮긴다. 투수가 와인드업을 하면 까딱임과
+// 흔들림이 잦아들고 배트 끝을 조금 세우며 몸무게를 뒷발에 싣는다. 폰에서도 보이게 실제보다 조금 크게 움직인다
+function stanceKeys(pre) {
+  const L = pre?.load ?? 0, S = pre?.set ?? 0, st = smooth(L), t = pre?.idle ?? 0, h = (j) => hash01((pre?.n ?? 0) * 7 + j);
+  const calm = pre ? (1 - L) * (1 - S) : 0, amp = (1 - L) * (1 - 0.85 * S) * (0.75 + 0.25 * Math.sin(0.9 * t + 6.3 * h(1)));
+  const om = 4.4 * (0.9 + 0.2 * h(2)), ph = 6.3 * h(3), w = pre ? amp * Math.sin(om * t + ph) : 0, w2 = pre ? amp * Math.sin(om * t + ph + 1.2) : 0;
+  const breath = pre ? (1 - 0.7 * st) * Math.sin(1.9 * t + 6.3 * h(4)) : 0, sway = calm * Math.sin(2.2 * t + 6.3 * h(5)), sway2 = calm * Math.sin(2.2 * t + 6.3 * h(5) - 0.5);
+  const back = S * (1 - st), sink = 0.03 * st;   // back: 다리를 드는 투수에 맞춰 몸무게를 뒷발로(공을 놓으면 앞으로 내디딘다)
+  return {
+    sh: -10 * st - 4 * back, hip: -6 * st - 3 * back,
+    pel: batAt(-0.02, 0.86 - sink - 0.006 * Math.abs(sway), 0.03 * sway - 0.035 * back), chest: batAt(0.06, 1.38 - sink + 0.01 * breath, 0.022 * sway2 - 0.04 * back), tilt: 0,
+    fl: batAt(0.03, 0.06 + 0.09 * Math.sin(Math.PI * st) + 0.025 * back, 0.4 + 0.12 * st), fr: batAt(-0.06, 0.06, -0.36),
+    hand: [-0.84 + 0.006 * w, 1.48 + 0.04 * L + 0.01 * w2 + 0.006 * breath + 0.02 * back, 0.04 - 0.1 * L + 0.012 * w - 0.025 * back],
+    yaw: -100 - 12 * L + 6 * w - 6 * back, pitch: 55 + 7 * L + 4 * w2 + 4 * back, e: 0, look: 0, down: 0,
+  };
+}
+
+// 공 자리별 스윙(2026-11-11 패들렛 의견 '팔을 쭉 빼서 치는 모션, 가까이서 쳐도 몸쪽 스윙', 사용자 '모양+말로, 게이지 없이'). 전에는 공 자리와 상관없이
+// 맞는 순간 배트가 늘 같은 자리(존 가운데 1m 높이)를 지났다. 이제 누른 순간 맞는 자리를 정해(swingAim) 배트 굵은 쪽이 그 자리를 지나게 손과 몸을 맞춘다.
+// 바깥쪽은 팔을 뻗고 앞어깨를 숙여 끝 쪽에 맞히고, 몸쪽은 손을 몸 가까이 당기고 엉덩이를 먼저 열어 손잡이 쪽에 맞힌다. 높은 공은 배트가 평평하고,
+// 낮은 공은 무릎을 굽히고 끝이 내려간다. 당겨 친 공(빠른 스윙)은 배트가 투수 쪽으로 더 돌아 앞에서, 밀어 친 공은 뒤에서 맞아 배트와 타구 방향이 맞는다.
+// 10구·끝내기·연습은 공이 지나는 길에서 고르고, 조준 판은 11-13 조준 결정 뒤 겨눈 자리(aim.wx·aim.wy)에 잇는다(그 전에는 전 스윙 그대로, null).
+// 판정은 그대로다. 그림의 친 공만 맞는 자리(hit)에서 출발해 원래 길로 들어간다(launchAt). 닿지 않는 공(존에서 REACH_M 넘게)은 팔이 닿는 데까지만 간다
+const SWEET = 0.64;   // 가운데 공이 배트에 맞는 자리(손잡이 끝에서 m, 배트는 0.86m)
+function swingAim(p, r) {
+  if (game.aim) return null;
+  const sd = batSide(), shift = batterShift(), lx = sd * p.tx;   // lx: 바깥쪽이 +(PC 기준 자리, 자세의 모양을 정한다)
+  const pull = r.kind === 'whiff' ? clamp(-r.dt / FAIR_MS * 42 - lx * 40, -90, 90) : -sd * (r.spray ?? 0);   // 당긴 쪽이 +(헛스윙은 판정의 방향 식으로)
+  // 몸: 바깥쪽(outP)은 앞어깨를 숙이며 판 쪽으로 기울고 어깨를 늦게 연다. 몸쪽(inP)은 엉덩이·어깨를 먼저 연다. 낮은 공(lo)은 무릎·허리를 굽힌다
+  const out = clamp(lx / 0.25, -1.6, 1.6), outP = Math.max(0, out), inP = Math.max(0, -out);
+  const shOf = (yaw) => 55 + 0.45 * (yaw - 5) + 8 * inP - 8 * outP, chestX = BATTER_X + 0.06, far = zoneMiss(p) > REACH_M, farOut = lx > ZONE.right + REACH_M;
+  let yaw = clamp(5 + 0.6 * pull, -28, 40), z = 0.45, x = 0, y = 1, pitch = -10, s = SWEET, hand = null, front = 0;
+  for (;;) {   // 손이 가슴 앞(가슴이 보는 쪽)으로 8cm 못 나오면(몸에 붙은 공) 배트를 투수 쪽으로 8도씩 더 돌린다(많아야 60도)
+    for (let it = 0; it < 3; it++) {   // 맞는 깊이 z에서 공이 지나는 자리 → 배트 기울기·맞는 자리 → 손이 몸 앞에 오는 깊이
+      const q = ballPos(p, 1 - z / RELEASE.z);
+      x = sd * q.x; y = q.y;
+      // 닿지 않는 공: 바깥쪽은 배트 끝까지 존 가장자리 언저리에서 멈추고(공보다 10cm 넘게 모자란다), 몸쪽·낮은 공은 공 위로, 높은 공은 공 아래로 지나간다
+      if (farOut) x = ZONE.right;
+      else if (lx < ZONE.left - REACH_M) y = q.y + 0.16;
+      if (p.ty < ZONE.bottom - REACH_M) y = q.y + 0.18;
+      else if (p.ty > ZONE.top + REACH_M) y = q.y - 0.18;
+      x -= shift;
+      pitch = clamp(-10 + (y - 0.85) * 60, far ? -28 : -42, 2);
+      // 맞는 자리: 바깥쪽일수록 끝 쪽. 폰은 타자를 판 쪽으로 당겨 그려서(MOBILE_BATTER_SHIFT) 바깥쪽 공도 손잡이 쪽에 맞혀 팔을 뻗는 것이 보이게 한다
+      s = farOut ? BAT_LEN - 0.06 : clamp(SWEET + 0.3 * (x - chestX - 0.94) - (shift ? 0.08 * outP : 0), 0.42, 0.74);
+      const c = s * Math.cos(pitch * DEG), sy = Math.sin(yaw * DEG);
+      z = clamp(BATTER_Z + 0.08 + 0.15 * Math.max(0, sy) + c * sy, 0.05, 0.95);
+    }
+    const c = s * Math.cos(pitch * DEG), cy = Math.cos(yaw * DEG), sy = Math.sin(yaw * DEG);
+    hand = [x - c * cy, y - s * Math.sin(pitch * DEG), z - c * sy];
+    front = (hand[0] - chestX) * Math.cos(shOf(yaw) * DEG) + (hand[2] - BATTER_Z) * Math.sin(shOf(yaw) * DEG);
+    if (front >= 0.08 || yaw >= 60) break;
+    yaw = Math.min(60, yaw + 8);
   }
-  const c = Math.cos(pitch * DEG);
-  const tip = [hand[0] + BAT_LEN * c * Math.cos(yaw * DEG), hand[1] + BAT_LEN * Math.sin(pitch * DEG), hand[2] + BAT_LEN * c * Math.sin(yaw * DEG)];
-  return { hand, tip, yaw };
+  const lo = clamp((0.78 - y) / 0.3, 0, 1.4), hi = clamp((y - 0.9) / 0.25, 0, 1.2);
+  const bail = Math.max(0, Math.min(0.14, 0.08 - front));   // 그래도 몸에 붙은 공은 몸과 앞발을 판에서 조금 뺀다
+  const A = { sh: shOf(yaw), hip: 65 + 0.3 * (yaw - 5) + 12 * inP - 5 * outP, tilt: Math.min(0.07, 0.04 * outP + 0.05 * lo),
+    pel: batAt(-0.02 - bail, 0.86 - 0.09 * lo, 0), chest: batAt(0.06 + 0.06 * outP - bail, 1.38 - 0.04 * outP - 0.12 * lo + 0.02 * hi, 0), hand, yaw, pitch, s, x, y, z, lo, bail };
+  for (let it = 0; it < 3; it++) {   // 두 팔(위팔 0.3 + 아래팔 0.29m)이 손에 닿게 가슴을 손 쪽으로 기울인다(많아야 0.16m)
+    const k = batterBuild(swingKeys(0, A)), arm = ['l', 'r'].map((sdn) => V.sub(hand, k.shoulders[sdn])).reduce((a, b) => (V.len(a) > V.len(b) ? a : b)), d = V.len(arm);
+    if (d <= 0.575) break;
+    A.chest = V.add(A.chest, V.mul(arm, Math.min(0.16, d - 0.57) / d));
+  }
+  A.hit = [sd * (x + shift), y, z];   // 맞는 자리(마당 좌표): 친 공이 여기서 출발하고 빛·효과가 터진다
+  return A;
+}
+
+// 스윙 키 값: 맞는 순간(aim, 없으면 전 스윙의 맞는 자세)에서 마무리 자세로. 휘두른 뒤 0.4초(f) 동안 힘을 빼며 마무리한다.
+// 끝에는 손이 앞어깨(왼쪽) 위로 가고 방망이는 어깨 너머로 넘어간다. 낮은 공은 마무리도 조금 낮다
+const SWING_DEFAULT = { sh: 55, hip: 65, pel: batAt(-0.02, 0.86, 0), chest: batAt(0.06, 1.38, 0), tilt: 0, hand: [-0.5, 1.02, 0.3], yaw: 5, pitch: -8, lo: 0, bail: 0 };
+function swingKeys(tau, aim) {
+  const A = aim ?? SWING_DEFAULT, e = easeOut(tau / SWING_TIME), f = smooth((tau - SWING_TIME) / 0.4), L3 = (a, b) => [lerp(a[0], b[0], e), lerp(a[1], b[1], e), lerp(a[2], b[2], e)];
+  return {
+    sh: lerp(A.sh, 105, e), hip: lerp(A.hip, 88, e), pel: L3(A.pel, batAt(0.03, 0.86 - 0.04 * A.lo, 0)), chest: L3(A.chest, batAt(0.11, 1.38 - 0.05 * A.lo, 0)), tilt: lerp(A.tilt, 0, e),
+    fl: batAt(0.03 - 0.8 * A.bail, 0.06, 0.52), fr: batAt(-0.06 + 0.08 * e, 0.06 + 0.1 * e, -0.36),   // 스윙하면 뒷발 뒤꿈치가 들린다
+    hand: V.add(L3(A.hand, [-1.0, 1.62 - 0.06 * A.lo, 0.44]), [0, -0.07 * f, 0]), yaw: lerp(A.yaw, 195, e) + 10 * f, pitch: lerp(A.pitch, 45, e) - 6 * f, e, look: 0, down: 0,
+  };
+}
+
+// 친 뒤 타석에 남은 타자(2026-11-11 '삼진 뒤 타석 반응', 친 뒤 동작 묶음에서 옮김). 헛스윙·파울은 마무리 뒤 배트를 내려 어깨에 기대고 몸을 조금 돌려
+// 숨을 고르고, 헛스윙은 고개를 젓는다. 지켜본 스트라이크는 배트를 조금 내리고 고개를 살짝 젓는다. 끝내기 상황의 삼진(헛스윙·루킹)은 배트 끝을 땅으로
+// 떨구고 고개를 숙인 채 더 오래 젓는다. 다음 공을 누르면 와인드업 앞 0.45초 동안 준비 자세로 돌아간다(batFrom). 다음 공까지 걸리는 시간은 그대로다
+const AFTER_SWING = { sh: 38, hip: 30, pel: batAt(0, 0.88, 0), chest: batAt(0.05, 1.39, 0.02), tilt: 0, fl: batAt(0.03, 0.06, 0.52), fr: batAt(-0.04, 0.06, -0.36),
+  hand: [-0.8, 1.16, 0.42], yaw: -150, pitch: 62, e: 0.8, look: 0, down: 0 };
+const AFTER_K = { ...AFTER_SWING, chest: batAt(0.08, 1.35, 0.05), hand: [-0.8, 0.92, 0.36], yaw: -165, pitch: -58, down: 0.05 };
+const SHAKE = { whiff: [0.75, 0.9, 30], k: [0.7, 1.35, 38], look: [0.3, 0.6, 22], klook: [0.35, 1.3, 38] };   // 고개 젓기 [시작(초), 길이, 크기(도)]
+function reactKeys(P, react, n) {
+  const { kind, t } = react, h = hash01(n * 11 + 3), took = react.took;
+  if (kind === 'foul' || kind === 'whiff' || (kind === 'k' && !took)) P = mixBatKeys(P, kind === 'k' ? AFTER_K : AFTER_SWING, smooth((t - 0.62) / 0.55));
+  else if (kind === 'look') P = mixBatKeys(P, { ...P, hand: [-0.84, 1.3, 0.12], yaw: -112, pitch: 30, sh: P.sh + 4 }, smooth((t - 0.25) / 0.5));
+  else if (kind === 'k') P = mixBatKeys(P, { ...P, hand: [-0.86, 0.96, 0.26], yaw: -140, pitch: -50, chest: V.add(P.chest, [0.02, -0.03, 0.04]), down: 0.05 }, smooth((t - 0.3) / 0.6));
+  const sk = SHAKE[kind === 'k' && took ? 'klook' : kind];
+  if (sk) {
+    const t0 = sk[0] + 0.12 * (h - 0.5), u = (t - t0) / sk[1];
+    if (u > 0 && u < 1) P = { ...P, look: sk[2] * (0.85 + 0.3 * h) * Math.sin(Math.PI * u) * Math.sin(2 * Math.PI * 2.1 * (t - t0)) };
+  }
+  return P;
+}
+// 키 값 둘을 k(0~1)로 섞는다. 배트 방향(yaw)은 짧은 쪽으로 돈다(마무리 195도에서 준비 -100도로는 55도만 돈다)
+function mixBatKeys(a, b, k) {
+  if (k <= 0) return a;
+  if (k >= 1) return b;
+  const L = (x, y) => lerp(x, y, k), L3 = (p, q) => [L(p[0], q[0]), L(p[1], q[1]), L(p[2], q[2])];
+  return { sh: L(a.sh, b.sh), hip: L(a.hip, b.hip), pel: L3(a.pel, b.pel), chest: L3(a.chest, b.chest), tilt: L(a.tilt, b.tilt), fl: L3(a.fl, b.fl), fr: L3(a.fr, b.fr),
+    hand: L3(a.hand, b.hand), yaw: a.yaw + k * ((((b.yaw - a.yaw) % 360) + 540) % 360 - 180), pitch: L(a.pitch, b.pitch), e: L(a.e, b.e), look: L(a.look, b.look), down: L(a.down, b.down) };
 }
 
 const BATTER_COLOR = {
@@ -842,24 +937,31 @@ function pitcherColors() {
 }
 
 // 타자 뼈대(3D). 준비 자세에서는 어깨가 투수 쪽으로 닫혀 있고, 스윙하면 엉덩이가 먼저, 어깨가 뒤따라 돈다
-// pre.load만큼 어깨·엉덩이를 포수 쪽으로 감고 앞발을 들었다 투수 쪽으로 12cm 내디딘다. 휘두를 때는 이미 내디딘 발이다
-function batterSkeleton(tau, pre = null) {
-  const swinging = tau != null, e = swinging ? easeOut(tau / SWING_TIME) : 0, st = swinging ? 1 : smooth(pre?.load ?? 0);
-  const shTurn = swinging ? lerp(55, 105, e) : -10 * st, hipTurn = swinging ? lerp(65, 88, e) : -6 * st;
-  const at = (x, y, z) => [BATTER_X + x, y, BATTER_Z + z];
+// pre.load만큼 어깨·엉덩이를 포수 쪽으로 감고 앞발을 들었다 투수 쪽으로 12cm 내디딘다. 휘두를 때는 이미 내디딘 발이다.
+// aim은 맞는 자리(swingAim, 없으면 전 스윙), react는 친 뒤 반응({ kind, t, took }, reactKeys)
+function batterKeys(tau, pre = null, aim = null, react = null) {
+  const P = tau != null ? swingKeys(tau, aim) : stanceKeys(pre);
+  return react ? reactKeys(P, react, pre?.n ?? 0) : P;
+}
+function batterSkeleton(tau, pre = null, aim = null, react = null) { return batterBuild(batterKeys(tau, pre, aim, react)); }
+function batterBuild(P) {
   const left = (deg) => [-Math.sin(deg * DEG), 0, Math.cos(deg * DEG)];    // 타자의 왼쪽(처음엔 투수 쪽)
   const facing = (deg) => [Math.cos(deg * DEG), 0, Math.sin(deg * DEG)];   // 가슴이 보는 쪽(처음엔 홈플레이트)
-  const sink = swinging ? 0 : 0.03 * st, pelvis = at(-0.02 + 0.05 * e, 0.86 - sink, 0), chest = at(0.06 + 0.05 * e, 1.38 - sink, 0);
-  const hips = { l: V.add(pelvis, V.mul(left(hipTurn), 0.12)), r: V.add(pelvis, V.mul(left(hipTurn), -0.12)) };
-  const shoulders = { l: V.add(chest, V.mul(left(shTurn), 0.2)), r: V.add(chest, V.mul(left(shTurn), -0.2)) };
-  const feet = { l: at(0.03, 0.06 + (swinging ? 0 : 0.09 * Math.sin(Math.PI * st)), 0.4 + 0.12 * st), r: at(-0.06 + 0.08 * e, 0.06 + 0.1 * e, -0.36) };   // 스윙하면 뒷발 뒤꿈치가 들린다
+  const { pel: pelvis, chest, e } = P, sl = left(P.sh), ct = Math.sqrt(1 - (P.tilt / 0.2) ** 2);   // 앞어깨를 tilt만큼 내려도 어깨 폭은 0.4m
+  const hips = { l: V.add(pelvis, V.mul(left(P.hip), 0.12)), r: V.add(pelvis, V.mul(left(P.hip), -0.12)) };
+  const shoulders = { l: V.add(chest, [0.2 * ct * sl[0], -P.tilt, 0.2 * ct * sl[2]]), r: V.add(chest, [-0.2 * ct * sl[0], P.tilt, -0.2 * ct * sl[2]]) };
+  const feet = { l: P.fl, r: P.fr };
   const knees = { l: bendJoint(hips.l, feet.l, 0.46, 0.45, [1, 0, 0]), r: bendJoint(hips.r, feet.r, 0.46, 0.45, [1, 0, 0]) };
-  const { hand, tip, yaw } = batPose(tau, pre);
+  const hand = P.hand, c = Math.cos(P.pitch * DEG), tip = [hand[0] + BAT_LEN * c * Math.cos(P.yaw * DEG), hand[1] + BAT_LEN * Math.sin(P.pitch * DEG), hand[2] + BAT_LEN * c * Math.sin(P.yaw * DEG)];
   // 팔꿈치가 굽는 쪽. 준비·맞는 순간에는 뒷팔 팔꿈치가 아래·뒤(포수 쪽)이고, 팔로스루에서는 두 팔이 몸 앞으로 감겨 등 뒤에서는 가려진다.
   // 전에는 끝까지 뒤로 꺾여서 아래팔이 등을 가로질러 보였다(2026-10-29 사용자 제보)
   const pole = (a, b) => V.add(V.mul(a, 1 - e), V.mul(b, e));
   const elbows = { r: bendJoint(shoulders.r, hand, 0.3, 0.29, pole([-0.3, -0.7, -0.6], [0.3, -0.5, 1])), l: bendJoint(shoulders.l, hand, 0.3, 0.29, pole([0.3, -1, 0.3], [-0.9, 0.4, 0.5])) };
-  return { e, shTurn, hipTurn, pelvis, chest, hips, shoulders, feet, knees, elbows, hand, tip, yaw, left, facing, head: V.add(chest, [0.04, 0.24, 0.02]) };
+  // 머리는 준비 자세보다 몸통이 기운 만큼 따라 기울고, 고개를 숙이면(down) 조금 앞으로 나온다. 고개를 저으면(look, 도) 챙이 좌우로 돈다
+  const lean = V.sub(V.sub(chest, pelvis), [0.08, 0.52, 0]), head = V.add(chest, [0.04 + 0.45 * lean[0], 0.24 + 0.45 * lean[1] - 0.6 * P.down, 0.02 + 0.45 * lean[2] + 0.4 * P.down]);
+  const la = P.look * DEG, b0 = [0.03, -0.04 - P.down, 0.12 - 0.4 * P.down];
+  const brim = P.look || P.down ? V.add(head, [b0[0] * Math.cos(la) + b0[2] * Math.sin(la), b0[1], -b0[0] * Math.sin(la) + b0[2] * Math.cos(la)]) : undefined;
+  return { e, shTurn: P.sh, hipTurn: P.hip, pelvis, chest, hips, shoulders, feet, knees, elbows, hand, tip, yaw: P.yaw, left, facing, head, brim };
 }
 
 // ===== 상점 물건의 모양과 효과 =====
@@ -2130,14 +2232,20 @@ function drawFigureShadow(k) {
 }
 
 const SWING_GLOW = { fire: '255,140,50', lightning: '120,200,255', ice: '200,240,255', beam: '0,196,212', phoenix: '255,120,30' };
-function drawBatter(tau, pre = null) {
-  const k = batterSkeleton(tau, pre);
+// 다음 공 와인드업이 시작되면(startPitch) 직전에 그린 자세(batFrom: 마무리·반응 중이던 자세)에서 0.45초 동안 준비 자세로 돌아간다.
+// 전에는 누르는 순간 한 장면에 준비 자세로 바뀌었다. 친 타자가 뛰어 나간 뒤에는 새로 타석에 서는 것이라 섞지 않는다(lastBatKeys를 비운다)
+let lastBatKeys = null;
+function drawBatter(tau, pre = null, aim = null, react = null) {
+  let P = batterKeys(tau, pre, aim, react);
+  if (game.state === 'windup' && game.batFrom && game.t < 0) P = mixBatKeys(game.batFrom, P, smooth((game.t + 0.5) / 0.45));
+  lastBatKeys = P;
+  const k = batterBuild(P);
   // 스윙 잔상: 누른 순간을 맞는 순간으로 보여 줘서 방망이가 한 장면 만에 맞는 자리로 간다. 당긴 자리(-110도)부터 지금까지 지나간 자국을
-  // 진하게 남겨 휘두른 것처럼 보이게 한다(2026-11-02 전에는 -80도부터 옅게 그렸다)
+  // 진하게 남겨 휘두른 것처럼 보이게 한다(2026-11-02 전에는 -80도부터 옅게 그렸다). 맞는 자리(aim)가 있으면 그 높이와 배트 기울기로 그린다
   if (tau != null && tau < 0.18) {
-    const m = batSide(), hx = k.hand[0] + batterShift(), fx = fxOf(currentLook().bat), fade = 1 - tau / 0.18;
-    const band = (r0, r1) => {   // 손에서 r0(바깥)~r1(안쪽) 사이 띠. 바깥은 높이 0.98m, 안쪽 0.3m는 1m
-      const y = (r) => lerp(0.98, 1.0, (BAT_LEN - r) / (BAT_LEN - 0.3)), out = [];
+    const m = batSide(), hx = k.hand[0] + batterShift(), fx = fxOf(currentLook().bat), fade = 1 - tau / 0.18, tilt = aim ? Math.sin(aim.pitch * DEG) : 0;
+    const band = (r0, r1) => {   // 손에서 r0(바깥)~r1(안쪽) 사이 띠. 전 스윙은 바깥 높이 0.98m, 안쪽 0.3m는 1m
+      const y = (r) => (aim ? aim.y + (r - aim.s) * tilt : lerp(0.98, 1.0, (BAT_LEN - r) / (BAT_LEN - 0.3))), out = [];
       for (let a = -110; a <= k.yaw; a += 8) out.push([m * (hx + r0 * Math.cos(a * DEG)), k.hand[2] + r0 * Math.sin(a * DEG), y(r0)]);
       for (let a = k.yaw; a >= -110; a -= 8) out.push([m * (hx + r1 * Math.cos(a * DEG)), k.hand[2] + r1 * Math.sin(a * DEG), y(r1)]);
       return out;
@@ -2162,7 +2270,18 @@ function drawBatter(tau, pre = null) {
 // 자리를 계산한다(장면마다 배열을 만들지 않게). 조각마다 난수를 다 뽑은 뒤 건너뛰어야 다음 조각의 난수가 밀리지 않는다.
 // 크기는 맞은 자리의 원근(c.s, 1m가 몇 px)으로 정해 PC·폰이 같은 비율이다. 조각은 공기 저항(tau초)으로 느려지고 g(m/s²)로 떨어진다(음수면 떠오른다)
 const BURST_T = 0.5;
-const HIT_SPOT = { x: 0, y: 1, z: 0.3 };   // 그림에서 배트가 공을 맞히는 자리(친 공이 여기서 출발한다, flightPos). game.contactPos는 그때 던진 공 자리라 조금 아래·앞이다
+const HIT_SPOT = { x: 0, y: 1, z: 0.3 };   // 전 스윙에서 배트가 공을 맞히던 자리(판정의 친 공은 여기서 출발한다, core flightPos). 상점 미리 보기의 효과 자리
+// 그림의 친 공(2026-11-11 공 자리별 스윙): 배트가 맞힌 자리(game.swingAim.hit)에서 출발해 LAUNCH_T초 동안 판정의 길(flightPos)로 들어간다.
+// 수비·카메라는 판정의 길 그대로다(그림의 공만 처음 0.15초가 다르다). 땅볼은 땅에서 출발하던 공이 배트에서 땅으로 내리꽂힌다
+const LAUNCH_T = 0.15;
+function launchAt(r, t, q) {
+  const A = game.swingAim;
+  if (!A || r !== game.outcome || t >= LAUNCH_T) return q;
+  const s = flightPos(r, 0), k = 1 - smooth(Math.max(0, t) / LAUNCH_T);
+  return { ...q, x: q.x + (A.hit[0] - s.x) * k, y: q.y + (A.hit[1] - s.y) * k, z: q.z + (A.hit[2] - s.z) * k };
+}
+const drawnFlight = (r, t) => launchAt(r, t, flightPos(r, t));
+const flightDrawn = (r) => { const fp = fieldPlay(r).ball(game.flightT); return fp.trail ? launchAt(r, game.flightT, fp) : fp; };   // 지금 그릴 공(친 공이면 맞는 자리에서)
 const flyAt = (c, ang, v, a, tau, g) => { const d = v * tau * (1 - Math.exp(-a / tau)); return { x: c.x + Math.cos(ang) * d * c.s, y: c.y + Math.sin(ang) * d * c.s + 0.5 * g * a * a * c.s }; };
 function radialGlow(c, R, stops) {   // 가운데에서 바깥으로 [위치, 색] 번짐 원
   const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, R);
@@ -2425,11 +2544,23 @@ function drawBatBurst(b, c, a) {
 }
 
 // 타자의 준비 동작(2026-11-02): 투수가 공을 놓으면(공 시각 0) 공이 반쯤 올 때까지 손을 당기고 앞발을 내디딘다.
-// 공을 그냥 보내면 0.35초 동안 풀어 준다. 기다리는 동안은 방망이를 까딱인다(idle은 화면 시계)
+// 공을 그냥 보내면 0.35초 동안 풀어 준다. 기다리는 동안은 방망이를 까딱인다(idle은 화면 시계).
+// set(2026-11-11): 투수가 다리를 들 때(와인드업 0.1~0.7초) 자리를 잡고, 공을 보낸 뒤 0.2초부터 0.6초 동안 다시 푼다. n은 공 번호(판마다 다른 박자)
 function batterPre(tb, p, time) {
-  if (!p || tb < 0) return { idle: time, load: 0 };
-  if (tb <= p.T) return { idle: time, load: smooth(tb / (p.T * 0.5)) };
-  return { idle: time, load: 1 - smooth((tb - p.T) / 0.35) };
+  const n = p?.n ?? 0;
+  if (!p || tb < 0) return { idle: time, load: 0, set: p ? smooth((tb + WINDUP - 0.1) / 0.6) : 0, n };
+  if (tb <= p.T) return { idle: time, load: smooth(tb / (p.T * 0.5)), set: 1, n };
+  return { idle: time, load: 1 - smooth((tb - p.T) / 0.35), set: 1 - smooth((tb - p.T - 0.2) / 0.6), n };
+}
+// 타석에 남은 타자의 반응(reactKeys): 헛스윙·파울은 휘두른 뒤 시간(tau), 지켜본 스트라이크는 공이 지나간 뒤 시간. 끝내기 상황의 삼진은 'k'.
+// 다시 보기 동안에는 반응하지 않는다(다시 휘두른다)
+function batterReact(tb, tau) {
+  const r = game.state === 'result' && game.replay == null ? game.outcome : null, p = game.seq[game.i];
+  if (!r || !p) return null;
+  const k = game.mode === 'scenario' && /^k-/.test(game.scnPlay ?? '');
+  if (tau != null && (r.kind === 'whiff' || r.kind === 'foul')) return { kind: k ? 'k' : r.kind, t: tau };
+  if (r.kind === 'strike') return { kind: k ? 'k' : 'look', t: tb - p.T, took: true };
+  return null;
 }
 
 // ===== 주자 그리기 =====
@@ -4397,7 +4528,7 @@ function drawBallTrail(r, t) {
   for (let i = 1; i <= 12; i++) {
     const tt = t - i * 0.022;
     if (tt <= 0) break;
-    const f = flightPos(r, tt), q = project(f.x, f.y, f.z);
+    const f = drawnFlight(r, tt), q = project(f.x, f.y, f.z);
     if (q) pts.push(q);
   }
   drawTrailDots(pts, kind, (q) => Math.max(2, BALL_R * 2.2 * q.s));
@@ -4476,13 +4607,13 @@ function trailDust(t, life, step, place, each) {
 // 경기 화면: 공 크기(drawBall과 같은 셈, 폰에서도 보이게 최소 3px)를 단위로 그린다. 가루는 날아간 길(3D)에 떨어뜨려 원근대로 퍼지고,
 // 따라가는 카메라가 그 사이를 지나가면 화면 밖으로 흩어진다
 function drawFancyBallTrail(r, t, kind) {
-  const at = (tt) => { const f = flightPos(r, tt); return project(f.x, f.y, f.z); }, c = at(t);
+  const at = (tt) => { const f = drawnFlight(r, tt); return project(f.x, f.y, f.z); }, c = at(t);
   if (!c) return;
   const ball = camMoved() ? Math.max(BALL_R * 1.2 * c.s, view.h * CHASE.ballMin) : Math.max(2.5, BALL_R * 2 * c.s);
   const pal = dragonPal(kind), dragon = !!pal, U = Math.max(ball, view.mobile ? 3 : 3.5) * (dragon ? 1.15 : 1);
   const P = resampleTrail(trailPath(at, t, view.h * FANCY.len * (pal?.len ?? 1), FANCY.win), Math.max(2.2, U * 0.7), dragon ? 1.5 : 2);   // 용은 덜 굵어진다(뒤에서 볼 때 가까운 몸이 머리를 덮었다)
   const place = (ts, age, k) => {   // 0.8~3m/s로 아무 쪽으로나 퍼지고 조금씩 가라앉는다
-    const f = flightPos(r, ts), sp = (0.8 + 2.2 * hash01(k + 0.75)) * age, a = hash01(k + 0.125) * Math.PI * 2, b = hash01(k + 0.375) * 2 - 1, cb = Math.sqrt(1 - b * b);
+    const f = drawnFlight(r, ts), sp = (0.8 + 2.2 * hash01(k + 0.75)) * age, a = hash01(k + 0.125) * Math.PI * 2, b = hash01(k + 0.375) * 2 - 1, cb = Math.sqrt(1 - b * b);
     const q = project(f.x + Math.cos(a) * cb * sp, Math.max(0.03, f.y + b * sp - 1.2 * age * age), f.z + Math.sin(a) * cb * sp);
     return q && q.s < view.f / FANCY.near ? { x: q.x, y: q.y, k: clamp(q.s / c.s, 1, 2) } : null;
   };
@@ -5810,7 +5941,7 @@ const restartGame = () => startGame(game.mode, false, { aim: game.aim });
 const WINDUP_HOLD = 3;
 const screenHome = () => Math.abs(view.panX) < view.w * 0.02 && Math.abs(view.panY) < view.h * 0.02 && !camMoved();   // 화면 밀기·카메라가 타석 시점 가까이(2% 안)
 function startPitch() {
-  Object.assign(game, { state: 'windup', t: -0.5, held: 0, swingAt: null, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false });
+  Object.assign(game, { state: 'windup', t: -0.5, held: 0, swingAt: null, swingAim: null, batFrom: lastBatKeys, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false });
   game.lastChance = game.mode !== 'scenario' && game.left === 1;
 }
 
@@ -5948,9 +6079,11 @@ function swing(eventTime, input = 'key', at = null) {
     if (hb > (r.streakBonus ?? 0)) { r.streakBonus = 0; r.hitStreak = hits; r.hitBonus = hb; }
     r.points += (r.streakBonus ?? 0) + (r.hitBonus ?? 0);
   }
+  game.swingAim = swingAim(p, r);   // 그림에서 배트가 지나는 자리(판정은 그대로)
   if (r.kind === 'whiff') Sound.whoosh();
   else {
-    game.contactPos = ballPos(p, bt / p.T);
+    const h = game.swingAim?.hit;
+    game.contactPos = h ? { x: h[0], y: h[1], z: h[2] } : ballPos(p, bt / p.T);   // 맞는 순간 빛: 배트가 공을 맞힌 자리(조준 판은 그때 던진 공 자리)
     game.hitstop = r.kind === 'hr' ? 0.14 : 0.09;
     game.flash = 1;
     const bfx = fxOf(currentLook().bat);
@@ -5980,7 +6113,9 @@ function finish(r) {
     game.score += game.gained;
     game.scnBefore = JSON.parse(JSON.stringify(game.scn));   // 결과 글자 전까지는 공이 맞기 전 상황판을 그린다
     r.onBase = game.scnBefore.bases.some(Boolean);   // 누상에 주자가 있으면 아웃 뒤 공을 돌리지 않는다(수비 일정 fieldPlay를 만들기 전에)
-    game.scnEvent = applyScenario(game.scn, r);
+    const ev = applyScenarioIn(game.scn, r);
+    game.scnEvent = scenarioMessage(game.scn, ev);
+    game.scnPlay = ev.play;   // 타석 반응이 본다(삼진 k-looking·k-swinging)
     game.scnWinT = game.scn.end === 'win' ? walkoffTime(r) : null;   // 끝내기 승리면 이긴 점수가 홈을 밟을 때 끝 화면으로(update)
   } else {
     game.gained = (r.points + (r.perfect ? PERFECT_BONUS : 0)) * (game.lastChance ? 2 : 1);
@@ -6277,11 +6412,11 @@ function render(time) {
   const bt = ballTime();
   // 수비수·투수·1.5m 넘게 간 주자를 먼 것부터 그린다(1루수 뒤를 지나는 주자가 가려지게). 투수는 수비에 끼기 전까지 투구 그림
   const run = liveOutcome() ? runnerAt(game.outcome, game.flightT) : null, farRun = run && run.z > 1.5 ? run : null;
-  drawDefense(time, [...(farRun ? [farRun] : []), ...scenarioRunners()], () => drawPitcher(playing ? game.t : 0, playing && game.t > 0.35 && bt < 0, playing && p ? !!p.lefty : game.throws === 'L'));
+  drawDefense(time, [...(farRun ? [farRun] : []), ...scenarioRunners()], () => drawPitcher(playing ? game.t : 0, playing && game.t > 0.35 && bt < 0, playing && p ? !!p.lefty : game.throws === 'L', time));
   if (game.state === 'windup' && p && (game.i === 0 || !!game.seq[game.i - 1].lefty !== !!p.lefty)) drawPitcherTag(p);
 
   if (hasBattedBall() && game.replay == null) {   // 다시 보기 동안 날아간 타구는 감춘다
-    const fp = fieldPlay(r).ball(game.flightT);   // 친 공 → 글러브에 든 공 → 던진 공. 꼬리는 친 공에만
+    const fp = flightDrawn(r);   // 친 공 → 글러브에 든 공 → 던진 공. 꼬리는 친 공에만
     if (fp.z > MOUND && !fp.hidden) { if (fp.trail) drawBallTrail(r, game.flightT); drawBall(fp, { glow: fp.trail, scale: 2, spin: fp.trail ? battedSpin(r, game.flightT) : null }); }
   }
   drawZone((game.state === 'result' ? 0.6 : 0.9) * (game.aim ? AIM_ZONE_ALPHA : 1));
@@ -6294,15 +6429,15 @@ function render(time) {
     if (!hiddenByHit && u >= 1) drawPitchMark(p);   // 홈플레이트 앞면을 지난 뒤로 판정한 자리를 남긴다
   }
   if (hasBattedBall() && game.replay == null) {
-    const fp = fieldPlay(r).ball(game.flightT);
+    const fp = flightDrawn(r);
     if (fp.z <= MOUND && !fp.hidden) { if (fp.trail) drawBallTrail(r, game.flightT); drawBall(fp, { glow: fp.trail, scale: 2, spin: fp.trail ? battedSpin(r, game.flightT) : null }); }
   }
   // 다시 보기 동안에는 타자도 공에 맞춰 다시 휘두른다(휘두르기 전에는 준비 자세)
   const tb = game.replay ?? bt;
   const tau = game.swingAt != null && playing && (game.replay == null || tb >= game.swingAt) ? Math.max(0, tb - game.swingAt) : null;
   // 친 타자는 방망이를 내려놓고 뛴다(타석을 비우니 뒤의 수비도 보인다. 전에는 타자를 흐리게 했다). 아니면 준비 동작과 함께 타석에
-  if (run) { drawDroppedBat(game.flightT); if (!farRun) drawRunner(run); }
-  else drawBatter(tau, playing ? batterPre(tb, p, time) : { idle: time, load: 0 });
+  if (run) { drawDroppedBat(game.flightT); if (!farRun) drawRunner(run); lastBatKeys = null; }
+  else drawBatter(tau, playing ? batterPre(tb, p, time) : { idle: time, load: 0 }, tau != null ? game.swingAim : null, playing ? batterReact(tb, tau) : null);
   // 1루 간발: 판정한 순간부터 1.4초 동안 베이스 위에 세이프/아웃
   if (hasBattedBall() && game.replay == null) for (const c of fieldPlay(r).calls) {
     const u = game.flightT - c.t, q = u >= 0 && u < 1.4 ? project(c.at[0], 2.7, c.at[1]) : null;
@@ -6319,7 +6454,7 @@ function render(time) {
     }
   }
   if (game.burst && game.burst.t < BURST_T && !camMoved()) {   // 효과 배트로 맞힌 자리에서 터지는 효과
-    const c = project(HIT_SPOT.x, HIT_SPOT.y, HIT_SPOT.z);
+    const h = game.swingAim?.hit ?? [HIT_SPOT.x, HIT_SPOT.y, HIT_SPOT.z], c = project(h[0], h[1], h[2]);
     if (c) drawBatBurst(game.burst, c, game.burst.t);
   }
   ctx.restore();
@@ -6382,5 +6517,5 @@ syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction, paused: false };
