@@ -792,28 +792,48 @@ function stanceKeys(pre) {
 // 맞는 순간 배트가 늘 같은 자리(존 가운데 1m 높이)를 지났다. 이제 누른 순간 맞는 자리를 정해(swingAim) 배트 굵은 쪽이 그 자리를 지나게 손과 몸을 맞춘다.
 // 바깥쪽은 팔을 뻗고 앞어깨를 숙여 끝 쪽에 맞히고, 몸쪽은 손을 몸 가까이 당기고 엉덩이를 먼저 열어 손잡이 쪽에 맞힌다. 높은 공은 배트가 평평하고,
 // 낮은 공은 무릎을 굽히고 끝이 내려간다. 당겨 친 공(빠른 스윙)은 배트가 투수 쪽으로 더 돌아 앞에서, 밀어 친 공은 뒤에서 맞아 배트와 타구 방향이 맞는다.
-// 10구·끝내기·연습은 공이 지나는 길에서 고르고, 조준 판은 11-13 조준 결정 뒤 겨눈 자리(aim.wx·aim.wy)에 잇는다(그 전에는 전 스윙 그대로, null).
-// 판정은 그대로다. 그림의 친 공만 맞는 자리(hit)에서 출발해 원래 길로 들어간다(launchAt). 닿지 않는 공(존에서 REACH_M 넘게)은 팔이 닿는 데까지만 간다
+// 10구·끝내기·연습은 공이 지나는 길에서 고른다. 조준 판(aim, 2026-11-11 사용자 'ㄱㄱ'으로 11-13 결정 전에 미리)은 화면의 배트 커서와 같은 자리를 지나게
+// 겨눈 자리(aim.wx·aim.wy, 홈플레이트 앞면)를 맞는 깊이까지 카메라 쪽 선을 따라 옮기고(screenAt), 기울기는 커서와 같은 aim.t, 배트 방향은 덜 돈다.
+// 판정은 그대로다. 그림의 친 공만 배트에서 공에 가장 가까운 자리(hit, 10구는 맞는 자리 그대로)에서 출발해 원래 길로 들어간다(launchAt).
+// 닿지 않는 공(존에서 REACH_M 넘게)은 어느 판이든 공 자리로 모자라게 지나가고, 조준 판도 배트가 닿는 데(홈플레이트 앞면에서 존 ± REACH_M)까지만 간다
 const SWEET = 0.64;   // 가운데 공이 배트에 맞는 자리(손잡이 끝에서 m, 배트는 0.86m)
-function swingAim(p, r) {
-  if (game.aim) return null;
-  const sd = batSide(), shift = batterShift(), lx = sd * p.tx;   // lx: 바깥쪽이 +(PC 기준 자리, 자세의 모양을 정한다)
+// 화면 점 S(px)가 깊이 z에서 가리키는 마당 자리 [x, y]. 깊이가 같으면 project가 x·y에 거의 일차라 세 번 고치면 0.1px 안에 든다
+function screenAt(S, z) {
+  let x = 0, y = 1;
+  for (let i = 0; i < 3; i++) {
+    const a = project(x, y, z), b = project(x + 0.01, y, z), c = project(x, y + 0.01, z);
+    if (!a || !b || !c) break;
+    const j11 = (b.x - a.x) / 0.01, j21 = (b.y - a.y) / 0.01, j12 = (c.x - a.x) / 0.01, j22 = (c.y - a.y) / 0.01, det = j11 * j22 - j12 * j21, ex = S.x - a.x, ey = S.y - a.y;
+    if (!det) break;
+    x += (j22 * ex - j12 * ey) / det; y += (j11 * ey - j21 * ex) / det;
+  }
+  return [x, y];
+}
+function swingAim(p, r, aim = null) {
+  const sd = batSide(), shift = batterShift(), far = zoneMiss(p) > REACH_M;
+  const S = aim && !far ? project(clamp(aim.wx, ZONE.left - REACH_M, ZONE.right + REACH_M), clamp(aim.wy, ZONE.bottom - REACH_M, ZONE.top + REACH_M), 0) : null;   // 커서 자리(닿는 데까지)
+  const lx = sd * (S ? aim.wx : p.tx);   // lx: 바깥쪽이 +(PC 기준 자리, 자세의 모양을 정한다). 조준 판은 겨눈 자리
   const pull = r.kind === 'whiff' ? clamp(-r.dt / FAIR_MS * 42 - lx * 40, -90, 90) : -sd * (r.spray ?? 0);   // 당긴 쪽이 +(헛스윙은 판정의 방향 식으로)
   // 몸: 바깥쪽(outP)은 앞어깨를 숙이며 판 쪽으로 기울고 어깨를 늦게 연다. 몸쪽(inP)은 엉덩이·어깨를 먼저 연다. 낮은 공(lo)은 무릎·허리를 굽힌다
   const out = clamp(lx / 0.25, -1.6, 1.6), outP = Math.max(0, out), inP = Math.max(0, -out);
-  const shOf = (yaw) => 55 + 0.45 * (yaw - 5) + 8 * inP - 8 * outP, chestX = BATTER_X + 0.06, far = zoneMiss(p) > REACH_M, farOut = lx > ZONE.right + REACH_M;
-  let yaw = clamp(5 + 0.6 * pull, -28, 40), z = 0.45, x = 0, y = 1, pitch = -10, s = SWEET, hand = null, front = 0;
+  const shOf = (yaw) => 55 + 0.45 * (yaw - 5) + 8 * inP - 8 * outP, chestX = BATTER_X + 0.06, farOut = sd * p.tx > ZONE.right + REACH_M;
+  let yaw = S ? clamp(5 + 0.3 * pull, -15, 25) : clamp(5 + 0.6 * pull, -28, 40), z = 0.45, x = 0, y = 1, pitch = -10, s = SWEET, hand = null, front = 0;   // 조준 판은 커서처럼 옆으로 눕게 덜 돈다
   for (;;) {   // 손이 가슴 앞(가슴이 보는 쪽)으로 8cm 못 나오면(몸에 붙은 공) 배트를 투수 쪽으로 8도씩 더 돌린다(많아야 60도)
     for (let it = 0; it < 3; it++) {   // 맞는 깊이 z에서 공이 지나는 자리 → 배트 기울기·맞는 자리 → 손이 몸 앞에 오는 깊이
-      const q = ballPos(p, 1 - z / RELEASE.z);
-      x = sd * q.x; y = q.y;
-      // 닿지 않는 공: 바깥쪽은 배트 끝까지 존 가장자리 언저리에서 멈추고(공보다 10cm 넘게 모자란다), 몸쪽·낮은 공은 공 위로, 높은 공은 공 아래로 지나간다
-      if (farOut) x = ZONE.right;
-      else if (lx < ZONE.left - REACH_M) y = q.y + 0.16;
-      if (p.ty < ZONE.bottom - REACH_M) y = q.y + 0.18;
-      else if (p.ty > ZONE.top + REACH_M) y = q.y - 0.18;
+      if (S) {   // 조준 판: 커서가 가리키는 화면 자리를 맞는 깊이에서(카메라가 위에서 보아 깊을수록 조금 낮다)
+        const w = screenAt(S, z);
+        x = sd * w[0]; y = Math.max(0.15, w[1]);
+      } else {
+        const q = ballPos(p, 1 - z / RELEASE.z);
+        x = sd * q.x; y = q.y;
+        // 닿지 않는 공: 바깥쪽은 배트 끝까지 존 가장자리 언저리에서 멈추고(공보다 10cm 넘게 모자란다), 몸쪽·낮은 공은 공 위로, 높은 공은 공 아래로 지나간다
+        if (farOut) x = ZONE.right;
+        else if (sd * p.tx < ZONE.left - REACH_M) y = q.y + 0.16;
+        if (p.ty < ZONE.bottom - REACH_M) y = q.y + 0.18;
+        else if (p.ty > ZONE.top + REACH_M) y = q.y - 0.18;
+      }
       x -= shift;
-      pitch = clamp(-10 + (y - 0.85) * 60, far ? -28 : -42, 2);
+      pitch = S ? clamp(-aim.t, -42, 2) : clamp(-10 + (y - 0.85) * 60, far ? -28 : -42, 2);
       // 맞는 자리: 바깥쪽일수록 끝 쪽. 폰은 타자를 판 쪽으로 당겨 그려서(MOBILE_BATTER_SHIFT) 바깥쪽 공도 손잡이 쪽에 맞혀 팔을 뻗는 것이 보이게 한다
       s = farOut ? BAT_LEN - 0.06 : clamp(SWEET + 0.3 * (x - chestX - 0.94) - (shift ? 0.08 * outP : 0), 0.42, 0.74);
       const c = s * Math.cos(pitch * DEG), sy = Math.sin(yaw * DEG);
@@ -834,7 +854,13 @@ function swingAim(p, r) {
     if (d <= 0.575) break;
     A.chest = V.add(A.chest, V.mul(arm, Math.min(0.16, d - 0.57) / d));
   }
-  A.hit = [sd * (x + shift), y, z];   // 맞는 자리(마당 좌표): 친 공이 여기서 출발하고 빛·효과가 터진다
+  // 친 공이 출발하는 자리(마당 좌표): 10구는 맞는 자리 그대로, 조준 판은 배트(손 → 끝) 위에서 맞는 깊이의 공에 가장 가까운 곳. 빛·효과도 여기서 터진다
+  let on = [x, y, z];
+  if (S) {
+    const q = ballPos(p, 1 - z / RELEASE.z), u = [Math.cos(pitch * DEG) * Math.cos(yaw * DEG), Math.sin(pitch * DEG), Math.cos(pitch * DEG) * Math.sin(yaw * DEG)];
+    on = V.add(hand, V.mul(u, clamp(V.dot(V.sub([sd * q.x - shift, q.y, q.z], hand), u), 0, BAT_LEN)));
+  }
+  A.hit = [sd * (on[0] + shift), on[1], on[2]];
   return A;
 }
 
@@ -6079,11 +6105,11 @@ function swing(eventTime, input = 'key', at = null) {
     if (hb > (r.streakBonus ?? 0)) { r.streakBonus = 0; r.hitStreak = hits; r.hitBonus = hb; }
     r.points += (r.streakBonus ?? 0) + (r.hitBonus ?? 0);
   }
-  game.swingAim = swingAim(p, r);   // 그림에서 배트가 지나는 자리(판정은 그대로)
+  game.swingAim = swingAim(p, r, aim);   // 그림에서 배트가 지나는 자리(판정은 그대로, 조준 판은 겨눈 자리)
   if (r.kind === 'whiff') Sound.whoosh();
   else {
     const h = game.swingAim?.hit;
-    game.contactPos = h ? { x: h[0], y: h[1], z: h[2] } : ballPos(p, bt / p.T);   // 맞는 순간 빛: 배트가 공을 맞힌 자리(조준 판은 그때 던진 공 자리)
+    game.contactPos = h ? { x: h[0], y: h[1], z: h[2] } : ballPos(p, bt / p.T);   // 맞는 순간 빛: 배트가 공을 맞힌 자리
     game.hitstop = r.kind === 'hr' ? 0.14 : 0.09;
     game.flash = 1;
     const bfx = fxOf(currentLook().bat);

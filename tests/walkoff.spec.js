@@ -1792,6 +1792,38 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('조준 판의 캐릭터 배트는 맞는 순간 화면의 배트 커서가 가리키는 자리를 지나고 커서처럼 기운다(2026-11-11, 전에는 늘 같은 자리라 70cm까지 떨어졌다). 친 공은 배트 위에서 출발하고, 닿지 않는 공은 커서를 따라가지 않고 모자라게 지나간다', async ({ page }) => {
+    const errors = await open(page);
+    const r = await page.evaluate(() => {
+      const w = walkoff, out = { cm: 0, ang: 0, hitOn: 0, far: Infinity, n: 0 };
+      const segPx = (P, A, B) => { const ab = { x: B.x - A.x, y: B.y - A.y }, t = Math.max(0, Math.min(1, ((P.x - A.x) * ab.x + (P.y - A.y) * ab.y) / (ab.x ** 2 + ab.y ** 2))); return Math.hypot(P.x - A.x - ab.x * t, P.y - A.y - ab.y * t); };
+      const seg3 = (p, a, b) => { const ab = [0, 1, 2].map((j) => b[j] - a[j]), ap = [0, 1, 2].map((j) => p[j] - a[j]), t = Math.max(0, Math.min(1, ap.reduce((s, v, j) => s + v * ab[j], 0) / ab.reduce((s, v) => s + v * v, 0))); return Math.hypot(...ap.map((v, j) => v - ab[j] * t)); };
+      for (const bats of ['R', 'L']) {
+        w.setBats(bats);
+        const side = bats === 'L' ? -1 : 1, shift = w.view.mobile ? 0.4 : 0, W = (q) => [side * (q[0] + shift), q[1], q[2]];
+        for (let seed = 1; seed <= 8; seed++) for (const p of w.makeSequence(seed, w.pitcherHand(seed) === 'L').slice(0, 8)) for (const [dx, dy] of [[0, 0], [0.08, -0.06], [-0.1, 0.1], [0.2, 0.15], [-0.25, -0.2]]) {
+          const wx = p.tx + dx, wy = p.ty + dy, t = w.aimTilt(wy), res = w.judgeSwing(p, 0, bats), a = w.swingAim(p, res, { wx, wy, t, kind: 'mouse' }), k = w.batterSkeleton(0, null, a);
+          const H = w.project(...W(k.hand)), T = w.project(...W(k.tip)), S = w.project(wx, wy, 0), miss = Math.max(-0.25 - p.tx, p.tx - 0.25, 0.5 - p.ty, p.ty - 1.1, 0);
+          if (miss > 0.2) { let d = Infinity; for (let u = 0.9; u <= 1.05; u += 0.002) { const q = w.ballPos(p, u); d = Math.min(d, seg3([q.x, q.y, q.z], W(k.hand), W(k.tip))); } out.far = Math.min(out.far, d); continue; }
+          if (Math.abs(wx) > 0.45 || wy < 0.3 || wy > 1.3) continue;   // 배트가 닿는 데(존 ± 0.2m) 밖을 겨누면 닿는 데까지만 간다
+          const cur = w.aimBatPoints({ x: S.x, y: S.y, t }), dc = Math.atan2(cur.tip.y - cur.knob.y, cur.tip.x - cur.knob.x), db = Math.atan2(T.y - H.y, T.x - H.x);
+          out.cm = Math.max(out.cm, segPx(S, H, T) / S.s * 100);   // 화면 거리를 그 깊이의 cm로
+          out.ang = Math.max(out.ang, Math.abs(((db - dc) * 180 / Math.PI + 540) % 360 - 180));
+          if (res.kind !== 'whiff') out.hitOn = Math.max(out.hitOn, seg3(a.hit, W(k.hand), W(k.tip)));
+          out.n++;
+        }
+      }
+      w.setBats('R');
+      return out;
+    });
+    expect(r.n).toBeGreaterThan(400);
+    expect(r.cm).toBeLessThan(1);     // 커서가 가리키는 자리를 지난다
+    expect(r.ang).toBeLessThan(9);    // 커서처럼 기운다(폰은 배트가 조금 더 돌아 7도 안팎)
+    expect(r.hitOn).toBeLessThan(1e-9);
+    expect(r.far).toBeGreaterThan(0.08);
+    expect(errors).toEqual([]);
+  });
+
   test('친 공은 배트가 맞힌 자리에서 출발해 0.15초 뒤 판정의 길로 들어가고 맞는 순간 빛도 그 자리다. 헛스윙 뒤에는 배트를 내리고 고개를 저으며, 다음 공을 누르면 0.45초 동안 준비 자세로 돌아간다(2026-11-11)', async ({ page }) => {
     const errors = await open(page, '?seed=42');
     await page.evaluate(() => { walkoff.goTitle(); walkoff.startGame('challenge'); });
