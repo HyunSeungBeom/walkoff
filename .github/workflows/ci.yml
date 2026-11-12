@@ -14,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25   # 2026-11-12 20 → 25분(사용자 결정). 11-11 테스트가 17분으로 20분에 가까웠다
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
