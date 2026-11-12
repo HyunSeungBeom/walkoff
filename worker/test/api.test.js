@@ -526,3 +526,25 @@ test('선물하기: 같은 물건을 동시에 두 번 보내도 한 번만 가�
   assert.deepEqual(res.map((r) => r.status).sort(), [200, 400]);
   assert.deepEqual([(await me(a)).coins, (await me(b)).owned, env.DB.rows('SELECT * FROM gifts').length], [600, ['bat-silver'], 1]);
 });
+
+test('상점 물건 13개(2026-11-12): 새 물건도 core/catalog.js 값대로 사서 입고, 선물로 보낼 수 있다. 코인이 모자라면 못 산다', async () => {
+  const NEW = { 'bat-choco': 600, 'helmet-penguin': 500, 'glove-catpaw': 500, 'glove-bearpaw': 500, 'glove-silver': 300, 'shoe-cat': 400, 'shoe-panda': 400,
+    'uniform-check': 700, 'uniform-flower': 800, 'uniform-galaxy': 7000, 'trail-maple': 800, 'trail-snow': 800, 'sound-cat': 300 };
+  const a = await named('c1', 'p-device-0001', '가람'), b = await named('c3', 'p-device-0002', '골든'), tagB = (await me(b)).tag;
+  const buy = async (token, item) => { const r = await call('POST', '/shop/buy', { token, body: { item } }); return [r.status, await r.json()]; };
+  await env.DB.prepare("UPDATE accounts SET coins = 6999 WHERE player_id = 'p-device-0002'").run();
+  assert.deepEqual((await buy(b, 'uniform-galaxy')).map((x, i) => (i ? x.error : x)), [400, 'not_enough_coins']);   // 7,000코인
+  await env.DB.prepare("UPDATE accounts SET coins = 20000, games = 11 WHERE player_id = 'p-device-0001'").run();
+  let coins = 20000;
+  for (const [item, price] of Object.entries(NEW)) {
+    const [st, r] = await buy(a, item);
+    coins -= price;
+    assert.deepEqual([st, r.coins, r.owned.includes(item)], [200, coins, true], item);
+  }
+  for (const item of ['uniform-galaxy', 'helmet-penguin', 'trail-snow']) await call('POST', '/shop/equip', { token: a, body: { item } });
+  const look = (await me(a)).look;
+  assert.deepEqual([look.uniform, look.helmet, look.trail], ['uniform-galaxy', 'helmet-penguin', 'trail-snow']);   // 다른 기기에서도 그대로
+  const r = await call('POST', '/shop/gift', { token: a, body: { to: tagB, item: 'glove-catpaw' } }), sent = await r.json();
+  assert.deepEqual([r.status, sent.coins], [200, coins - 500]);
+  assert.deepEqual((await me(b)).owned, ['glove-catpaw']);
+});

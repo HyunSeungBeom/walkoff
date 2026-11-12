@@ -90,6 +90,24 @@ export const Sound = (() => {
     g.connect(master);
     o.start(t0); lfo.start(t0); o.stop(t0 + dur + 0.05); lfo.stop(t0 + dur + 0.05);
   }
+  // 고양이 '냥'(2026-11-12): 톱니파(560 → 820 → 470Hz, 7Hz로 살짝 떨린다)를 입 모양 대역 둘로 거르고, 둘째 대역을 '냐'(높게)에서 '앙'(낮게)으로 옮긴다.
+  // 코로 내는 'ㄴ'처럼 부드럽게 커지며 시작한다. 오리 '꽥'처럼 낮은 울림은 넣지 않고, 세게 칠수록 조금 높고 길다
+  function meow(power) {
+    if (!ac) return;
+    const t0 = ac.currentTime, dur = 0.36 + 0.06 * power, o = ac.createOscillator(), lfo = ac.createOscillator(), wob = ac.createGain(), g = ac.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(560 + 60 * power, t0); o.frequency.linearRampToValueAtTime(820 + 80 * power, t0 + 0.11); o.frequency.exponentialRampToValueAtTime(470, t0 + dur);
+    lfo.type = 'sine'; lfo.frequency.value = 7; wob.gain.value = 14;
+    lfo.connect(wob).connect(o.frequency);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.7, t0 + 0.05); g.gain.linearRampToValueAtTime(0.5, t0 + 0.2); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    for (const [f, q, k] of [[[480, 950, 680], 3, 1], [[2300, 1500, 1050], 5, 0.6]]) {   // [처음·0.11초·끝 주파수], 날카로움(Q), 크기
+      const bp = ac.createBiquadFilter(), lv = ac.createGain();
+      bp.type = 'bandpass'; bp.Q.value = q; bp.frequency.setValueAtTime(f[0], t0); bp.frequency.linearRampToValueAtTime(f[1], t0 + 0.11); bp.frequency.exponentialRampToValueAtTime(f[2], t0 + dur);
+      lv.gain.value = k; o.connect(bp).connect(lv).connect(g);
+    }
+    g.connect(master);
+    o.start(t0); lfo.start(t0); o.stop(t0 + dur + 0.05); lfo.stop(t0 + dur + 0.05);
+  }
   function loadCrowd() {
     fetch(CROWD_URL).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
       .then((b) => new Promise((ok, no) => ac.decodeAudioData(b, ok, no)))   // 옛 사파리는 콜백 방식만 된다
@@ -210,6 +228,7 @@ export const Sound = (() => {
       }
       if (style === 'sound-thunder') { thunder(power); return; }
       if (style === 'sound-duck') { quack(power); return; }
+      if (style === 'sound-cat') { meow(power); return; }
       if (style === 'sound-8bit') {   // 8비트 '띠링': 옛 게임기 동전 소리(사각파 B5 → E6). 세게 칠수록 한 음씩 높게(온음 하나까지)
         const k = Math.pow(2, Math.round(power * 2) / 12);
         chip(988 * k, 0, 0.065, CHIP_GAIN);

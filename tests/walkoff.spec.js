@@ -3871,7 +3871,7 @@ test.describe('고가 공 꼬리·타격음', () => {
     expect(errors).toEqual([]);
   });
 
-  test('천둥·8비트·오리 타격음은 폭탄보다 크지 않고, 천둥은 1초 넘게 우르릉 이어지며 8비트·오리는 짧게 끝난다', async ({ page }) => {
+  test('천둥·8비트·오리·고양이 타격음은 폭탄보다 크지 않고, 천둥은 1초 넘게 우르릉 이어지며 8비트·오리·고양이는 짧게 끝난다', async ({ page }) => {
     await page.addInitScript(() => {   // 게임 소리를 그대로 미리 녹음한다(2.4초)
       window.AudioContext = function () { window.__ac = new OfflineAudioContext(1, 44100 * 2.4, 44100); return window.__ac; };
     });
@@ -3889,7 +3889,7 @@ test.describe('고가 공 꼬리·타격음', () => {
         return { max, last };
       }, style);
     };
-    const bomb = await record('sound-bomb'), thunder = await record('sound-thunder'), chip = await record('sound-8bit'), duck = await record('sound-duck');
+    const bomb = await record('sound-bomb'), thunder = await record('sound-thunder'), chip = await record('sound-8bit'), duck = await record('sound-duck'), cat = await record('sound-cat');
     expect(thunder.max).toBeLessThanOrEqual(bomb.max);
     expect(chip.max).toBeLessThanOrEqual(bomb.max);
     expect(Math.min(thunder.max, chip.max)).toBeGreaterThan(0.03);   // 들리기는 한다
@@ -3898,6 +3898,9 @@ test.describe('고가 공 꼬리·타격음', () => {
     expect(duck.max).toBeLessThanOrEqual(bomb.max);   // 꽥(2026-11-10)
     expect(duck.max).toBeGreaterThan(0.03);
     expect(duck.last).toBeLessThan(0.5);
+    expect(cat.max).toBeLessThanOrEqual(bomb.max);   // 냥(2026-11-12)
+    expect(cat.max).toBeGreaterThan(0.03);
+    expect(cat.last).toBeLessThan(0.6);
     expect(errors).toEqual([]);
   });
 });
@@ -3916,6 +3919,7 @@ test.describe('맞는 순간 효과', () => {
     expect(await hit('bat-ice', 115)).toEqual({ kind: 'foul', burst: 'ice' });   // 파울도 맞힌 공이라 터진다
     expect(await hit('bat-wood', 0)).toEqual({ kind: 'hr', burst: null });       // 효과 없는 배트
     for (const [bat, fx] of [['bat-phoenix', 'phoenix'], ['bat-rainbow', 'rainbow'], ['bat-baguette', 'baguette']]) expect(await hit(bat, 0)).toEqual({ kind: 'hr', burst: fx });   // 2026-11-10 더한 배트
+    expect(await hit('bat-choco', 0)).toEqual({ kind: 'hr', burst: null });      // 초코 막대(2026-11-12)는 모양만 다르고 효과는 없다
     expect(await hit('bat-beam', -200)).toEqual({ kind: 'whiff', burst: null }); // 헛스윙
     expect(errors).toEqual([]);
   });
@@ -3939,7 +3943,7 @@ test.describe('상점 물건 16개(2026-11-10)', () => {
       performance.now = realNow; w.paused = false;
       return { same, count: w.SHOP_ITEMS.length, names: NEW.map((id) => w.SHOP_ITEMS.find((i) => i.id === id)?.name ?? null) };
     });
-    expect(r.count).toBe(85);
+    expect(r.count).toBe(98);   // 85개에 2026-11-12 13개를 더했다
     expect(r.names.every(Boolean)).toBe(true);   // 이름·모양(ITEM_LOOKS)이 모두 있다
     expect(r.same).toEqual(['sound-duck']);      // 소리만 그림이 같다
     expect(errors).toEqual([]);
@@ -3960,6 +3964,102 @@ test.describe('상점 물건 16개(2026-11-10)', () => {
       return out;
     });
     expect(bad).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('상점 물건 13개(2026-11-12)', () => {
+  const NEW13 = ['bat-choco', 'helmet-penguin', 'glove-catpaw', 'glove-bearpaw', 'glove-silver', 'shoe-cat', 'shoe-panda', 'uniform-check', 'uniform-flower', 'uniform-galaxy', 'trail-maple', 'trail-snow', 'sound-cat'];
+
+  test('새 물건은 상점 미리 보기에서 2.4초 동안 어느 장면에서도 오류 없이 그리고, 소리를 빼면 그 칸의 기본 물건과 다르게 그린다(PC·폰)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const r = await page.evaluate((NEW) => {
+      const w = walkoff, c = document.querySelector('canvas'), x2d = c.getContext('2d'), now = performance.now(), realNow = performance.now, thrown = [], same = [];
+      w.paused = true; performance.now = () => now;   // 시계를 멈춰 같은 장면을 견준다
+      w.openShop('shop');
+      const draw = (id, dt) => { const it = w.SHOP_ITEMS.find((i) => i.id === id); Object.assign(w.game.shop, { tab: it.slot, sel: id, demo: now - dt }); w.render(now / 1000); };
+      const shot = (id) => {   // 미리 보기 칸(종류 탭 위)만 해시한다
+        draw(id, 1050);
+        const bottom = Math.floor(w.ui.buttons.find((b) => b.label === '배트').r.y * w.view.dpr) - 4, d = x2d.getImageData(0, 0, c.width, bottom).data;
+        let h = 0; for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] + d[i + 1] * 7 + d[i + 2] * 13) >>> 0; return h;
+      };
+      for (const id of NEW) {
+        for (let dt = 0; dt <= 2400; dt += 50) { try { draw(id, dt); } catch (e) { thrown.push(`${id} ${dt}ms ${e.message}`); break; } }   // 배트는 1초에 맞히고, 꼬리는 1.4초마다 다시 난다
+        const it = w.SHOP_ITEMS.find((i) => i.id === id), base = w.SHOP_ITEMS.find((i) => i.slot === it.slot && i.price === 0).id;
+        if (shot(id) === shot(base)) same.push(id);
+      }
+      performance.now = realNow; w.paused = false;
+      return { thrown, same, count: w.SHOP_ITEMS.length, names: NEW.map((id) => w.SHOP_ITEMS.find((i) => i.id === id)?.name ?? null) };
+    }, NEW13);
+    expect(r.count).toBe(98);
+    expect(r.names.every(Boolean)).toBe(true);   // 이름·모양(ITEM_LOOKS)이 모두 있다
+    expect(r.thrown).toEqual([]);
+    expect(r.same).toEqual(['sound-cat']);       // 소리만 그림이 같다
+    expect(errors).toEqual([]);
+  });
+
+  test('체크·꽃무늬·은하수 무늬는 옷 윤곽 밖으로 새지 않는다(상점 미리 보기와 타석. 옆으로 돌아간 무늬는 옅어지다 사라진다)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const ids = ['uniform-check', 'uniform-flower', 'uniform-galaxy'];
+    const res = await page.evaluate(async (ids) => {
+      const w = walkoff, c = document.querySelector('canvas'), x2d = c.getContext('2d'), W = c.width, realNow = performance.now, out = {};
+      // 바뀐 픽셀 지도(1)와 둘레 1px씩 넓히기. 흰 홈·회색 원정 유니폼이 다른 자리가 옷이고, 2px 넓힌 그 밖에서 무늬 때문에 바뀐 픽셀을 센다
+      const diff = (a, b) => { const m = new Uint8Array(a.length / 4); for (let i = 0, j = 0; i < a.length; i += 4, j++) m[j] = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24 ? 1 : 0; return m; };
+      const grow = (m) => { const g = m.slice(), H = m.length / W; for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) if (m[y * W + x]) for (const o of [-W - 1, -W, -W + 1, -1, 1, W - 1, W, W + 1]) g[y * W + x + o] = 1; return g; };
+      const leak = (where, shot) => {
+        const home = shot('uniform-home'), sil = grow(grow(diff(home, shot('uniform-away'))));
+        for (const id of ids) { const d = diff(shot(id), home); let n = 0, all = 0; for (let j = 0; j < d.length; j++) if (d[j]) { all++; if (!sil[j]) n++; } out[`${where} ${id}`] = { n, all }; }
+      };
+      const freeze = () => { const now = realNow.call(performance); w.paused = true; performance.now = () => now; return now; };
+      let now = freeze();
+      w.openShop('shop'); w.render(now / 1000);   // 상점 단추(종류 탭)는 그릴 때 생긴다
+      const H = Math.floor(w.ui.buttons.find((b) => b.label === '배트').r.y * w.view.dpr) - 4;
+      leak('상점', (id) => { Object.assign(w.game.shop, { tab: 'uniform', sel: id, demo: now }); w.render(now / 1000); return x2d.getImageData(0, 0, W, H).data; });
+      performance.now = realNow; w.paused = false;
+      w.goTitle(); w.startGame('challenge');
+      await new Promise((ok) => { const wait = () => (w.game.state === 'windup' && w.game.t > 0.3 ? ok() : requestAnimationFrame(wait)); wait(); });
+      now = freeze();
+      leak('타석', (id) => { w.wallet.look.uniform = id; w.render(now / 1000); return x2d.getImageData(0, 0, W, c.height).data; });
+      w.wallet.look.uniform = 'uniform-team'; performance.now = realNow; w.paused = false;
+      return out;
+    }, ids);
+    // 타석은 지금 0~0.04%이고, 무늬를 몸 밖으로 25~50% 밀면 0.6~1%가 된다. 상점 미리 보기는 크게 그려 윤곽선 가장자리가 흔들려서 금장(이미 파는 것)도 0.3~0.5%다
+    for (const [where, most] of [['상점', 0.006], ['타석', 0.002]]) for (const id of ids) {
+      const r = res[`${where} ${id}`];
+      expect(r.all, `${where} ${id} 무늬가 그려진다`).toBeGreaterThan(1000);
+      expect(r.n / r.all, `${where} ${id} 윤곽 밖`).toBeLessThan(most);
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('새 물건을 입고 친 홈런을 끝까지 따라가도 오류가 없고, 단풍·눈송이 꼬리는 벚꽃처럼 공 뒤에 남는다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => { const w = walkoff; w.setWallet({ look: { ...w.wallet.look, bat: 'bat-choco', helmet: 'helmet-penguin', glove: 'glove-catpaw', shoe: 'shoe-cat', uniform: 'uniform-galaxy', trail: 'trail-maple', sound: 'sound-cat' } }); w.startGame('challenge'); });
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);   // seed 42 첫 공은 홈런
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.flightT > 0.5, null, { timeout: 10_000 });
+    const reach = await page.evaluate(() => {   // 멈춘 장면 하나를 꼬리마다 다시 그려 꼬리 없이 그린 것과 달라진 픽셀 가운데 공에서 가장 먼 거리(화면 높이 비율)
+      walkoff.paused = true;
+      const now = performance.now(), realNow = performance.now; performance.now = () => now;
+      const g = walkoff.game, c = document.querySelector('canvas'), x2d = c.getContext('2d'), d = c.width / walkoff.view.w;
+      const fp = walkoff.fieldPlay(g.outcome).ball(g.flightT), b = walkoff.project(fp.x, fp.y, fp.z);
+      const shot = (trail) => { walkoff.wallet.look.trail = trail; walkoff.render(now / 1000); return x2d.getImageData(0, 0, c.width, c.height).data; };
+      const base = shot('trail-none'), out = {};
+      for (const trail of ['trail-maple', 'trail-snow', 'trail-blossom']) {
+        const img = shot(trail);
+        let far = 0;
+        for (let i = 0; i < img.length; i += 12) {
+          if (Math.abs(img[i] - base[i]) + Math.abs(img[i + 1] - base[i + 1]) + Math.abs(img[i + 2] - base[i + 2]) < 40) continue;
+          const p = i / 4; far = Math.max(far, Math.hypot((p % c.width) / d - b.x, Math.floor(p / c.width) / d - b.y));
+        }
+        out[trail] = far / walkoff.view.h;
+      }
+      walkoff.wallet.look.trail = 'trail-maple'; performance.now = realNow; walkoff.paused = false;
+      return out;
+    });
+    for (const trail of ['trail-maple', 'trail-snow']) expect(reach[trail], trail).toBeGreaterThan(reach['trail-blossom'] * 0.6);
+    expect(reach['trail-blossom']).toBeGreaterThan(0.03);
+    await page.waitForFunction(() => walkoff.game.flightT > walkoff.chaseEnd(walkoff.game.outcome) + 0.05, null, { timeout: 20_000 });   // 끝까지 오류 없이
     expect(errors).toEqual([]);
   });
 });

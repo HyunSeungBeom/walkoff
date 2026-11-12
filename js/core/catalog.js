@@ -24,6 +24,7 @@ export const ITEMS = [
   { id: 'bat-baguette', slot: 'bat', price: 600 },   // 2026-11-10 더한 물건(보통 값 12개·비싼 것 4개)
   { id: 'bat-rainbow', slot: 'bat', price: 1500 },
   { id: 'bat-phoenix', slot: 'bat', price: 8000 },
+  { id: 'bat-choco', slot: 'bat', price: 600 },   // 2026-11-12 더한 물건(13개, 사용자가 왼쪽 칸 후보에서 모두 고름)
   { id: 'helmet-team', slot: 'helmet', price: 0 },
   { id: 'helmet-black', slot: 'helmet', price: 150 },
   { id: 'helmet-white', slot: 'helmet', price: 150 },
@@ -40,6 +41,7 @@ export const ITEMS = [
   { id: 'helmet-panda', slot: 'helmet', price: 500 },
   { id: 'helmet-cat', slot: 'helmet', price: 500 },
   { id: 'helmet-halo', slot: 'helmet', price: 7000 },
+  { id: 'helmet-penguin', slot: 'helmet', price: 500 },
   { id: 'glove-white', slot: 'glove', price: 0 },
   { id: 'glove-black', slot: 'glove', price: 100 },
   { id: 'glove-red', slot: 'glove', price: 100 },
@@ -48,6 +50,9 @@ export const ITEMS = [
   { id: 'glove-gold', slot: 'glove', price: 600 },
   { id: 'glove-leopard', slot: 'glove', price: 500 },
   { id: 'glove-fire', slot: 'glove', price: 1200 },
+  { id: 'glove-catpaw', slot: 'glove', price: 500 },
+  { id: 'glove-bearpaw', slot: 'glove', price: 500 },
+  { id: 'glove-silver', slot: 'glove', price: 300 },
   { id: 'shoe-black', slot: 'shoe', price: 0 },
   { id: 'shoe-white', slot: 'shoe', price: 100 },
   { id: 'shoe-red', slot: 'shoe', price: 120 },
@@ -60,6 +65,8 @@ export const ITEMS = [
   { id: 'shoe-duck', slot: 'shoe', price: 300 },
   { id: 'shoe-rocket', slot: 'shoe', price: 3000 },
   { id: 'shoe-bolt', slot: 'shoe', price: 2500 },
+  { id: 'shoe-cat', slot: 'shoe', price: 400 },
+  { id: 'shoe-panda', slot: 'shoe', price: 400 },
   { id: 'uniform-team', slot: 'uniform', price: 0 },
   { id: 'uniform-home', slot: 'uniform', price: 300 },
   { id: 'uniform-away', slot: 'uniform', price: 300 },
@@ -69,6 +76,9 @@ export const ITEMS = [
   { id: 'uniform-stripe', slot: 'uniform', price: 600 },
   { id: 'uniform-retro', slot: 'uniform', price: 800 },
   { id: 'uniform-rainbow', slot: 'uniform', price: 8000 },
+  { id: 'uniform-check', slot: 'uniform', price: 700 },
+  { id: 'uniform-flower', slot: 'uniform', price: 800 },
+  { id: 'uniform-galaxy', slot: 'uniform', price: 7000 },
   { id: 'number-none', slot: 'number', price: 0 },
   { id: 'number-on', slot: 'number', price: 300 },
   { id: 'trail-none', slot: 'trail', price: 0 },
@@ -82,6 +92,8 @@ export const ITEMS = [
   { id: 'trail-note', slot: 'trail', price: 600 },
   { id: 'trail-blossom', slot: 'trail', price: 800 },
   { id: 'trail-golddragon', slot: 'trail', price: 10000 },
+  { id: 'trail-maple', slot: 'trail', price: 800 },
+  { id: 'trail-snow', slot: 'trail', price: 800 },
   { id: 'sound-wood', slot: 'sound', price: 0 },
   { id: 'sound-metal', slot: 'sound', price: 400 },
   { id: 'sound-toy', slot: 'sound', price: 300 },
@@ -92,6 +104,7 @@ export const ITEMS = [
   { id: 'sound-thunder', slot: 'sound', price: 2500 },
   { id: 'sound-8bit', slot: 'sound', price: 1500 },
   { id: 'sound-duck', slot: 'sound', price: 300 },
+  { id: 'sound-cat', slot: 'sound', price: 300 },
 ];
 
 // 선물하기(2026-11-10 사용자 결정): 상점 물건만 보내고, 한 사람이 하루(한국 시간)에 GIFTS_PER_DAY번, 10구 랭킹 판을 GIFT_MIN_GAMES판 넘게 친 계정만 보낸다(부계정 막기).
