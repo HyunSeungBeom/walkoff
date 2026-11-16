@@ -442,6 +442,13 @@ function drawBallInfoLine() {
   roundRect(view.w / 2 - w / 2, T.y - h / 2, w, h, h / 2); ctx.fillStyle = 'rgba(5,7,13,0.78)'; ctx.fill();
   text(str, view.w / 2, T.y + 0.5, { size, weight: 800, color: LED_AMBER });
 }
+// 전광판 그림(R 크기)을 비우고 그릴 준비를 한다(drawScoreboard, 미리 데우기 warmBallBoard)
+function boardCanvas(c, R) {
+  const dpr = Math.min(view.dpr || 1, 2), g = c.getContext('2d');
+  c.width = Math.ceil(R.w * dpr); c.height = Math.ceil(R.h * dpr);
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.textBaseline = 'middle'; g.textAlign = 'center';
+  return g;
+}
 function drawBallBoard(g, W, H, b) {
   const hh = H * 0.24, line = Math.max(10, H * 0.135), y = hh + (H * 0.6 - hh) / 2;
   g.fillStyle = '#24314a'; g.fillRect(0, 0, W, hh);
@@ -482,9 +489,7 @@ function drawScoreboard() {
     const brand = shows === 'pitcher' && (game.state === 'title' || game.state === 'calib' || !game.seq.length), ball = shows === 'ball' ? ballInfo() : null, card = brand || ball ? null : pitcherCard();
     const key = [Math.round(R.w), Math.round(R.h), brand ? 'brand' : ball ? `ball|${ball.ev}|${ball.la}|${ball.dist}` : JSON.stringify(card)].join('|');
     if (scoreboardCache.key !== key) {
-      const c = scoreboardCache.canvas ??= document.createElement('canvas'), dpr = Math.min(view.dpr || 1, 2), g = c.getContext('2d');
-      c.width = Math.ceil(R.w * dpr); c.height = Math.ceil(R.h * dpr);
-      g.setTransform(dpr, 0, 0, dpr, 0, 0); g.textBaseline = 'middle'; g.textAlign = 'center';
+      const g = boardCanvas(scoreboardCache.canvas ??= document.createElement('canvas'), R);
       if (brand) {
         const size = Math.min(R.h * 0.22, R.w / 5.2);
         g.font = font(size, 900); g.shadowColor = '#f2c94c'; g.shadowBlur = size * 0.5; g.fillStyle = '#f2c94c';
@@ -3109,8 +3114,10 @@ function boardLayout() {
   const m = view.mobile, pw = m ? view.w - 12 : Math.min(940, view.w - 240), ph = m ? 54 : 64;
   return { m, pw, ph, px: (view.w - pw) / 2, py: m ? 6 : 10, pad: m ? 12 : 18, leftW: m ? 66 : 120 };
 }
+// 그려 둔 그림은 그림에 들어가는 값이 바뀔 때만 다시 그린다. note는 그림 밖에 따로 쓰고, 폰은 남은 기회 숫자를 그리지 않아서 뺀다
+// (2026-11-16 성능 묶음: 폰은 맞는 순간 남은 기회만 줄어 빛 번짐이 많은 점수판을 다시 그렸다)
 function drawTopBar() {
-  const v = boardView(), L = boardLayout(), key = JSON.stringify([view.w, view.h, view.dpr, v]);
+  const v = boardView(), L = boardLayout(), key = JSON.stringify([view.w, view.h, view.dpr, { ...v, note: undefined, left: L.m ? undefined : v.left }]);
   if (board.key !== key) { renderBoard(v, L); board.key = key; }
   ctx.drawImage(board.canvas, L.px - BOARD_M, L.py - BOARD_M, L.pw + 2 * BOARD_M, L.ph + 2 * BOARD_M);
   const q = board.ring;   // 지금 공 자리: 아직 불이 안 켜졌으면 흰 테두리가 깜빡인다
@@ -6406,6 +6413,7 @@ function drawAimLayer(p) {
 
 // input: 무엇으로 쳤는지('mouse'·'touch'·'key', 스윙 통계). at: 조준 판에서 휘두른 자리(화면 px, 없으면 지금 커서)
 function swing(eventTime, input = 'key', at = null) {
+  const t0 = fpsMeter && performance.now();   // ?fps=1: 맞는 순간 스윙 처리 시간
   const p = game.seq[game.i];
   const bt = ballTime() + Math.max(0, (eventTime - game.clockAt) / 1000);
   game.swingAt = bt;
@@ -6434,6 +6442,7 @@ function swing(eventTime, input = 'key', at = null) {
     if (r.kind === 'foul') { Sound.foul(); buzz(15); } else { Sound.crack(clamp((r.ev - 80) / 100, 0, 1), currentLook().sound); buzz(r.kind === 'hr' ? [50, 40, 110] : 30); }
   }
   finish(r);
+  if (fpsMeter && r.kind !== 'whiff') fpsMeter.swing(performance.now() - t0);
 }
 
 // 관중 함성·환호는 결과 글자가 뜨는 순간에 한 번(2026-11-02 사용자 결정 '결과 글자와 함께'). 전에는 맞은 0.3초 뒤에 나서 1루 간발도 결과가 미리 들렸다.
@@ -6902,14 +6911,92 @@ function render(time) {
 
 let lastFrame = performance.now();
 function frame(now) {
-  const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
+  const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000)), gap = now - lastFrame;
   lastFrame = now;
   if (!window.walkoff?.paused) {   // 영상 찍기 도구는 멈춰 두고 walkoff.update·render를 직접 부른다
+    const t0 = fpsMeter && performance.now();
     settleAway();
     if (!game.away) update(dt);   // 다른 앱에 다녀와 멈춘 공은 시간이 가지 않는다
     render(now / 1000);
+    fpsMeter?.frame(now, gap, performance.now() - t0);
   }
   requestAnimationFrame(frame);
+}
+
+// ===== 장면 시간 재기(?fps=1, 2026-11-16 성능 묶음, 작업 글 ~/.claude/plans/walkoff-perf.md) =====
+// 실제 폰에서 재 보려는 것이다. 주소에 ?fps=1이 있으면 왼쪽 아래에 최근 2초의 그리기 시간(update + render의 가운데·느린 쪽 5%·가장 느린 것,
+// 16.7ms를 넘은 장면 수)과 장면 간격(가운데, 가운데의 1.5배를 넘어 끊긴 수), 맞는 순간(스윙 처리 + 맞은 뒤 첫 장면, 처음·최근·가장 느린 것)을 띄운다.
+// 인자가 없으면 아무것도 재지 않는다. 랭킹·저장과 상관없다
+const fpsMeter = new URLSearchParams(location.search).get('fps') === '1' ? makeFpsMeter() : null;
+function makeFpsMeter() {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;left:6px;bottom:max(6px,env(safe-area-inset-bottom));z-index:5;pointer-events:none;font:10px/1.4 ui-monospace,Menlo,monospace;color:#fff;background:rgba(0,0,0,0.62);padding:3px 6px;border-radius:5px;white-space:pre';
+  document.body.appendChild(el);
+  const rows = [], hits = { first: null, last: null, worst: null };   // rows: [시각, 간격, 그리기] 최근 2초
+  let pending = null, shownAt = 0;   // pending: 맞힌 뒤 첫 장면을 기다리는 맞는 순간 { swing, frame }
+  const q = (xs, p) => (xs.length ? xs[Math.min(xs.length - 1, Math.floor(p * xs.length))] : 0), ms = (x) => x.toFixed(1);
+  const hitText = (h) => (h ? `${ms(h.swing)}+${ms(h.frame)}` : '-');
+  return {
+    swing(t) { pending = { swing: t, frame: 0 }; },
+    frame(now, gap, work) {
+      if (pending) {
+        pending.frame = work;
+        hits.first ??= pending; hits.last = pending;
+        if (!hits.worst || pending.swing + pending.frame > hits.worst.swing + hits.worst.frame) hits.worst = pending;
+        pending = null;
+      }
+      rows.push([now, gap, work]);
+      while (rows[0][0] < now - 2000) rows.shift();
+      if (now - shownAt < 500) return;
+      shownAt = now;
+      const w = rows.map((r) => r[2]).sort((a, b) => a - b), g = rows.map((r) => r[1]).sort((a, b) => a - b), mid = q(g, 0.5);
+      el.textContent = `그리기 가운데 ${ms(q(w, 0.5))} · 95% ${ms(q(w, 0.95))}\n최대 ${ms(w[w.length - 1])}ms · 16.7 넘음 ${w.filter((x) => x > 16.7).length}\n`
+        + `간격 ${ms(mid)}ms · 끊김 ${g.filter((x) => x > mid * 1.5).length}/${g.length}\n`
+        + `맞는 순간 처음 ${hitText(hits.first)}\n최근 ${hitText(hits.last)} · 최대 ${hitText(hits.worst)}`;   // 맞는 순간: 스윙 처리+첫 장면(ms)
+    },
+  };
+}
+
+// ===== 처음 맞히는 공 미리 데우기(2026-11-16 성능 묶음) =====
+// 처음 맞힌 공은 수비 일정(fieldPlay)·수비수 자세를 처음 계산하고 전광판·결과 글자를 그 굵기·크기로 처음 재느라, 폰(CPU 4배 느리게)에서
+// 스윙 처리가 17ms, 맞은 뒤 첫 장면이 18ms, 결과 글자 장면이 15ms 걸렸다(두 번째 공부터는 2ms·6ms·6ms). 열고 나서 시험 타구 몇 개로
+// 같은 계산을 한 번씩 하고 글자를 한 번씩 재 둔다. 계산한 것은 버리고(시험 타구와 버릴 그림에만 남는다) 판 상태·화면·무작위는 건드리지 않는다.
+// 일 하나가 폰에서 많아야 15ms쯤이 되게 잘게 나눠 30ms마다 하나씩 하고(0.8초쯤에 끝난다), 공이 날아오는 동안은 건너뛴다.
+// requestIdleCallback은 쓰지 않는다(아이폰 사파리에 없고, 120Hz 화면은 한가한 틈이 장면마다 3~6ms뿐이라 기다리기만 했다)
+const WARM_HITS = [[0, -25], [0, -85], [0, 20], [2, -90], [3, -35], [3, -90], [0, -140]];   // 시드 1 공 순서에서 홈런·뜬공 아웃·2루타·땅볼 아웃·땅볼 안타·내야 안타·파울이 나오는 [공, dt]. core가 바뀌어 다른 결과가 나와도 괜찮다
+const WARM_TEXT = '홈런! 안타 아웃 파울 정타 타이밍 정확 늦음 빠름 다시 보기 다음 공 처음부터 타구 정보 발사각 비거리 휜 정도 도착 존 밖 0123456789 km/h ms → ← ↑ ↓ · ° + ( )';
+function warmUp() {
+  const seq = makeSequence(1), jobs = [];
+  for (const weight of [600, 700, 800, 900]) for (const from of [9, 15]) jobs.push(() => warmFonts(weight, from));
+  jobs.push(warmBallBoard);
+  for (const [i, dt] of WARM_HITS) {
+    let r = null;
+    jobs.push(() => { r = judgeSwing(seq[i], dt, settings.bats); if (r.kind !== 'whiff') { swingAim(seq[i], r); revealOf(r); } });
+    jobs.push(() => {   // 맞은 뒤 화면이 부르는 수비수 자세(drawDefense)와 친 타자 주루(drawRunner)
+      if (r.kind === 'whiff') return;
+      const play = fieldPlay(r);
+      for (const t of [0, 0.4, 1.2]) for (const f of DEFENSE) { actorState(play, f, t); actorSkeleton(play, f, t); }
+      for (const t of [0.5, 1.5]) { const run = runnerAt(r, t); if (run) runnerSkeleton(run); }
+    });
+  }
+  const step = () => {
+    if (game.state !== 'pitch') jobs.shift()();
+    if (jobs.length) setTimeout(step, 30);
+  };
+  setTimeout(step, 30);
+}
+// 글자는 굵기·크기마다 처음 잴 때 느리다(폰에서 하나에 1~3ms). from부터 크기 여섯과, 900이면 결과 제목 크기도 잰다
+function warmFonts(weight, from) {
+  const g = document.createElement('canvas').getContext('2d'), sizes = Array.from({ length: 6 }, (_, i) => from + i);
+  if (weight === 900 && from === 15) for (const kind of ['hr', 'single']) { const T = resultTitleBox({ kind }); sizes.push(T.size, T.size * 0.62); }
+  for (const size of sizes) { g.font = font(size, weight); g.measureText(WARM_TEXT); }
+}
+// 맞는 순간 전광판에 처음 그리는 타구 정보는 그 크기의 글자를 처음 재느라 4ms쯤 더 걸려서, 같은 크기로 버릴 그림에 한 번 그려 둔다(숫자 0~9가 다 나오게)
+function warmBallBoard() {
+  const R = scoreboardRect();
+  if (!R || R.w < 20) return;
+  const g = boardCanvas(document.createElement('canvas'), R);
+  for (const [ev, la, dist] of [[158, 38, 0], [134, 27, 169], [120, 45, 0]]) drawBallBoard(g, R.w, R.h, { ev, la, dist });
 }
 
 initNews();
@@ -6919,6 +7006,7 @@ if (!settings.team) openOnboard('start');   // 처음 온 사람은 열자마자
 requestAnimationFrame(frame);
 syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
+warmUp();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,

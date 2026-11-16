@@ -17,6 +17,15 @@ export const Sound = (() => {
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     loadCrowd();
+    setTimeout(warm, 50);
+  }
+  // 처음 맞힐 때 소리 마디(발진기·거르개·크기·잡음)를 처음 만드느라 폰(CPU 4배 느리게)에서 타격음이 4ms 걸렸다(두 번째부터 1ms, 2026-11-16 성능 묶음).
+  // 소리판을 만든 뒤(누른 손길이 끝난 뒤) 한 번씩 만들어 둔다. 잇지도 틀지도 않아서 소리는 나지 않는다
+  function warm() {
+    if (!ac || !on) return;
+    const o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain(), src = ac.createBufferSource();
+    o.frequency.setValueAtTime(440, 0); o.frequency.exponentialRampToValueAtTime(220, 0.1);
+    f.frequency.setValueAtTime(1000, 0); g.gain.linearRampToValueAtTime(0.5, 0.1); src.buffer = noiseBuf;
   }
   function env(g, t0, attack, dur, peak) {
     g.gain.setValueAtTime(0.0001, t0);
@@ -117,7 +126,7 @@ export const Sound = (() => {
     fetch(CROWD_URL).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
       .then((b) => new Promise((ok, no) => ac.decodeAudioData(b, ok, no)))   // 옛 사파리는 콜백 방식만 된다
       .then((buf) => { crowdBuf = buf; })
-      .catch(() => { /* 합성 함성으로 대신한다 */ });
+      .catch(() => { setTimeout(() => { if (on) stadium(); }, 50); });   // 합성 함성으로 대신한다. 경기장 울림은 이때 미리 만들어 둔다(stadium)
   }
   function roarRecording(level) {
     const t0 = ac.currentTime, src = ac.createBufferSource(), g = ac.createGain();
@@ -136,7 +145,9 @@ export const Sound = (() => {
     param.exponentialRampToValueAtTime(0.0001, t0 + dur);
   }
   let hall = null;
-  function stadium() {   // 경기장 울림: 1.8초 동안 사그라드는 잡음을 잔향으로 쓴다(처음 부를 때 한 번 만든다)
+  // 경기장 울림: 1.8초 동안 사그라드는 잡음을 잔향으로 쓴다. 처음 부를 때 한 번 만드는데, 폰(CPU 4배 느리게)에서 30~40ms라 첫 함성 장면이 50ms쯤 됐다.
+  // 합성 함성은 녹음(crowd.mp3)을 못 받았을 때만 쓰니, 못 받으면 그때 미리 만든다(loadCrowd. 받은 사람은 만들지 않는다)
+  function stadium() {
     if (hall) return hall;
     const len = Math.floor(ac.sampleRate * 1.8), ir = ac.createBuffer(2, len, ac.sampleRate);
     for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); }
