@@ -187,7 +187,7 @@ export default {
         // 칭호 수는 그날 최고 기록이 아닌 판도 쌓는다(그 판에서 해낸 일이라서). newTitles는 이 판으로 처음 받은 것, titles는 받은 칭호 모두, counts는 쌓은 수
         const got = await grantTitles(env.DB, s.playerId, gameCounts(s));
         const [r, after] = await Promise.all([rankings(env.DB, s.week, s.playerId, now, { lastWeek: false }), accountById(env.DB, s.playerId)]);
-        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, count: r.count, allTime: r.allTime, coins: after.coins, earned, newTitles: got.added, titles: got.titles, counts: got.counts });
+        return json({ ok: true, accepted: res.meta.changes > 0, week: s.week, me: r.me, myTeam: r.myTeam, near: r.near, count: r.count, allTime: r.allTime, coins: after.coins, earned, newTitles: got.added, titles: got.titles, counts: got.counts });
       }
       // 끝내기 상황 한 판의 코인(scenario.js). 표는 10구 도전과 같은 /seeds 표이고, 서버가 그 시드로 판을 다시 돌려 끝·점수를 낸다.
       // 표를 먼저 쓴 것으로 적고 적은 요청만 코인을 준다(같은 표로 동시에 와도 한 번). 랭킹에는 올리지 않는다

@@ -133,5 +133,22 @@ test('주간 순위: 이번 주 최고 기록으로 줄 세우고, 같은 점수
   assert.deepEqual(r.me, { rank: 4, best: 3000, days: 2, team: 'lotte' });
   assert.deepEqual(r.myTeam, { rank: 1, total: 8000, team: 'lotte' });
   assert.equal(r.players.some((p) => 'id' in p), false);   // 사람 ID는 밖으로 내보내지 않는다
-  assert.deepEqual(aggregate([], null), { players: [], teams: [], count: 0, me: null, myTeam: null });
+  assert.deepEqual(aggregate([], null), { players: [], teams: [], count: 0, me: null, myTeam: null, near: null });
+});
+
+test("10구 끝 화면 '한 판 더' 줄의 near: 나보다 높은 기록 가운데 가장 낮은 사람, 1위면 나보다 낮은 기록 가운데 가장 높은 사람의 등수·기록만(같은 점수는 같은 등수)", () => {
+  const rows = [
+    { player_id: 'a', day: '2026-10-26', nick: '에이', team: 'lotte', score: 3000 },
+    { player_id: 'b', day: '2026-10-26', nick: '비', team: 'lotte', score: 5000 },
+    { player_id: 'c', day: '2026-10-27', nick: '씨', team: 'lg', score: 4000 },
+    { player_id: 'd', day: '2026-10-28', nick: '디', team: 'kt', score: 4000 },
+  ];
+  assert.deepEqual(aggregate(rows, 'a').near, { above: { rank: 2, best: 4000 }, below: null });
+  assert.deepEqual(aggregate(rows, 'c').near, { above: { rank: 1, best: 5000 }, below: null });   // 같은 점수(디)는 위가 아니다
+  assert.deepEqual(aggregate(rows, 'b').near, { above: null, below: { rank: 2, best: 4000 } });
+  const tie = [...rows, { player_id: 'e', day: '2026-10-28', nick: '이', team: 'nc', score: 5000 }];   // 공동 1위면 바로 아래는 3위
+  assert.deepEqual(aggregate(tie, 'e').near, { above: null, below: { rank: 3, best: 4000 } });
+  assert.deepEqual(aggregate([rows[0]], 'a').near, { above: null, below: null });   // 혼자
+  assert.equal(aggregate(rows, null).near, null);
+  assert.equal(aggregate(rows, 'zz').near, null);   // 이번 주에 안 친 사람
 });

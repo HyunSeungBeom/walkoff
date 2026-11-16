@@ -268,8 +268,10 @@ test('랭킹: 목록의 사람마다 입은 물건(look)을 같이 보내고, �
   for (const id of ['p-device-0001', 'p-device-0002', 'p-legacy-0001']) assert.ok(!text.includes(id), `${id}가 응답에 있다`);
   assert.equal(ranking.ids, undefined);
   assert.deepEqual([ranking.me.rank, ranking.count], [2, 3]);   // 내 순위는 그대로
+  assert.deepEqual(ranking.near, { above: { rank: 1, best: 5000 }, below: null });   // 바로 위 사람은 등수·기록만
   const sent = await (await call('POST', '/scores', { token: b, body: score(await seeded(b), { nick: '나래', score: 4500 }) })).json();
   assert.deepEqual([sent.ok, sent.players, sent.me.best], [true, undefined, 4500]);   // 점수를 보낸 답에는 목록이 없다(내 순위만)
+  assert.deepEqual(sent.near, { above: { rank: 1, best: 5000 }, below: null });   // 끝 화면 '한 판 더' 줄(가람까지 500점)
 });
 
 test('역대 최고(allTime): 그 사람이 계정으로 친 10구 점수 전체의 최고를 /rankings?player=와 /scores 답에 준다(이번 주에 친 판이 없어도, 남의 기록은 섞지 않는다)', async () => {

@@ -100,12 +100,17 @@ export function rankSummary(list, playerId, { withIds = false } = {}) {
   const teams = rankBy([...byTeam.values()], 'total');
   const mine = playerId ? players.find((p) => p.id === playerId) : null;
   const myTeam = mine ? teams.find((t) => t.team === mine.team) : null, top = players.slice(0, 50);
+  // 10구 끝 화면 '한 판 더' 줄(2026-11-16): 내 바로 위(나보다 높은 기록 가운데 가장 낮은)와, 1위면 바로 아래(나보다 낮은 기록 가운데 가장 높은)의
+  // 등수·기록. 50위 밖이어도 이 둘만 준다(이름·ID 없이)
+  const above = mine ? players.filter((p) => p.best > mine.best).pop() : null, below = mine?.rank === 1 ? players.find((p) => p.best < mine.best) : null;
+  const near = (p) => (p ? { rank: p.rank, best: p.best } : null);
   const out = {
     players: top.map((p) => ({ rank: p.rank, nick: p.nick, team: p.team, best: p.best, days: p.days, me: p.id === playerId })),
     teams,
     count: players.length,
     me: mine ? { rank: mine.rank, best: mine.best, days: mine.days, team: mine.team } : null,
     myTeam: myTeam ? { rank: myTeam.rank, total: myTeam.total, team: myTeam.team } : null,
+    near: mine ? { above: near(above), below: near(below) } : null,
   };
   if (withIds) out.ids = top.map((p) => p.id);
   return out;

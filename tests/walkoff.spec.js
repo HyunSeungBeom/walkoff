@@ -36,6 +36,7 @@ async function rankingOf(rows, mine = null) {
 // seed: /seeds가 내주는 10구 도전 시드(기본 42). 표는 요청마다 새로 만들어 돌려주는 배열의 tickets에 쌓는다(받은 시각 at).
 // seedFail: /seeds가 서버 오류로 답한다. seedExpired: /seeds만 로그인이 풀린 것처럼 401로 답한다(계정 확인 /me는 된다).
 // seedHold: /seeds 답을 테스트가 calls.releaseSeeds()로 풀 때까지 잡아 둔다(풀면 그 뒤 요청은 바로 답한다). scoreFail: /scores가 서버 오류로 답한다.
+// near: (그 주 내 기록) => 바로 위·아래 등수와 기록({ above, below }). 없으면 /scores 답에 near가 없다(2026-11-16 전 서버). 요청 때 읽는다.
 // /scores는 실제 서버처럼 10구 도전에 표가 없거나 모르는 표, 이미 쓴 표면 거절한다.
 // 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다.
 // account.allTime: 계정의 역대 최고(다른 기기에서 친 판 포함). 실제 서버처럼 /rankings?player=와 /scores 답에 allTime으로 주고, 받은 점수로 올린다
@@ -128,7 +129,7 @@ async function mockApi(page, opts = {}) {
       record.counts = addCounts(record.counts, countsOf(lights, seq, lefty, score));
       const newTitles = titlesFor(record.counts).filter((id) => !record.titles.includes(id));
       record.titles = TITLE_IDS.filter((id) => record.titles.includes(id) || newTitles.includes(id));
-      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles], counts: { ...record.counts } });
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, ...(opts.near ? { near: opts.near(best) } : {}), count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles], counts: { ...record.counts } });
     }
     if (url.pathname === '/shop/buy') {
       const it = ITEMS.find((i) => i.id === JSON.parse(req.postData() || '{}').item);
@@ -5058,5 +5059,76 @@ test.describe('투수·수비수 얼굴(2026-11-16)', () => {
     });
     expect(scn).toEqual([null, 'grin', 'grin', null, null]);
     expect(errors).toEqual([]);
+  });
+});
+
+test.describe("끝 화면 '한 판 더' 줄(2026-11-16)", () => {
+  // 공 하나로 끝나는 로그인한 10구(서버 시드 42, 첫 공은 지켜본 스트라이크). 끝 화면에 그린 글자 가운데 한 판 더 줄과 '다시 하기' 자리
+  const goalOf = (texts) => texts.find((t) => /^\d+위까지 [\d,]+점$|^\d+위와 [\d,]+점 차$|^.+까지 .*[\d,]+(개|번|판)$/.test(t)) ?? null;
+  const endChallenge = async (page) => {
+    await seedReady(page);
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over' && ['ok', 'error'].includes(walkoff.game.rankInfo?.status));
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '다시 하기'));
+    const texts = await drawnTexts(page);
+    return { goal: goalOf(texts), retry: await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '다시 하기').r.y), score: await page.evaluate(() => walkoff.game.score) };
+  };
+
+  test('로그인한 10구: 다음 순위까지 몇 점, 1위면 바로 아래와 몇 점 차. 옛 서버·서버 오류면 줄이 없고 자리만 남아 단추가 밀리지 않는다. 낮은 폰(375×548)에서도 단추가 화면 안이다', async ({ page, isMobile }) => {
+    const api = { scoreReply: 'lower', near: (best) => ({ above: { rank: 2, best: best + 1200 }, below: null }) };   // lower: 이번 주 기록은 이번 판 + 1,000점
+    const errors = await open(page, '', { login: true, api });
+    const next = await endChallenge(page);
+    expect(next.goal).toBe('2위까지 1,200점');
+    api.near = (best) => ({ above: null, below: { rank: 2, best: best - 800 } });   // 1위
+    expect((await endChallenge(page)).goal).toBe('2위와 800점 차');
+    api.near = (best) => ({ above: null, below: null });   // 혼자
+    expect((await endChallenge(page)).goal).toBe(null);
+    delete api.near;   // 옛 서버
+    const old = await endChallenge(page);
+    expect([old.goal, old.retry]).toEqual([null, next.retry]);
+    api.scoreFail = true;
+    const fail = await endChallenge(page);
+    expect([fail.goal, fail.retry]).toEqual([null, next.retry]);
+    if (isMobile) {   // 낮은 폰(375×548): 새 칭호 띠가 없으면 줄을 올려 넣고, 띠가 있으면 한 판 더 줄을 뺀다. 어느 쪽이든 단추 아래 끝은 줄 자리가 없던 때보다 내려가지 않는다
+      api.scoreFail = false; api.near = (best) => ({ above: { rank: 2, best: best + 1200 }, below: null });
+      await endChallenge(page);
+      await page.setViewportSize({ width: 375, height: 548 });
+      await page.waitForFunction(() => walkoff.view.h === 548);
+      const edges = async (fixed) => {   // fixed: 주소로 정한 판처럼 줄 자리를 안 잡은 배치(전과 같다)
+        await page.evaluate((f) => { walkoff.game.fixedSeed = f; }, fixed);
+        const goal = goalOf(await drawnTexts(page));
+        return { goal, ...(await page.evaluate(() => ({ top: Math.min(...walkoff.ui.buttons.map((b) => b.r.y)), bottom: Math.max(...walkoff.ui.buttons.map((b) => b.r.y + b.r.h)) }))) };
+      };
+      for (const [titles, want] of [[[], '2위까지 1,200점'], [['god'], null]]) {
+        await page.evaluate((t) => { walkoff.game.newTitles = t; }, titles);
+        const before = await edges(true), now = await edges(false);
+        expect([before.goal, now.goal], `새 칭호 ${titles}`).toEqual([null, want]);
+        expect(now.bottom, `새 칭호 ${titles}`).toBeLessThanOrEqual(before.bottom + 0.5);
+        expect(now.top, `새 칭호 ${titles}`).toBeGreaterThanOrEqual(0);
+      }
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('80% 넘게 채운 칭호가 순위보다 가까우면 그 칭호까지 얼마(1위면 10% 안일 때만). 로그인 안 했으면 줄이 없다', async ({ page, browser, isMobile }) => {
+    test.skip(isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const api = { scoreReply: 'lower', near: (best) => ({ above: { rank: 2, best: best + 1200 }, below: null }), account: { counts: { hr: 1995, ball: 850 }, titles: ['factory'] } };
+    const errors = await open(page, '', { login: true, api });
+    expect((await endChallenge(page)).goal).toBe('홈런왕까지 홈런 5개');   // 홈런 1,995/2,000(0.25% 남음) < 2위까지 1,200점. 볼 850/1,000(선구안)은 15% 남음
+    api.near = (best) => ({ above: null, below: { rank: 2, best: best - 800 } });
+    expect((await endChallenge(page)).goal).toBe('홈런왕까지 홈런 5개');   // 1위여도 10% 안
+    api.near = (best) => ({ above: { rank: 4, best: best + 1 }, below: null });
+    expect((await endChallenge(page)).goal).toBe('4위까지 1점');   // 순위가 더 가깝다
+    expect(errors).toEqual([]);
+    const guest = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(guest, '?seed=42');
+    await guest.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await guest.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await guest.keyboard.press('Space');
+    await guest.waitForFunction(() => walkoff.game.state === 'over' && walkoff.ui.buttons.some((b) => b.label === '다시 하기'));
+    expect(goalOf(await drawnTexts(guest))).toBe(null);
+    await guest.close();
   });
 });

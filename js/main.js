@@ -4239,7 +4239,8 @@ async function submitScore(s, mode) {
   if (status === 200 && data.ok) {
     setWallet({ coins: data.coins });
     setAccountBest(weekStartOf(s.date), data.me?.best, data.allTime);   // 메뉴 '이번 주'·'역대'를 계정 기록으로(랭킹과 같은 숫자)
-    game.rankInfo = { status: 'ok', me: data.me, myTeam: data.myTeam, newBest: data.accepted && data.me?.best === s.score, earned: data.earned ?? 0 };
+    game.rankInfo = { status: 'ok', me: data.me, myTeam: data.myTeam, newBest: data.accepted && data.me?.best === s.score, earned: data.earned ?? 0,
+      near: data.near ?? null, counts: data.counts ?? null, titles: data.titles ?? null };   // near·셈: 끝 화면 '한 판 더' 줄(goalLine)
     settleBest(s, data);   // 끝 화면 '최고 기록'도 계정 역대 최고로
     settleTitles(s, data);   // 이 판으로 처음 받은 칭호(서버가 정한다)
   } else { game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error }; settleBest(s, null); }
@@ -4364,6 +4365,33 @@ function rankLine() {
   if (ri.status === 'error') return '랭킹 서버에 연결하지 못했어요 · 랭킹 보기 ›';
   if (!ri.me) return '이번 주 랭킹 보기 ›';
   return ri.newBest ? `이번 주 최고 기록! ${ri.me.rank}위 · 랭킹 보기 ›` : `이번 주 최고 ${(ri.me.best ?? ri.me.total ?? 0).toLocaleString()}점 · ${ri.me.rank}위 · 랭킹 보기 ›`;
+}
+
+// 10구 끝 화면 '한 판 더' 줄(2026-11-16 작업 글 walkoff-onemore.md): 다음 순위까지 몇 점(1위면 바로 아래와 몇 점 차)과 다음 칭호까지 얼마 가운데
+// 더 가까운 쪽 하나. 가까움은 남은 몫(점수 차 ÷ 위 사람 기록, 남은 수 ÷ 칭호에 필요한 수)으로 견주고, 칭호는 80% 넘게 채운 것만, 1위면 남은 몫 10% 안일 때만.
+// 로그인 안 했거나 랭킹에 안 올라간 판·서버 오류·옛 서버(near 없음)면 없다
+function goalLine() {
+  const ri = game.rankInfo;
+  if (!loggedIn() || ri?.status !== 'ok' || !ri.me || !ri.near) return null;
+  const { above, below } = ri.near, best = ri.me.best ?? 0;
+  const rank = above ? { text: `${above.rank}위까지 ${(above.best - best).toLocaleString()}점`, frac: (above.best - best) / above.best }
+    : below ? { text: `${below.rank}위와 ${(best - below.best).toLocaleString()}점 차`, frac: 0.1 } : null;
+  const title = nextTitle(ri.counts, ri.titles);
+  return title && title.frac <= 0.2 && (!rank || title.frac < rank.frac) ? title.text : rank?.text ?? null;
+}
+// 아직 못 받은 칭호 가운데 남은 몫이 가장 작은 것. 판으로 세는 칭호(g_)는 'N판', 개수로 세는 칭호는 설명의 말로 '홈런왕까지 홈런 3개'
+function nextTitle(counts, have) {
+  if (!counts || !have) return null;
+  let best = null;
+  for (const t of TITLES) {
+    const left = t.need - (counts[t.key] ?? 0);
+    if (have.includes(t.id) || left <= 0 || (best && left / t.need >= best.frac)) continue;
+    best = { t, left, frac: left / t.need };
+  }
+  if (!best) return null;
+  const { t, left } = best, m = /^(.*?)\s*[\d,]+\s*(개|번|판)/.exec(t.desc);
+  const what = t.key.startsWith('g_') || !m ? `${left.toLocaleString()}판` : `${m[1].replace(/\(.*?\)/g, '').trim()} ${left.toLocaleString()}${m[2]}`;
+  return { text: `${t.name}까지 ${what}`, frac: best.frac };
 }
 
 function drawRankRow(y, x0, w, cells, highlight) {
@@ -6371,16 +6399,21 @@ function drawGameOver() {
   if (game.mode === 'scenario') { drawScenarioOver(); return; }
   if (!game.aim) drawNewTitles();
   // 랭킹 줄 자리: 10구는 이번 주 랭킹(도전장 판은 랭킹이 없다는 안내), 팀을 안 고른 사람(처음 온 사람)은 팀 고르기
-  const m = view.mobile, cx = view.w / 2, s = game.summary, duel = game.duelTry > 0 ? game.duel : null, rankRow = !game.aim && game.mode === 'challenge', tmStep = m ? 22 : 28;
-  let y = view.h * 0.19, tm = game.aim || duel ? null : game.timing;
+  const m = view.mobile, cx = view.w / 2, s = game.summary, duel = game.duelTry > 0 ? game.duel : null, rankRow = !game.aim && game.mode === 'challenge', tmStep = m ? 22 : 28, goalStep = m ? 20 : 24;
+  // 한 판 더 줄(goalLine)은 팀을 고르고 로그인한 랭킹 판(도전장 판 빼고)이면 서버 답을 기다리는 동안에도 자리를 잡아 둔다(답이 온 뒤 단추가 밀려 잘못 누르지 않게).
+  // 답에 줄이 없으면 빈 자리
+  let y = view.h * 0.19, tm = game.aim || duel ? null : game.timing, goal = rankRow && !duel && !!settings.team && loggedIn() && !game.fixedSeed ? goalLine() ?? '' : null;
   // 조준 판은 의견 보내기 줄만큼 길어서, 낮은 화면(사파리 375×548)에서는 '처음으로' 밑줄이 아래 주소(drawSiteMark)와 8px 떨어지게 30px까지 당겨 올린다
   if (game.aim) y -= clamp(y + (m ? 466 : 529) - view.h, 0, 30);
-  // 10구의 타이밍 습관 줄도 그 줄만큼까지 당겨 올린다(제목부터 '처음으로'까지 폰 398·PC 462px, 랭킹 줄이 없으면 30·36px 짧다).
-  // 새 칭호 띠(drawNewTitles)가 제목 바로 위에 떠 있으면 올릴 자리가 없어서 그 판은 줄을 뺀다
-  else if (tm) {
-    const over = y + (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + tmStep - view.h;
-    if (over > 0 && titleNames(game.newTitles ?? []).length) tm = null;
-    else y -= clamp(over, 0, tmStep);
+  // 10구의 타이밍 습관 줄·한 판 더 줄도 그 줄만큼까지 당겨 올린다(제목부터 '처음으로'까지 폰 398·PC 462px, 랭킹 줄이 없으면 30·36px 짧다).
+  // 새 칭호 띠(drawNewTitles)가 제목 바로 위에 떠 있으면 올릴 자리가 없어서 그 판은 줄을 뺀다(한 판 더 줄 먼저). 한 판 더 줄은 8px 더(사파리 375×548은
+  // 기본 배치가 이미 끝에 닿아 있다)까지 올려 보고 그래도 안 들어가면 뺀다
+  else {
+    const over = () => y + (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + (tm ? tmStep : 0) + (goal != null ? goalStep : 0) - view.h, banner = titleNames(game.newTitles ?? []).length > 0;
+    const lift = () => (tm ? tmStep : 0) + (goal != null ? goalStep + 8 : 0);
+    if (goal != null && over() > (banner ? 0 : lift())) goal = null;
+    if (tm && over() > 0 && banner) tm = null;
+    y -= clamp(over(), 0, lift());
   }
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
   const head = duel ? `${duel.nick}님의 도전장 · ${game.duelTry >= 2 ? `${game.duelTry}번째 도전` : `${duel.score.toLocaleString()}점`}` : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`;
@@ -6420,6 +6453,10 @@ function drawGameOver() {
     if (!settings.team) addButton(r, '팀을 고르고 주간 랭킹에 올라가요 ›', 'link', () => openOnboard('over'));
     else addButton(r, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
     y += m ? 30 : 36;
+    if (goal != null) {   // 한 판 더: '2위까지 1,200점'·'홈런왕까지 홈런 3개'
+      if (goal) text(goal, cx, y - (m ? 8 : 10), { size: m ? 13 : 15, weight: 700, color: '#f2c94c' });
+      y += goalStep;
+    }
   }
   drawBatsToggle(y + 19);
   y += 38 + 18;
