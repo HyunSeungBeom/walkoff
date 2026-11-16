@@ -31,6 +31,8 @@ test('칭호: 한 판에서 쌓는 수(개수와 그 일이 일어난 판)를 �
   assert.equal(countsOf(R(9)).g_zero, undefined);                                              // 기회를 다 쓰지 않은 판은 안 센다
   assert.equal(countsOf('S' + R(9), [], false, 5000).g_5k, 1);
   assert.equal(countsOf('S' + R(9), [], false, 4999).g_5k, undefined);
+  assert.deepEqual([countsOf('H'.repeat(10), [], false, 25000).g_25k, countsOf('H'.repeat(10), [], false, 24999).g_25k], [1, undefined]);   // 2만 5천 클럽(2026-11-16, 전에는 받을 수 없던 3만점)
+  assert.deepEqual(titlesFor({ g_25k: 1 }), ['k25']);
   // 예전 게임의 G(어떤 안타인지 모름)는 쌓지 않는다
   assert.deepEqual(countsOf('GGGGGGGGGG'), {});
   assert.deepEqual(countsOf(''), {});

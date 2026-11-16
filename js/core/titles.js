@@ -15,7 +15,7 @@ export const TITLES = [
   ...T('legend', [
     ['god', '⭐야구의신⭐', '⭐신⭐', 'g_hr10', 1, '한 판에 기회 10번 모두 홈런'],   // 이름의 별은 사용자가 정했다(2026-11-06)
     ['hit10', '10할 타자', '10할', 'g_hit10', 1, '기회 10번 모두 안타인 판 1판'],
-    ['k30', '3만 클럽', '3만점', 'g_30k', 1, '30,000점 이상인 판 1판'],
+    ['k25', '2만 5천 클럽', '2만5천', 'g_25k', 1, '25,000점 이상인 판 1판'],   // 2026-11-16 사용자: 3만 클럽은 이론 최대(27,600점)를 넘어 받을 수 없었다. 받은 계정·셈이 없어 아이디도 바꿨다
     ['natural', '내추럴 사이클', '내추럴', 'g_natural', 5, '단타·2루타·3루타·홈런을 이 순서로 친 판 5판'],
     ['cycle', '사이클링 히트', '사이클', 'g_cycle', 50, '단타·2루타·3루타·홈런을 다 친 판 50판'],
     ['derby', '홈런 더비', '더비왕', 'g_hr7', 5, '홈런 7개 이상 친 판 5판'],
@@ -115,7 +115,7 @@ export function countsOf(lights, seq = [], lefty = false, score = 0) {
   const front = res.slice(0, 5), back = res.slice(5);
   flag('g_late', full && hitsIn(front) === 0 && hitsIn(back) >= 4);
   flag('g_fade', full && hitsIn(front) >= 4 && hitsIn(back) === 0);
-  flag('g_5k', score >= 5000); flag('g_10k', score >= 10000); flag('g_20k', score >= 20000); flag('g_30k', score >= 30000);
+  flag('g_5k', score >= 5000); flag('g_10k', score >= 10000); flag('g_20k', score >= 20000); flag('g_25k', score >= 25000);
   flag('g_boom', full && hr >= 2 && hr + num('R') === CHANCES);
   flag('g_singles', singles >= 5 && xbh === 0);
   flag('g_choke', full && res.slice(-3).every((r) => r === 'R'));
