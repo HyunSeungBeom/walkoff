@@ -3991,11 +3991,18 @@ Object.assign(nickInput.style, {
 });
 document.body.appendChild(nickInput);
 
-// next: 'start'(처음 온 사람) | 'menu'(메뉴에서 바꾸기). play면 고른 뒤 바로 경기를 시작한다(시작 화면을 눌러서 온 경우)
-function openOnboard(next, play = false) {
-  game.onboard = { next, play, team: settings.team };
+// next: 'over'(팀을 안 고른 사람이 끝 화면에서 고르기, 고르면 그 끝 화면으로) | 'menu'(메뉴에서 바꾸기).
+// 처음 온 사람은 팀을 고르지 않고 바로 치고 첫 판 끝 화면에서 고른다(2026-11-16. 전에는 열자마자 이 화면이었다)
+function openOnboard(next) {
+  game.onboard = { next, team: settings.team };
   nickInput.value = settings.nick || defaultNick();
   game.state = 'onboard';
+}
+// 팀 고르기를 닫는다. 끝 화면에서 열었으면 그 끝 화면으로 돌아간다
+function closeOnboard() {
+  nickInput.blur();
+  if (game.onboard?.next === 'over' && game.summary) game.state = 'over';
+  else goTitle();
 }
 
 // how: 'kakao'(카카오로 시작) | 'local'(로그인 없이 하기, 메뉴에서는 저장)
@@ -4006,11 +4013,14 @@ function confirmOnboard(how = 'local') {
   saveTeamAndNick(ob.team, nick);
   nickInput.blur();
   pushProfile();
-  if (how === 'local' && ob.next === 'start') skipLogin();   // 처음 화면에서 "나중에 로그인하기"를 골랐으면 그날은 다시 묻지 않는다
+  if (how === 'local' && ob.next === 'over') skipLogin();   // 처음 고르면서 "나중에 로그인하기"를 골랐으면 그날은 다시 묻지 않는다
   if (how === 'kakao') startKakaoLogin();
   else if (ob.next === 'menu') { goTitle(); toast(`저장했어요 · ${teamById(ob.team).short} ${nick}`); }
-  else if (ob.play) startDefault();
-  else goTitle();   // 처음 온 사람은 시작 화면에서 규칙과 좌타·우타를 보고 시작한다
+  else { closeOnboard(); submitTeamless(); }
+}
+// 로그인했는데 팀 없이 친 10구 판(서버 시드로 쳤다)은 끝 화면에서 팀을 고르면 그때 보낸다(점수는 팀과 같이 남는다)
+function submitTeamless() {
+  if (loggedIn() && game.mode === 'challenge' && !game.aim && game.recorded && !game.rankInfo && game.summary) submitScore(game.summary, 'challenge');
 }
 
 const UNOFFICIAL = 'KBO·각 구단과 관계없는 비공식 팬 게임이에요';
@@ -4028,7 +4038,7 @@ function drawTeamChip(r, t, on) {
 
 function drawOnboard() {
   dim(0.62);
-  const m = view.mobile, cx = view.w / 2, ob = game.onboard, first = ob.next === 'start';
+  const m = view.mobile, cx = view.w / 2, ob = game.onboard, first = ob.next !== 'menu';
   let y = view.h * (m ? 0.08 : 0.12);
   text(first ? '내 팀을 고르세요' : '팀·닉네임 바꾸기', cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 28 : 36;
@@ -4054,13 +4064,14 @@ function drawOnboard() {
   y += 44 + (m ? 16 : 24);
   const bw = m ? view.w - 64 : 300;
   if (first && !loggedIn()) {
+    addButton({ x: 8, y: 8, w: 76, h: 36 }, '‹ 뒤로', 'link', closeOnboard);   // 끝 화면으로(아래는 작은 폰에서 자리가 없다)
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 시작', 'kakao', () => confirmOnboard('kakao'));
     y += 48 + (m ? 16 : 20);
     text('카카오에서는 회원번호만 받아요 · 랭킹에만 써요', cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });
     addButton({ x: cx - 100, y: y + 10, w: 200, h: 36 }, '나중에 로그인하기', 'link', () => confirmOnboard('local'));
   } else {
-    addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, first ? '이 팀으로 시작' : '저장', 'primary', () => confirmOnboard('local'));
-    addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, first ? '뒤로' : '취소', 'link', goTitle);
+    addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, first ? '이 팀으로 하기' : '저장', 'primary', () => confirmOnboard('local'));
+    addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, first ? '뒤로' : '취소', 'link', closeOnboard);
   }
 }
 
@@ -4471,7 +4482,7 @@ async function syncAccount() {
     else if (teamById(acct.team)) {
       if (acct.team !== settings.team || (acct.nick && acct.nick !== settings.nick)) msg = `이어서 해요 · ${teamById(acct.team).short} ${acct.nick || settings.nick}`;
       saveTeamAndNick(acct.team, acct.nick || settings.nick || defaultNick());
-      if (game.state === 'onboard' && game.onboard.next === 'start') goTitle();
+      if (game.state === 'onboard' && game.onboard.next === 'over') closeOnboard();   // 끝 화면에서 팀을 고르는 중에 계정 팀을 받았다
     } else await pushProfile();
     if (auth.fresh) toast(msg);
     auth.fresh = false;
@@ -5788,9 +5799,11 @@ function drawGiftConfirm() {
 // ===== 시작 화면과 끝 화면 =====
 // 시작 화면에는 "탭해서 시작"과 [좌타 | 우타]만 둔다(2026-10-28 사용자 피드백). 빈 곳 어디를 눌러도 시작한다.
 // 다른 모드와 설정은 오른쪽 위 메뉴에 있다. 누르면 늘 10구 도전(매번 다른 공)이다(2026-10-30 오늘의 10구를 없앰)
-// 로그인 안 한 사람이 10구 판을 시작하면 먼저 카카오 로그인을 권한다(아래 drawLoginPrompt)
+// 로그인 안 한 사람이 10구 판을 시작하면 먼저 카카오 로그인을 권한다(아래 drawLoginPrompt).
+// 팀을 아직 안 고른 사람(처음 온 사람)은 팀 고르기·로그인 권유 없이 바로 첫 공이다
+// (2026-11-16 사용자 '추천 순서대로': 전에는 열자마자 팀 고르기, 시작 화면, 탭으로 세 번 눌러야 첫 공이었다. 팀은 첫 판 끝 화면에서 고른다)
 function startDefault() {
-  if (!settings.team) { openOnboard('start', true); return; }
+  if (!settings.team) { startGame('challenge'); return; }
   if (askLoginToday()) game.state = 'loginPrompt';
   else startGame('challenge');
 }
@@ -6253,7 +6266,8 @@ function drawGameOver() {
   drawSiteMark();
   if (game.mode === 'scenario') { drawScenarioOver(); return; }
   if (!game.aim) drawNewTitles();
-  const m = view.mobile, cx = view.w / 2, s = game.summary, rankRow = !game.aim && game.mode === 'challenge' && !!settings.team, tmStep = m ? 22 : 28;
+  // 랭킹 줄 자리: 10구는 이번 주 랭킹, 팀을 안 고른 사람(처음 온 사람)은 팀 고르기
+  const m = view.mobile, cx = view.w / 2, s = game.summary, rankRow = !game.aim && game.mode === 'challenge', tmStep = m ? 22 : 28;
   let y = view.h * 0.19, tm = game.aim ? null : game.timing;
   // 조준 판은 의견 보내기 줄만큼 길어서, 낮은 화면(사파리 375×548)에서는 '처음으로' 밑줄이 아래 주소(drawSiteMark)와 8px 떨어지게 30px까지 당겨 올린다
   if (game.aim) y -= clamp(y + (m ? 466 : 529) - view.h, 0, 30);
@@ -6293,9 +6307,10 @@ function drawGameOver() {
     const label = '조준 타격 어땠나요? 의견 보내기';
     ui.buttons.push({ r: drawOutLink(label, cx, y, m ? 14 : 16), label, href: FEEDBACK_URL });
     y += m ? 28 : 34;
-  } else if (rankRow) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인)
-    const lw = Math.min(view.w - 32, 420);
-    addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
+  } else if (rankRow) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인). 팀이 없으면 팀 고르기(랭킹·팀 랭킹에 팀이 있어야 해서 로그인 안내보다 먼저)
+    const lw = Math.min(view.w - 32, 420), r = { x: cx - lw / 2, y: y - 14, w: lw, h: 30 };
+    if (!settings.team) addButton(r, '팀을 고르고 주간 랭킹에 올라가요 ›', 'link', () => openOnboard('over'));
+    else addButton(r, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
     y += m ? 30 : 36;
   }
   drawBatsToggle(y + 19);
@@ -6852,7 +6867,7 @@ window.addEventListener('keydown', (e) => {
   if (e.target === nickInput) {   // 닉네임을 입력하는 중에는 게임 키를 쓰지 않는다
     // 엔터는 메뉴에서 바꿀 때만 저장한다. 처음 화면에서는 키보드만 닫는다(폰 키보드의 완료 키로 카카오 로그인이 열리지 않게)
     if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); if (game.onboard?.next === 'menu') confirmOnboard(); else nickInput.blur(); }
-    else if (e.key === 'Escape') { nickInput.blur(); goTitle(); }
+    else if (e.key === 'Escape') closeOnboard();
     return;
   }
   if (game.state === 'ranking' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {   // 탭 바꾸기는 목록에서만(팀 창·사람 모습 뒤에서 몰래 바뀌지 않게)
@@ -6867,6 +6882,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'Escape' && game.state === 'ranking' && (game.rankView || game.rankTeam)) closeRanking();   // 사람 모습·팀 창은 한 단계 뒤로
   else if (e.code === 'Escape' && game.state === 'gift') giftBack();   // 선물하기도 한 단계씩
   else if (e.code === 'Escape' && game.state === 'shop' && game.shop?.giftTo) closeGiftShop();
+  else if (e.code === 'Escape' && game.state === 'onboard') closeOnboard();
   else if (e.code === 'Escape' && game.state !== 'title') goTitle();
   else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'titles', 'news', 'calib'].includes(game.state)) {
     if (/^Digit[1-6]$/.test(e.code)) setPractice({ type: PRACTICE_TYPES[Number(e.code.slice(5)) - 1] });
@@ -7073,7 +7089,6 @@ function warmBallBoard() {
 initNews();
 resize();
 loginReturned();
-if (!settings.team) openOnboard('start');   // 처음 온 사람은 열자마자 팀 고르기
 requestAnimationFrame(frame);
 syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다

@@ -86,8 +86,15 @@ function drive({ n, play, swings }) {
 }
 
 const SCENES = [
-  { name: '처음-온-사람', store: {}, steps: async (p, run) => {
+  // 처음 온 사람: 2026-11-16부터 팀 고르기 없이 바로 치고 첫 판 끝 화면에서 팀을 고른다(전에는 열자마자 팀 고르기, 그 흐름이면 바로 고른다)
+  { name: '처음-온-사람', query: '&seed=42', store: {}, steps: async (p, run) => {
     await run(20);
+    if (await p.evaluate(() => /** @type {any} */ (window).walkoff.game.state !== 'onboard')) {   // 시작 화면을 눌러 공 하나로 끝낸 첫 판의 끝 화면에서
+      await p.evaluate(() => { const w = /** @type {any} */ (window).walkoff; w.tap(); Object.assign(w.game, { left: 1, extra: 99 }); });
+      await run(600, true);
+      await p.evaluate(() => { const w = /** @type {any} */ (window).walkoff; w.ui.buttons.find((b) => /팀을 고르고/.test(b.label)).onTap(); });
+      await run(10);
+    }
     await p.evaluate(() => { const w = /** @type {any} */ (window).walkoff; w.ui.buttons.find((b) => /두산/.test(b.label)).onTap(); });
     await run(10);
     await p.evaluate(() => { const i = /** @type {HTMLInputElement} */ (document.querySelector('input')); if (i) { i.value = '골든'; i.dispatchEvent(new Event('input')); } });

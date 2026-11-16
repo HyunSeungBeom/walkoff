@@ -684,35 +684,64 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('처음 온 사람은 열자마자 팀과 닉네임을 고르고, 로그인 없이도 시작할 수 있다', async ({ page }) => {
+  // 2026-11-16: 전에는 열자마자 팀 고르기, 시작 화면, 탭으로 세 번 눌러야 첫 공이었다. 이제 첫 공까지 한 번이고 팀은 첫 판 끝 화면에서 고른다
+  test('처음 온 사람은 팀 고르기·로그인 권유 없이 탭 한 번에 첫 공이고, 팀은 첫 판 끝 화면에서 고른다', async ({ page }) => {
     const errors = await open(page, '?seed=42', { team: null });
     const nick = page.locator('input[aria-label="닉네임"]');
-    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');   // 누르지 않아도 팀 고르기부터
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, jersey: walkoff.batterColors().jersey }))).toEqual({ state: 'title', jersey: '#8b93a6' });   // 팀 색이 없는 중립 유니폼
+    for (const [item, state] of [['기록', 'records'], ['칭호', 'titles'], ['이번 주 랭킹', 'ranking'], ['상점 · 내 물건', 'shop'], ['카카오 로그인', 'account']]) {   // 팀이 없어도 메뉴 화면들이 열린다
+      await tap(page, '메뉴');
+      await tap(page, item);
+      await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe(state);
+      await page.waitForTimeout(100);
+      await page.keyboard.press('Escape');
+      await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('title');
+    }
+    const vp = page.viewportSize();
+    await page.mouse.click(20, vp.height - 20);
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'challenge' });   // 로그인 권유도 없이 첫 공
+    await page.evaluate(() => Object.assign(walkoff.game, { left: 1, extra: 99 }));   // 공 하나로 끝낸다(시드 42 첫 공은 스트라이크)
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 시작'));
     await tap(page, '나중에 로그인하기');   // 팀을 안 고르면 넘어가지 않는다
     expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
     await tap(page, '한화 이글스');
     expect(await page.evaluate(() => walkoff.batterColors().accent)).toBe('#1b1b1b');   // 고르는 중에도 유니폼을 미리 입혀 본다
     await nick.fill('명은');
-    await nick.press('Enter');   // 처음 화면에서 엔터는 키보드만 닫는다(카카오 로그인으로 넘어가지 않는다)
+    await nick.press('Enter');   // 처음 고를 때 엔터는 키보드만 닫는다(카카오 로그인으로 넘어가지 않는다)
     expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
     await tap(page, '나중에 로그인하기');
-    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick })))
-      .toEqual({ state: 'title', team: 'hanwha', nick: '명은' });   // 시작 화면에서 규칙과 좌타·우타를 보고 시작한다
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick, loginLater: walkoff.store.get('loginLater', null) === walkoff.today() })))
+      .toEqual({ state: 'over', team: 'hanwha', nick: '명은', loginLater: true });   // 그 끝 화면으로 돌아오고, 그날은 로그인을 다시 묻지 않는다
     await expect(nick).toBeHidden();
-    const vp = page.viewportSize();
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 로그인하면 다음 판부터 랭킹에 올라가요 ›'));   // 팀 줄 자리는 이제 로그인 줄
+    await tap(page, '처음으로');
     await page.mouse.click(20, vp.height - 20);
-    expect(await page.evaluate(() => ({ state: walkoff.game.state, mode: walkoff.game.mode }))).toEqual({ state: 'windup', mode: 'challenge' });
-    expect(await page.evaluate(() => walkoff.game.opponent !== 'hanwha' && walkoff.pitcherColors().navy !== '#1d2f5c')).toBe(true);   // 투수는 상대 팀 색
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, opp: walkoff.game.opponent !== 'hanwha' }))).toEqual({ state: 'windup', opp: true });   // 상대는 내 팀이 아닌 팀
     await reloadUntil(page, () => walkoff.settings.team === 'hanwha');
     expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, nick: walkoff.settings.nick, jersey: walkoff.batterColors().jersey })))
       .toEqual({ state: 'title', team: 'hanwha', nick: '명은', jersey: '#e65c00' });   // 한화 상의 #ff6600을 조명에 맞춰 0.9배
-    expect(errors.calls).toEqual([]);   // 로그인하지 않으면 서버에 아무것도 보내지 않는다
+    expect(errors.calls.filter((c) => c.path !== '/rankings')).toEqual([]);   // 로그인하지 않으면 서버에 아무것도 보내지 않는다(랭킹 화면은 순위를 읽기만 한다)
     expect(errors).toEqual([]);
   });
 
-  test('카카오로 시작: 다른 기기에서 쓰던 계정이면 그 팀·닉네임으로 이어 간다', async ({ page }) => {
+  test('끝 화면 팀 고르기에서 카카오로 시작: 다른 기기에서 쓰던 계정이면 그 팀·닉네임으로 이어 간다. 뒤로·Esc는 그 끝 화면으로', async ({ page }) => {
     const errors = await open(page, '?seed=42', { team: null, api: { account: { team: 'lg', nick: '민성' } } });
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
+    await tap(page, '‹ 뒤로');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('over');
+    await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('over');
+    await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '카카오로 시작'));
     const pid = await page.evaluate(() => walkoff.settings.playerId);
     await tap(page, '두산 베어스');
