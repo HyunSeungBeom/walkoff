@@ -16,7 +16,9 @@ export const game = {
   ticket: null, fixedSeed: false, waitingSeed: false, recorded: false,   // 이번 판에 쓴 서버 시드, 주소의 ?seed=로 친 판인지, 서버 시드를 기다리는 중인지, 이번 판을 기록했는지
   moves: [], scnCoin: null,   // 끝내기 상황: 공마다 휘두른 때(ms, 지켜보면 null. 서버가 판을 다시 돌린다), 판 끝에 받은 코인({ status, earned })
   aim: false, aims: [], aimHint: false,   // 조준 타격(실험) 판인지, 공마다 겨눈 자리(main.js aimFrom, 지켜보면 비어 있다), 처음 세 판 안내를 띄우는지
+  away: null,     // 다른 앱에 다녀와 멈춘 공({ ready: 이어 가기를 누른 시각(performance.now), 누르기 전에는 null }). 와인드업·투구 중에만
+  timing: null,   // 10구 끝 화면의 타이밍 습관({ ms: 휘두른 공의 빠름·늦음 가운데값, calib: 타이밍 보정을 권하는지 })
 };
 
-// 좌타/우타, 타이밍 보정(ms), 팀·닉네임, 랭킹에서 이 브라우저를 구별하는 ID, 진동. 아래는 저장소를 못 읽을 때의 기본값이다
-export const settings = { bats: 'R', offset: 0, team: null, nick: '', playerId: '', vibrate: true };
+// 좌타/우타, 타이밍 보정(ms), 팀·닉네임, 랭킹에서 이 브라우저를 구별하는 ID, 진동, 소리. 아래는 저장소를 못 읽을 때의 기본값이다
+export const settings = { bats: 'R', offset: 0, team: null, nick: '', playerId: '', vibrate: true, sound: true };

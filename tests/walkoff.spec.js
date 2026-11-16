@@ -1318,13 +1318,13 @@ test.describe('화면', () => {
       expect(m.fade, `${w}×${h} 처음`).toEqual({ top: false, bottom: true });
       await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 5000, cancelable: true })));
       await page.waitForTimeout(80);
-      const end = await page.evaluate(() => ({ at: walkoff.menu.scroll === walkoff.menu.max, fade: walkoff.menu.fade, last: walkoff.ui.buttons.find((b) => b.label.startsWith('타이밍 보정')).r }));
+      const end = await page.evaluate(() => ({ at: walkoff.menu.scroll === walkoff.menu.max, fade: walkoff.menu.fade, last: walkoff.ui.buttons.find((b) => b.label.startsWith('소리')).r }));   // PC라 진동 줄이 없어 소리 줄이 마지막
       expect(end.at, `${w}×${h}`).toBe(true);
       expect(end.fade, `${w}×${h} 끝`).toEqual({ top: true, bottom: false });
       expect(end.last.y + end.last.h, `${w}×${h} 마지막 줄이 화면 안`).toBeLessThanOrEqual(h);
     }
-    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max])).toEqual([390, 60]);   // 390×664(아이폰 사파리)는 의견 보내기 띠·칭호 줄(2026-11-05)을 더해 한 줄쯤 넘친다(PC라 진동 줄이 없어 10줄)
-    await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 9줄)
+    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max])).toEqual([390, 108]);   // 390×664(아이폰 사파리)는 의견 보내기 띠·칭호 줄(2026-11-05)·소리 줄(2026-11-12)을 더해 두 줄쯤 넘친다(PC라 진동 줄이 없어 11줄)
+    await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 11줄)
     await expect.poll(() => page.evaluate(() => walkoff.menu.max)).toBeGreaterThan(0);
     const box = await page.locator('canvas').boundingBox(), row = (await buttons()).find((b) => b.label === '연습').r;
     await page.mouse.move(box.x + row.x + 40, box.y + row.y + row.h / 2); await page.mouse.down();
@@ -4635,6 +4635,186 @@ test.describe('선물하기와 #번호(2026-11-10)', () => {
     await tap(page, '‹ 다시 고르기');
     expect(await page.evaluate(() => [walkoff.game.state, walkoff.game.gift.step])).toEqual(['gift', 'find']);
     expect(giftCalls(errors)).toEqual([{ to: 77, item: 'bat-red' }]);
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('편의 기능(2026-11-12): 소리 끄기·다른 앱 다녀오면 멈춤·타이밍 습관', () => {
+  // 화면 쪽 도우미. __setHidden: 다른 앱에 갔다 오기(화면 숨김)를 흉내 낸다. 진짜로 숨으면 브라우저가 화면 그리기를 멈추는데, 여기서는 계속 그려서
+  // 숨은 동안 판이 멈췄는지도 본다. __frame: 한 번 그리며 지금 공을 그렸는지(공이 지금 있는 자리를 가운데로 그린 원)와 쓴 글자를 모은다
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__setHidden = (h) => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h ? 'hidden' : 'visible') });
+        document.dispatchEvent(new Event('visibilitychange'));
+      };
+      window.__frame = () => {
+        const g = walkoff.game, p = g.seq[g.i], b = p && walkoff.ballPos(p, walkoff.ballTime() / p.T), q = b && walkoff.project(b.x, b.y, b.z);
+        const proto = CanvasRenderingContext2D.prototype, { arc, fillText } = proto, texts = [];
+        let ball = false;
+        proto.arc = function (x, y, ...rest) { if (q && Math.hypot(x - q.x, y - q.y) < 0.5) ball = true; return arc.call(this, x, y, ...rest); };
+        proto.fillText = function (str, ...rest) { texts.push(String(str)); return fillText.call(this, str, ...rest); };
+        try { walkoff.render(performance.now() / 1000); } finally { Object.assign(proto, { arc, fillText }); }
+        return { ball, texts };
+      };
+    });
+  });
+  const setHidden = (page, hidden) => page.evaluate((h) => window.__setHidden(h), hidden);
+
+  test('소리: 메뉴에서 끄면 소리를 만들지 않고(상점 소리 미리 듣기는 꺼져 있다고만 알린다) 새로고침해도 꺼진 채다. 다시 켜면 그 자리에서 한 번 울린다', async ({ page }) => {
+    await page.addInitScript(() => {   // 소리를 만든 수: 소리판(AudioContext)과 소리 마디(발진기·잡음)
+      window.__audio = { ctx: 0, nodes: 0 };
+      const AC = window.AudioContext;
+      window.AudioContext = class extends AC { constructor(...a) { super(...a); window.__audio.ctx++; } };
+      for (const k of ['createOscillator', 'createBufferSource']) { const f = AC.prototype[k]; AC.prototype[k] = function (...a) { window.__audio.nodes++; return f.apply(this, a); }; }
+    });
+    const errors = await open(page);
+    await tap(page, '메뉴');   // 첫 누름에 소리판을 만든다(기본은 켜짐)
+    expect(await page.evaluate(() => [walkoff.settings.sound, window.__audio.ctx])).toEqual([true, 1]);
+    await tap(page, '소리 켜짐');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '소리 꺼짐'));
+    expect(await page.evaluate(() => ({ on: walkoff.settings.sound, saved: localStorage.getItem('walkoff.sound') }))).toEqual({ on: false, saved: 'false' });
+    expect(await drawnTexts(page)).toContain('소리 꺼짐');   // 알림(줄은 '소리'와 '꺼짐'을 따로 쓴다)
+    const nodes = await page.evaluate(() => window.__audio.nodes);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    expect((await playPitch(page, 0)).kind).not.toBe('whiff');   // 놓는 소리·딱·함성이 날 자리
+    await page.evaluate(() => walkoff.openShop('shop'));
+    await page.evaluate(() => { walkoff.game.shop.tab = 'sound'; });
+    await tap(page, "알루미늄 '깡'");
+    expect(await drawnTexts(page)).toContain('소리가 꺼져 있어요');
+    expect(await page.evaluate(() => window.__audio.nodes)).toBe(nodes);   // 소리를 하나도 만들지 않았다
+    await reloadUntil(page, () => walkoff.settings.sound === false);
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '소리 꺼짐'));
+    expect(await page.evaluate(() => window.__audio)).toEqual({ ctx: 0, nodes: 0 });   // 꺼 둔 채 열면 소리판도 만들지 않는다
+    await tap(page, '소리 꺼짐');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '소리 켜짐'));
+    const on = await page.evaluate(() => ({ on: walkoff.settings.sound, saved: localStorage.getItem('walkoff.sound'), ...window.__audio }));
+    expect(on).toEqual({ on: true, saved: 'true', ctx: 1, nodes: on.nodes });
+    expect(on.nodes).toBeGreaterThan(0);   // 켜면 한 번 울린다
+    expect(await drawnTexts(page)).toContain('소리 켜짐');
+    expect(errors).toEqual([]);
+  });
+
+  test('다른 앱 다녀오기: 공이 날아오는 중에 숨으면 그 자리에 멈추고, 돌아오면 공을 감춘 채 멈춤 안내를 띄운다. 첫 누름은 스윙이 아니라 0.6초 준비 뒤 멈춘 자리에서 잇고, 이어 친 타이밍이 맞다', { tag: '@min' }, async ({ page, isMobile }) => {
+    const errors = await open(page);   // seed 42: 첫 공이 존 안 직구
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch' && walkoff.ballTime() > walkoff.game.seq[0].T * 0.3);
+    const hid = await page.evaluate(() => { const before = window.__frame().ball; window.__setHidden(true); return { before, bt: walkoff.ballTime() }; });
+    const bt = hid.bt;
+    expect(hid.before).toBe(true);
+    await page.waitForTimeout(1200);   // 공이 홈플레이트를 지나고도 남는 시간
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.ballTime(), walkoff.game.swingAt])).toEqual(['pitch', bt, null]);   // 지켜본 공 판정도 나지 않는다
+    await setHidden(page, false);
+    await page.waitForTimeout(100);
+    const waiting = await page.evaluate(() => ({ ...window.__frame(), bt: walkoff.ballTime() }));
+    expect(waiting.texts).toEqual(expect.arrayContaining(['멈췄어요', isMobile ? '탭하면 이어서' : '스페이스바 · 클릭하면 이어서']));
+    expect([waiting.ball, waiting.bt]).toEqual([false, bt]);   // 공을 감추고 그대로 둔다
+    const resumed = page.evaluate(() => new Promise((resolve) => {   // 멈춤이 풀린 첫 화면의 시각과 공 시각
+      const tick = () => { if (walkoff.game.away) { requestAnimationFrame(tick); return; } resolve({ at: performance.now(), bt: walkoff.ballTime() }); };
+      requestAnimationFrame(tick);
+    }));
+    if (isMobile) await page.touchscreen.tap(200, 500); else await page.keyboard.press('Space');
+    // 준비(0.6초) 안에 한 번에 본다: 스윙이 아니고, '준비'와 멈춘 공을 보여 주며, 준비 동안 누른 것도 스윙이 아니다
+    const during = await page.evaluate(() => {
+      const g = walkoff.game, first = { swingAt: g.swingAt, ready: g.away?.ready ?? null }, seen = window.__frame();
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+      return { ...first, ball: seen.ball, ready: first.ready != null, texts: seen.texts, again: g.swingAt, inReady: first.ready != null && performance.now() - first.ready < 600, readyAt: first.ready };
+    });
+    expect(during).toMatchObject({ swingAt: null, ready: true, ball: true, again: null, inReady: true });
+    expect(during.texts).toContain('준비');
+    const back = await resumed;
+    expect(back.at - during.readyAt).toBeGreaterThanOrEqual(600);
+    expect(back.bt - bt).toBeGreaterThanOrEqual(0);
+    expect(back.bt - bt).toBeLessThan(0.06);   // 처음부터 다시 던지지 않고 멈춘 자리에서(그 화면의 한 장면만큼)
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    expect(Math.abs(await page.evaluate(() => walkoff.game.outcome.dt))).toBeLessThanOrEqual(5);   // 멈춘 시간이 늦게 친 것으로 들어가지 않는다
+    if (isMobile) {   // 조준 판(폰)의 이어 가기 탭은 손가락 커서를 잡지 않고, 떼도 치지 않는다
+      await page.evaluate(() => walkoff.startGame('challenge', false, { aim: true }));
+      await page.waitForFunction(() => walkoff.game.state === 'pitch' && walkoff.ballTime() > walkoff.game.seq[walkoff.game.i].T * 0.3);
+      await page.evaluate(() => { window.__setHidden(true); window.__setHidden(false); });
+      await page.touchscreen.tap(200, 500);
+      expect(await page.evaluate(() => ({ touch: walkoff.aimPointer.touch, swingAt: walkoff.game.swingAt, ready: walkoff.game.away?.ready != null }))).toEqual({ touch: null, swingAt: null, ready: true });
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('다른 앱 다녀오기: 숨으면 소리를 멈추고 돌아오면 소리를 켜 둔 사람만 잇는다. 결과 화면은 멈추지 않고, 타이밍 보정은 처음부터 다시 잰다', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__audio = [];
+      for (const k of ['suspend', 'resume']) { const f = AudioContext.prototype[k]; AudioContext.prototype[k] = function () { window.__audio.push(k); return f.call(this); }; }
+    });
+    const errors = await open(page);
+    await tap(page, '메뉴');   // 소리판을 만든다
+    const calls = async (fn) => { await page.evaluate(() => { window.__audio = []; }); await fn(); return page.evaluate(() => window.__audio); };
+    expect(await calls(async () => { await setHidden(page, true); await setHidden(page, false); })).toEqual(['suspend', 'resume']);
+    await tap(page, '소리 켜짐');   // 끄기
+    expect(await calls(async () => { await setHidden(page, true); await setHidden(page, false); })).toEqual(['suspend']);   // 꺼 두었으면 잇지 않는다
+    // 결과 화면: 멈추지 않는다
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    await setHidden(page, true);
+    await setHidden(page, false);
+    const rt = await page.evaluate(() => walkoff.game.resultT);
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => walkoff.game.away)).toBeNull();
+    expect(await page.evaluate(() => walkoff.game.resultT)).toBeGreaterThan(rt);
+    expect(await drawnTexts(page)).not.toContain('멈췄어요');
+    // 타이밍 보정: 박자를 실제 시각으로 재서 나갔다 오면 처음부터
+    await page.evaluate(() => walkoff.startCalib());
+    const start = await page.evaluate(() => { const c = walkoff.game.calib; walkoff.tap(c.start + 1200 + 20); return c.start; });   // 첫 박자에 20ms 늦게
+    expect(await page.evaluate(() => walkoff.game.calib.taps)).toEqual([20]);
+    await setHidden(page, true);
+    await setHidden(page, false);
+    expect(await page.evaluate((s) => ({ state: walkoff.game.state, taps: walkoff.game.calib.taps, later: walkoff.game.calib.start > s }), start)).toEqual({ state: 'calib', taps: [], later: true });
+    expect(errors).toEqual([]);
+  });
+
+  test('10구 끝 화면 타이밍 습관: 휘두른 공의 가운데값 한 줄이고 휘두른 공이 3개 아래면 없다. 최근 3판이 같은 쪽으로 40ms를 넘으면 타이밍 보정을 권하고, 보정을 저장하면 기록을 비운다. 조준 판에는 없다', async ({ page }) => {
+    const errors = await open(page);
+    // 공 n개로 끝나는 10구(seed 42)를 공마다 dt(ms)만큼 늦게 친다
+    const playGame = async (n, dt, aim = false) => {
+      await page.evaluate(({ n, aim }) => { walkoff.startGame('challenge', false, { aim }); Object.assign(walkoff.game, { left: n, extra: 99 }); }, { n, aim });
+      for (let k = 0; k < n; k++) {
+        await page.waitForFunction(() => walkoff.game.state === 'pitch');
+        await pressAt(page, dt);
+        await page.waitForFunction(() => walkoff.game.state === 'result');
+        await page.evaluate(() => { const g = walkoff.game; g.resultT = Math.max(g.resultT, g.revealAt) + 1; walkoff.tap(g.clockAt); });
+      }
+      await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.ui.buttons.some((b) => b.label === '처음으로'));
+      return { texts: await drawnTexts(page), labels: await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label)), log: await page.evaluate(() => walkoff.store.get('timingLog', null)) };
+    };
+    const timingLine = (texts) => texts.find((s) => /^보통 \d+ms (늦게|빠르게) 쳤어요|^타이밍 잘 맞았어요/.test(s)) ?? null;
+    const calibLink = (labels) => labels.find((l) => l.endsWith(' · 타이밍 보정 해 보기 ›')) ?? null;
+    const near = (v, want) => expect(Math.abs(v - want), `${v}`).toBeLessThanOrEqual(4);
+    // 공 하나: 줄도 기록도 없다
+    let end = await playGame(1, 55);
+    expect([timingLine(end.texts), calibLink(end.labels), end.log]).toEqual([null, null, null]);
+    // 앞 두 판이 서로 다른 쪽이면 이번에 늦어도 권하지 않는다
+    await page.evaluate(() => walkoff.store.set('timingLog', [60, -55]));
+    end = await playGame(3, 55);
+    expect(timingLine(end.texts)).toMatch(/^보통 \d+ms 늦게 쳤어요$/);
+    near(Number(/(\d+)ms/.exec(timingLine(end.texts))[1]), 55);
+    expect(calibLink(end.labels)).toBeNull();
+    expect(end.log.slice(0, 2)).toEqual([60, -55]);
+    near(end.log[2], 55);
+    // 최근 3판이 모두 40ms 넘게 늦으면 줄을 눌러 타이밍 보정으로
+    await page.evaluate(() => walkoff.store.set('timingLog', [60, 55]));
+    end = await playGame(3, 55);
+    expect(calibLink(end.labels)).toMatch(/^보통 \d+ms 늦게 쳤어요 · 타이밍 보정 해 보기 ›$/);
+    await tap(page, calibLink(end.labels));
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('calib');
+    await page.evaluate(() => { const c = walkoff.game.calib; for (let k = 0; k < 8; k++) walkoff.tap(c.start + 1200 + k * 1000 + 30); });   // 박자마다 30ms 늦게
+    await tap(page, '이 값으로 저장');
+    expect(await page.evaluate(() => ({ offset: walkoff.settings.offset, log: localStorage.getItem('walkoff.timingLog') }))).toEqual({ offset: 30, log: null });
+    // 조준 판(실험)에는 줄도 기록도 없다
+    await page.evaluate(() => walkoff.store.set('timingLog', [60, 55]));
+    end = await playGame(3, 55, true);
+    expect([timingLine(end.texts), calibLink(end.labels), end.log]).toEqual([null, null, [60, 55]]);
     expect(errors).toEqual([]);
   });
 });

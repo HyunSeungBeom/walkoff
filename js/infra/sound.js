@@ -1,13 +1,18 @@
 // 소리: 파일 없이 Web Audio로 합성한다(관중 함성만 녹음 파일 crowd.mp3를 소리를 처음 켤 때 받는다).
 // 판 상태를 모르고 main이 때맞춰 부른다(2026-11-04 코드 나누기 3단계에서 main.js에서 옮김)
+// 메뉴에서 소리를 끌 수 있다(2026-11-12, walkoff.sound). 끄면 소리를 만드는 함수들이 바로 돌아가서(폰 CPU 아끼기) 꺼 둔 채 연 사람은 소리를 아예 만들지 않는다
 export const Sound = (() => {
-  let ac = null, master = null, noiseBuf = null;
+  let ac = null, master = null, noiseBuf = null, on = true;
+  const LEVEL = 0.7;
+  const settle = (p) => { p?.catch?.(() => { /* 못 이어도 다음에 누를 때 init이 다시 잇는다 */ }); };   // resume·suspend가 돌려주는 약속
+  // 처음 누를 때 만든다(브라우저는 사람이 누른 뒤에만 소리를 낸다). 멈춰 있으면 잇는다(아이폰은 다른 앱에 다녀오면 'interrupted'가 된다)
   function init() {
-    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+    if (!on) return;
+    if (ac) { if (ac.state !== 'running') settle(ac.resume()); return; }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     ac = new AC();
-    master = ac.createGain(); master.gain.value = 0.7; master.connect(ac.destination);
+    master = ac.createGain(); master.gain.value = LEVEL; master.connect(ac.destination);
     noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -19,7 +24,7 @@ export const Sound = (() => {
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   }
   function noise({ dur = 0.1, type = 'bandpass', freq = 2000, freqTo, q = 1, peak = 0.5, attack = 0.002, delay = 0 }) {
-    if (!ac) return;
+    if (!ac || !on) return;
     const t0 = ac.currentTime + delay;
     const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
     const f = ac.createBiquadFilter(); f.type = type; f.Q.value = q; f.frequency.setValueAtTime(freq, t0);
@@ -29,7 +34,7 @@ export const Sound = (() => {
     src.start(t0, Math.random()); src.stop(t0 + dur + 0.05);
   }
   function tone({ freq = 440, freqTo, dur = 0.1, type = 'sine', peak = 0.3, attack = 0.002, delay = 0 }) {
-    if (!ac) return;
+    if (!ac || !on) return;
     const t0 = ac.currentTime + delay;
     const o = ac.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t0);
     if (freqTo) o.frequency.exponentialRampToValueAtTime(freqTo, t0 + dur);
@@ -39,7 +44,7 @@ export const Sound = (() => {
   // 8비트 음: 옛 게임기처럼 사각파를 한 크기로 내다가 끝에서만 빨리 줄인다(env는 처음부터 줄어든다)
   const CHIP_GAIN = 0.1;
   function chip(freq, delay, dur, peak) {
-    if (!ac) return;
+    if (!ac || !on) return;
     const t0 = ac.currentTime + delay, o = ac.createOscillator(), g = ac.createGain();
     o.type = 'square'; o.frequency.setValueAtTime(freq, t0);
     g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.003); g.gain.setValueAtTime(peak, t0 + dur * 0.45);
@@ -50,7 +55,7 @@ export const Sound = (() => {
   // 낮은 우르릉은 폰 스피커에서 거의 안 들려서 가운데 대역(250~650Hz) 울림도 함께 굴린다. 크기는 폭탄 '쾅'보다 크지 않게 맞췄다
   const RUMBLE = 0.3;
   function thunder(power) {
-    if (!ac) return;
+    if (!ac || !on) return;
     noise({ dur: 0.04, type: 'highpass', freq: 2400, peak: 0.4 + 0.12 * power });
     for (const [d, f, p] of [[0.012, 3800, 0.2], [0.03, 2300, 0.24], [0.052, 3200, 0.18], [0.08, 1800, 0.15], [0.115, 2700, 0.1], [0.16, 2100, 0.07]]) noise({ dur: 0.03, freq: f, q: 1.2, peak: p, delay: d });
     noise({ dur: 0.45, type: 'lowpass', freq: 2800, freqTo: 240, peak: 0.5 + 0.15 * power, attack: 0.005, delay: 0.02 });
@@ -78,7 +83,7 @@ export const Sound = (() => {
   // 오리 '꽥'(2026-11-10): 톱니파(380 → 440 → 250Hz)를 코맹맹이 소리 대역 두 곳(1.1kHz·2.5kHz)으로 거르고, 46Hz로 떨어 목이 갈라진 듯하게 한다.
   // 폰 스피커에서도 들리게 낮은 울림은 넣지 않는다. 세게 칠수록 조금 높고 길다
   function quack(power) {
-    if (!ac) return;
+    if (!ac || !on) return;
     const t0 = ac.currentTime, dur = 0.2 + 0.06 * power, o = ac.createOscillator(), lfo = ac.createOscillator(), depth = ac.createGain(), rasp = ac.createGain(), g = ac.createGain();
     o.type = 'sawtooth';
     o.frequency.setValueAtTime(380 + 40 * power, t0); o.frequency.linearRampToValueAtTime(440 + 40 * power, t0 + 0.04); o.frequency.exponentialRampToValueAtTime(250, t0 + dur);
@@ -93,7 +98,7 @@ export const Sound = (() => {
   // 고양이 '냥'(2026-11-12): 톱니파(560 → 820 → 470Hz, 7Hz로 살짝 떨린다)를 입 모양 대역 둘로 거르고, 둘째 대역을 '냐'(높게)에서 '앙'(낮게)으로 옮긴다.
   // 코로 내는 'ㄴ'처럼 부드럽게 커지며 시작한다. 오리 '꽥'처럼 낮은 울림은 넣지 않고, 세게 칠수록 조금 높고 길다
   function meow(power) {
-    if (!ac) return;
+    if (!ac || !on) return;
     const t0 = ac.currentTime, dur = 0.36 + 0.06 * power, o = ac.createOscillator(), lfo = ac.createOscillator(), wob = ac.createGain(), g = ac.createGain();
     o.type = 'sawtooth';
     o.frequency.setValueAtTime(560 + 60 * power, t0); o.frequency.linearRampToValueAtTime(820 + 80 * power, t0 + 0.11); o.frequency.exponentialRampToValueAtTime(470, t0 + dur);
@@ -141,7 +146,7 @@ export const Sound = (() => {
     return hall;
   }
   function roar(level = 2) {
-    if (!ac) return;
+    if (!ac || !on) return;
     if (crowdBuf) { roarRecording(level); return; }
     const t0 = ac.currentTime, dur = [0, 2, 4, 4.8][level], k = [0, 0.45, 1, 1.15][level], end = t0 + dur;
     const bus = ac.createGain(), out = ac.createGain();
@@ -184,8 +189,19 @@ export const Sound = (() => {
       noise({ dur: 0.025, freq: 1100 + Math.random() * 1600, q: 1.2, peak: (0.06 + Math.random() * 0.1) * k, delay: 0.25 + Math.random() * dur * 0.75 });
     }
   }
+  // 소리 켜기/끄기. 끄면 크기를 0으로 두고 멈춘다. 켜면 잇는데, 아직 만들지 않았으면 다음 init(누를 때)에 만든다
+  function setOn(v) {
+    on = !!v;
+    if (!ac) return;
+    master.gain.value = on ? LEVEL : 0;
+    settle(on ? ac.resume() : ac.suspend());
+  }
   return {
     init,
+    setOn,
+    // 다른 앱으로 가면 멈추고(나가 있는 동안 함성이 이어지지 않게), 돌아오면 켜 둔 사람만 잇는다
+    suspend() { if (ac) settle(ac.suspend()); },
+    resume() { if (ac && on) settle(ac.resume()); },
     crack(power, style = 'sound-wood') {   // 딱. power 0~1. style은 상점의 타격음
       if (style === 'sound-metal') {   // 알루미늄 '깡': 높은 음이 길게 울린다
         noise({ dur: 0.04, freq: 4200, q: 1.4, peak: 0.45 + 0.3 * power });

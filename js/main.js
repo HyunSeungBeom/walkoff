@@ -18,7 +18,7 @@ import { batsOf, BATTER_X, BATTER_Z, runnerReach, runStartOf } from './sim/batte
 import { plantDist, runnerSkeleton, runStep } from './sim/runpose.js';
 import { actorSkeleton, actorState, CATCHER_F, DEFENSE, FIELDERS, fieldersAt, fieldPlay, homeOf, PITCHER_F, pitcherFielding } from './sim/fielding.js';
 import { baseRunnersAt, DUGOUT, runnerAt, scenarioRuns as scenarioRunsIn, walkoffTime as walkoffTimeIn } from './sim/runner.js';
-import { labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, zoneOffText } from './view/text.js';
+import { addTiming, labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
 import { game, settings } from './game/state.js';
 import { api, auth, fetchRanking, loggedIn, postScenario, postScore, RANKING_API } from './infra/api.js';
 import { goKakaoLogin, readLoginReturn } from './infra/auth.js';
@@ -3425,7 +3425,9 @@ Object.assign(settings, {
   nick: String(store.get('nick', '')).trim().slice(0, 10),
   playerId: ensurePlayerId(),
   vibrate: store.get('vibrate', true) !== false,   // 진동(안드로이드만). 메뉴에서 끈다
+  sound: store.get('sound', true) !== false,   // 소리. 메뉴에서 끈다(2026-11-12)
 });
+Sound.setOn(settings.sound);
 function setBats(b) { settings.bats = b; store.set('bats', b); }
 function saveTeamAndNick(team, nick) {
   Object.assign(settings, { team, nick });
@@ -3443,6 +3445,16 @@ function toggleVibrate() {
   store.set('vibrate', settings.vibrate);
   buzz(30);   // 켰으면 한 번 울려서 알려 준다
 }   // 좌타는 홈플레이트 오른쪽에 서서 화면 좌우가 뒤집힌다
+
+// ===== 소리 켜기/끄기(2026-11-12 사용자 승인) =====
+// 10구 스윙의 96%가 폰이고 일하는 사이·밤에 많이 치는데 소리를 끌 수 없었다. 메뉴 '설정'의 '소리' 줄(walkoff.sound)이고, 소리를 내는 일은 infra/sound.js
+function toggleSound() {
+  settings.sound = !settings.sound;
+  store.set('sound', settings.sound);
+  Sound.setOn(settings.sound);
+  if (settings.sound) { Sound.init(); Sound.tick(); }   // 켰으면 한 번 울려서 알려 준다(누른 손길 안이라 아직 안 만들었어도 여기서 만든다)
+  toast(settings.sound ? '소리 켜짐' : '소리 꺼짐');
+}
 
 // ===== 타이밍 보정 =====
 // 기기마다 화면과 터치가 늦게 반응하는 정도가 달라서, 공이 링에 닿을 때 8번 눌러 평소 어긋남을 잰다.
@@ -3468,6 +3480,7 @@ function calibTap(eventTime) {
 
 function saveCalib(v) {
   settings.offset = v; store.set('offset', v);
+  store.remove('timingLog');   // 끝 화면 타이밍 습관(noteTiming)은 새 보정으로 다시 모은다
   toast(v ? `타이밍 보정 ${fmtMs(v)}을 저장했어요` : '타이밍 보정을 껐어요');
   goTitle();
 }
@@ -5146,7 +5159,9 @@ function openShop(view = 'shop') {
 function selectItem(it) {
   const sh = game.shop;
   sh.sel = it.id; sh.demo = performance.now();
-  if (it.slot === 'sound') { Sound.init(); Sound.crack(0.8, it.id); }   // 고르면 소리를 들려준다
+  if (it.slot === 'sound') {   // 고르면 소리를 들려준다. 소리를 꺼 두었으면 알려만 준다
+    if (settings.sound) { Sound.init(); Sound.crack(0.8, it.id); } else toast('소리가 꺼져 있어요');
+  }
 }
 
 async function shopRequest(path, body) {
@@ -5869,6 +5884,8 @@ const MENU_ICONS = Object.fromEntries(Object.entries({
   me: `${circlePath(12, 8, 4)}M4 21a8 8 0 0 1 16 0`,
   calib: `${circlePath(12, 13, 7)}M12 13V9M10 3h4M18 6l1.5-1.5`,
   vib: 'M10 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM4 9v6M20 9v6',
+  sound: 'M4 9h3l5-4v14l-5-4H4zM16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11',   // 스피커와 소리 물결
+  mute: 'M4 9h3l5-4v14l-5-4H4zM16 9.5l5 5M21 9.5l-5 5',   // 꺼 두었을 때
   voice: 'M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z',
   out: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',   // 바깥 사이트로 나가는 화살표
   close: 'M6 6l12 12M18 6L6 18',
@@ -5988,6 +6005,7 @@ function drawMenu() {
       ['shop', '상점 · 내 물건', coins != null ? `코인 ${coins.toLocaleString()}` : '물건 구경', () => openShop('shop')],
       loggedIn() ? ['me', '내 계정', '카카오 로그인됨', openAccount] : ['me', '카카오 로그인', '랭킹에 이름 올리기', openAccount]]],
     ['설정', [['calib', '타이밍 보정', fmtMs(settings.offset), startCalib, `타이밍 보정 ${fmtMs(settings.offset)}`],
+      [settings.sound ? 'sound' : 'mute', '소리', settings.sound ? '켜짐' : '꺼짐', toggleSound, settings.sound ? '소리 켜짐' : '소리 꺼짐'],
       ...(canVibrate ? [['vib', '진동', settings.vibrate ? '켜짐' : '꺼짐', toggleVibrate, settings.vibrate ? '진동 켜짐' : '진동 꺼짐']] : [])]],
   ];
   const gifts = loggedIn() ? giftBox.inbox : [], L = menuLayout(groups, gifts.length ? 3 : 2), c = L.c, { x0, W } = L;
@@ -6152,10 +6170,17 @@ function drawGameOver() {
   drawSiteMark();
   if (game.mode === 'scenario') { drawScenarioOver(); return; }
   if (!game.aim) drawNewTitles();
-  const m = view.mobile, cx = view.w / 2, s = game.summary;
-  let y = view.h * 0.19;
+  const m = view.mobile, cx = view.w / 2, s = game.summary, rankRow = !game.aim && game.mode === 'challenge' && !!settings.team, tmStep = m ? 22 : 28;
+  let y = view.h * 0.19, tm = game.aim ? null : game.timing;
   // 조준 판은 의견 보내기 줄만큼 길어서, 낮은 화면(사파리 375×548)에서는 '처음으로' 밑줄이 아래 주소(drawSiteMark)와 8px 떨어지게 30px까지 당겨 올린다
   if (game.aim) y -= clamp(y + (m ? 466 : 529) - view.h, 0, 30);
+  // 10구의 타이밍 습관 줄도 그 줄만큼까지 당겨 올린다(제목부터 '처음으로'까지 폰 398·PC 462px, 랭킹 줄이 없으면 30·36px 짧다).
+  // 새 칭호 띠(drawNewTitles)가 제목 바로 위에 떠 있으면 올릴 자리가 없어서 그 판은 줄을 뺀다
+  else if (tm) {
+    const over = y + (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + tmStep - view.h;
+    if (over > 0 && titleNames(game.newTitles ?? []).length) tm = null;
+    else y -= clamp(over, 0, tmStep);
+  }
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
   text(game.aim ? '조준 타격(실험)' : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
   y += m ? 54 : 70;
@@ -6171,6 +6196,12 @@ function drawGameOver() {
   lights.forEach((c, i) => drawMark(cx + (i - (lights.length - 1) / 2) * lg, y, Math.min(m ? 10 : 12, lg * 0.36), c));
   y += m ? 36 : 44;
   text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
+  if (tm) {   // 타이밍 습관 한 줄. 최근 판들이 한쪽으로 치우쳤으면 줄을 눌러 타이밍 보정으로 간다
+    y += tmStep;
+    const line = timingText(tm.ms), lw = Math.min(view.w - 32, 420);
+    if (tm.calib) addButton({ x: cx - lw / 2, y: y - 13, w: lw, h: 26 }, `${line} · 타이밍 보정 해 보기 ›`, 'link', startCalib);
+    else text(line, cx, y, { size: 14, weight: 600, color: 'rgba(255,255,255,0.6)' });
+  }
   y += m ? 38 : 48;
   const bw = m ? view.w - 48 : 340;
   if (game.aim) {   // 실험판 안내와 의견 보내기 링크(패들렛, 새 탭)
@@ -6179,7 +6210,7 @@ function drawGameOver() {
     const label = '조준 타격 어땠나요? 의견 보내기';
     ui.buttons.push({ r: drawOutLink(label, cx, y, m ? 14 : 16), label, href: FEEDBACK_URL });
     y += m ? 28 : 34;
-  } else if (game.mode === 'challenge' && settings.team) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인)
+  } else if (rankRow) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인)
     const lw = Math.min(view.w - 32, 420);
     addButton({ x: cx - lw / 2, y: y - 14, w: lw, h: 30 }, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
     y += m ? 30 : 36;
@@ -6219,7 +6250,7 @@ function startGame(mode, waited = false, opts = {}) {
   game.ticket = ranked ? takeSeedTicket() : null;
   game.fixedSeed = mode === 'challenge' && urlSeed() != null;
   game.seed = game.ticket?.seed ?? seedFromUrl();
-  Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0, recorded: false, moves: [], scnCoin: null });
+  Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0, recorded: false, moves: [], scnCoin: null, timing: null, away: null });
   game.throws = pitcherHand(game.seed);
   game.opponent = pickOpponent(game.seed);
   game.rankInfo = null;
@@ -6483,9 +6514,19 @@ function recordGame() {
     startBest(best);
     startTitles();
     if (!loggedIn() && !game.fixedSeed) setWeekBest(weekStartOf(game.summary.date), game.score);   // 로그인했으면 서버 답으로(submitScore)
+    noteTiming();
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
   track('end', game.aim ? 'aim' : game.mode);
+}
+// 끝 화면 타이밍 습관(view/text.js timingOf): 이번 판 값을 최근 판들(walkoff.timingLog)에 더하고 타이밍 보정을 권할지 본다.
+// 휘두른 공이 모자라면 줄도 기록도 없다. 보정을 저장하면 기록을 비운다(saveCalib)
+function noteTiming() {
+  const ms = timingOf(game.results);
+  if (ms == null) { game.timing = null; return; }
+  const log = addTiming(store.get('timingLog', []), ms);
+  store.set('timingLog', log);
+  game.timing = { ms, calib: suggestCalib(log) };
 }
 // 끝 화면 '최고 기록 N점'·'새 최고 기록!'과 공유 글·카드의 '새 최고 기록'(2026-11-05 사용자 결정 '계정 기준으로, 다음 push에 같이').
 // 로그인했으면 메뉴 '역대'와 같은 계정 역대 최고(남겨 둔 accountBest.allTime)와 견주고, 판을 보낸 뒤 /scores 답의 allTime(이 판까지 넣은 값)으로
@@ -6567,6 +6608,51 @@ function update(dt) {
   chaseStep(dt);   // 홈런·큰 뜬공은 카메라가 공 뒤로 날아간다
 }
 
+// ===== 다른 앱 다녀오기(2026-11-12 사용자 승인) =====
+// 메시지를 보러 나갔다 오면 멈춰 있던 공이 돌아오는 순간 바로 날아와서(frame의 dt 0.05초 제한뿐이었다) 기회를 잃기 쉬웠다.
+// 화면이 숨으면 소리를 멈추고, 와인드업·투구 중이면 공을 멈춘다(game.away, 그동안 frame이 update를 건너뛴다). 돌아오면 공을 감추고 '멈췄어요'를 띄우며,
+// 첫 탭·스페이스바는 스윙이 아니라 이어 가기만 한다. AWAY_READY초 '준비'를 보여 준 뒤 멈춘 자리에서 그대로 잇는다. 같은 공을 처음부터 다시 던지지 않는 것은
+// 구종을 보고 나갔다 와서 다시 받는 것을 막으려는 것이다. 결과·메뉴 화면은 소리만 멈췄다 잇고, 타이밍 보정은 박자를 performance.now로 재서 처음부터 다시 한다
+const AWAY_READY = 0.6;
+const pitching = () => game.state === 'windup' || game.state === 'pitch';
+const awayPaused = () => !!game.away && pitching();
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    Sound.suspend();
+    aimPointer.touch = null;   // 누른 채 나간 손가락은 돌아와서 떼도 치지 않는다
+    if (pitching()) game.away = { ready: null };
+  } else {
+    Sound.resume();
+    if (game.state === 'calib' && game.calib.result == null) startCalib();
+  }
+});
+// 첫 누름은 '준비'만 시작한다. 아이폰은 사람이 누를 때만 소리를 이어서 여기서도 잇는다. '준비' 동안 누른 것은 받지 않는다
+function resumeAway() {
+  Sound.init();
+  game.away.ready ??= performance.now();
+}
+// 화면마다(frame): '준비'가 끝났거나 다른 화면으로 갔으면(Esc 등) 멈춤을 푼다. 시계(clockAt)를 지금으로 맞춰야
+// swing()이 eventTime - clockAt으로 공 시각을 잴 때 멈춘 시간만큼 늦게 친 것이 되지 않는다
+function settleAway() {
+  const a = game.away;
+  if (!a || (pitching() && (a.ready == null || performance.now() - a.ready < AWAY_READY * 1000))) return;
+  game.away = null;
+  game.clockAt = performance.now();
+}
+// 멈춘 공 화면: 어둡게 덮고(공은 감춘다) 누르기를 기다린다. 누르면 AWAY_READY초 동안 밝아지며 '준비'.
+// 글자는 공이 날아오는 길(투수 손이 화면 높이의 29~32%) 위에 둔다. '준비' 동안 다시 보이는 공을 가리지 않게
+function drawAway() {
+  const m = view.mobile, cx = view.w / 2, cy = view.h * 0.2, a = game.away;
+  if (a.ready == null) {
+    dim(0.78);
+    text('멈췄어요', cx, cy, { size: m ? 28 : 34, weight: 900 });
+    text(m ? '탭하면 이어서' : '스페이스바 · 클릭하면 이어서', cx, cy + (m ? 38 : 46), { size: m ? 16 : 19, weight: 600, color: 'rgba(255,255,255,0.8)' });
+    return;
+  }
+  dim(0.78 * (1 - clamp((performance.now() - a.ready) / (AWAY_READY * 1000), 0, 1)));
+  text('준비', cx, cy, { size: m ? 34 : 42, weight: 900, color: '#f2c94c' });
+}
+
 // ===== 입력: 스페이스바, 클릭, 탭 =====
 // 공이 날아가는 동안 누르면 결과가 나오는 순간(한 박자: 함성·HIT·결과 제목)으로 건너뛴다(2026-11-03 유저 보이스 '치고 날아가는 모션 스킵은 없나요,
 // 떨어질 때까지 기다리기 힘들다', 사용자 결정 '탭하면 바로 결과'). 맞은 뒤 SKIP_GUARD초 동안은 받지 않는다(치면서 두 번 누르는 실수).
@@ -6595,6 +6681,7 @@ const takeAimHint = () => takeSkipHint('aimHint');
 // 버튼 위를 누르면 그 버튼, 아니면 화면마다 정한 기본 동작(시작, 스윙, 다음 공)을 한다
 function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(pointerType). x가 없으면 키
   Sound.init();
+  if (awayPaused()) { resumeAway(); return; }   // 다른 앱에 다녀와 멈춘 공: 스윙이 아니라 이어 가기만
   if (game.waitingSeed) return;   // 서버 시드를 받는 중(startGame)
   if (x != null && game.state !== 'pitch' && game.state !== 'windup') {
     const b = ui.buttons.find((btn) => inRect(btn.r, x, y));
@@ -6617,6 +6704,7 @@ let linkPress = null;   // 바깥 링크를 누른 손가락(pointerId)
 const dragList = () => ({ menu, ranking: rankList, titles: titleList, shop: shopList, gift: giftList })[game.state] ?? null;   // 끌어 넘기는 화면(넘치면 뗄 때 누른다)
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
+  if (awayPaused()) { resumeAway(); return; }   // 다른 앱에 다녀와 멈춘 공(조준 판 손가락도 잡기 전에)
   if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
   // 넘치는 메뉴·랭킹(낮은 화면)은 뗄 때 누른다. 끌어 넘기다 손가락 밑의 줄이 눌리지 않게
   const L = dragList();
@@ -6653,7 +6741,7 @@ addEventListener('pointerup', (e) => {
   const t = aimPointer.touch;
   if (t && e.pointerId === t.id) {   // 조준 판(폰): 떼는 순간 친다. 와인드업 중이거나 지켜본 공 판정이 났으면 아무 일도 없다
     aimPointer.touch = null;
-    if (game.aim && game.state === 'pitch' && game.swingAt == null) swing(e.timeStamp, 'touch', gripSpot(e.clientX, e.clientY, 'touch'));
+    if (game.aim && game.state === 'pitch' && game.swingAt == null && !game.away) swing(e.timeStamp, 'touch', gripSpot(e.clientX, e.clientY, 'touch'));
   }
 });
 addEventListener('pointercancel', (e) => {
@@ -6729,10 +6817,10 @@ function render(time) {
   if (game.state === 'result' && game.resultT > game.revealAt) drawTrail(p, game.replay != null ? game.replay / p.T : 1.0);
   if (playing && bt >= 0) {
     const u = (game.replay != null ? game.replay : bt) / p.T;
-    const hiddenByHit = hasBattedBall() && game.replay == null;
+    const hidden = (hasBattedBall() && game.replay == null) || (!!game.away && game.away.ready == null);   // 친 공은 따로 그린다. 다른 앱에 다녀와 멈춘 동안은 감춘다
     const seen = game.replay == null && hardMatchup(p) ? clamp((u - 0.12) / 0.05, 0, 1) : 1;   // 좌타 대 좌완이면 처음 12%는 안 보인다
-    if (!hiddenByHit && u <= 1.06 && seen > 0) drawBall(ballPos(p, u), { spin: { type: p.type, n: p.n, t: game.replay ?? bt, lefty: !!p.lefty }, alpha: seen });
-    if (!hiddenByHit && u >= 1) drawPitchMark(p);   // 홈플레이트 앞면을 지난 뒤로 판정한 자리를 남긴다
+    if (!hidden && u <= 1.06 && seen > 0) drawBall(ballPos(p, u), { spin: { type: p.type, n: p.n, t: game.replay ?? bt, lefty: !!p.lefty }, alpha: seen });
+    if (!hidden && u >= 1) drawPitchMark(p);   // 홈플레이트 앞면을 지난 뒤로 판정한 자리를 남긴다
   }
   if (hasBattedBall() && game.replay == null) {
     const fp = flightDrawn(r);
@@ -6803,6 +6891,7 @@ function render(time) {
       if (game.mode === 'practice') drawPracticeControls(L);
     }
   }
+  if (game.away) drawAway();
   drawToast();
 }
 
@@ -6810,7 +6899,11 @@ let lastFrame = performance.now();
 function frame(now) {
   const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
   lastFrame = now;
-  if (!window.walkoff?.paused) { update(dt); render(now / 1000); }   // 영상 찍기 도구는 멈춰 두고 walkoff.update·render를 직접 부른다
+  if (!window.walkoff?.paused) {   // 영상 찍기 도구는 멈춰 두고 walkoff.update·render를 직접 부른다
+    settleAway();
+    if (!game.away) update(dt);   // 다른 앱에 다녀와 멈춘 공은 시간이 가지 않는다
+    render(now / 1000);
+  }
   requestAnimationFrame(frame);
 }
 

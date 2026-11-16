@@ -1,4 +1,4 @@
-// 화면 글: 판정 결과 이름('좌중간 2루타')과 이유 문장, 존 밖 문구, 조사, 구종 이름·색, 끝내기 상황 글.
+// 화면 글: 판정 결과 이름('좌중간 2루타')과 이유 문장, 존 밖 문구, 조사, 구종 이름·색, 타이밍 습관, 끝내기 상황 글.
 // 판정 규칙(core)은 결과 코드만 돌려주고 글은 여기서 붙인다. 문구를 바꿔도 서버와 같이 쓰는 규칙 파일은 그대로다(2026-11-03 코드 나누기 2단계)
 import { REACH_M, zoneMiss, zoneOff } from '../core/pitches.js';
 import { AIM, PERFECT_MS } from '../core/judge.js';
@@ -94,6 +94,25 @@ export function labelTake(r, p, bats) {
   r.name = r.kind === 'strike' ? '루킹 스트라이크' : '볼';
   r.reason = r.kind === 'strike' ? '존에 들어온 공이었어요' : `${offText(p, bats)} 빠졌어요 · 선구안 보너스`;
   return r;
+}
+
+// ===== 타이밍 습관(2026-11-12 사용자 승인, 10구 끝 화면) =====
+// 휘두른 공의 빠름·늦음(r.dt, ms, 보정을 뺀 값, +가 늦음)의 가운데값을 한 줄로 알려 준다. 300ms 넘게 벗어난 헛스윙은 공을 잘못 본 것이라 빼고,
+// 남은 스윙이 3번 아래면 내지 않는다(null). 판마다 그 값을 최근 5판까지 남겨(main이 walkoff.timingLog에) 최근 3판이 모두 같은 쪽으로 40ms를 넘으면
+// 타이밍 보정을 권한다. 기기마다 화면·터치가 늦는 정도가 달라서 보정 화면이 있는데, 언제 해야 하는지 알려 주지 않았다
+export const TIMING = { wild: 300, min: 3, keep: 5, streak: 3, off: 40 };
+export function timingOf(results) {
+  const dts = results.filter((r) => r && !r.took && Number.isFinite(r.dt) && !(r.kind === 'whiff' && Math.abs(r.dt) > TIMING.wild)).map((r) => r.dt).sort((a, b) => a - b);
+  if (dts.length < TIMING.min) return null;
+  const mid = dts.length / 2;
+  return Math.round(dts.length % 2 ? dts[Math.floor(mid)] : (dts[mid - 1] + dts[mid]) / 2);
+}
+export const timingText = (ms) => (Math.abs(ms) <= PERFECT_MS ? '타이밍 잘 맞았어요' : `보통 ${Math.abs(ms)}ms ${ms > 0 ? '늦게' : '빠르게'} 쳤어요`);
+// 지난 기록(저장소에서 읽은 그대로라 망가졌을 수 있다)에 이번 판을 더해 최근 TIMING.keep판만
+export const addTiming = (log, ms) => [...(Array.isArray(log) ? log.filter(Number.isFinite) : []), ms].slice(-TIMING.keep);
+export function suggestCalib(log) {
+  const last = log.slice(-TIMING.streak);
+  return last.length === TIMING.streak && (last.every((v) => v > TIMING.off) || last.every((v) => v < -TIMING.off));
 }
 
 // ===== 끝내기 상황 =====
