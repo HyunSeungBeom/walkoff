@@ -2,7 +2,7 @@
 // 점수는 카카오로 로그인한 사람만 낼 수 있고(2026-10-28 사용자 결정), 서버가 판마다 내준 시드로 친 판만 받는다(2026-10-30, seeds.js).
 // 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다).
 // 끝내기 상황은 랭킹 없이 코인만 준다(2026-11-04, scenario.js: 서버가 같은 시드로 판을 다시 돌려 확인한다)
-import { kstDay, weekStart, addDays, validateSubmission, validateProfile, rankSummary } from './rules.js';
+import { kstDay, weekStart, addDays, validateSubmission, validateProfile, rankSummary, styleAt } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
 import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
 import { validateEvent, recordEvent } from './stats.js';
@@ -161,11 +161,11 @@ export default {
       }
 
       const acct = ['/seeds', '/scores', '/scenario', '/me', '/shop/buy', '/shop/equip', '/title', '/players', '/shop/gift', '/gifts/seen'].includes(url.pathname) ? await account(request, env, now) : null;
-      // 10구 도전 한 판의 시드와 일회용 표(seeds.js). 게임은 기다리지 않고 시작하려고 다음 판 표를 미리 받아 둔다
+      // 10구 도전 한 판의 시드와 일회용 표(seeds.js), 그 표로 상대할 이번 주 투수 유형(style). 게임은 기다리지 않고 시작하려고 다음 판 표를 미리 받아 둔다
       if (url.pathname === '/seeds' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
         const issued = await issueSeed(env.DB, acct.player_id, now);
-        return json(issued, issued.ok ? 200 : 429);
+        return json(issued.ok ? { ...issued, style: styleAt(now) } : issued, issued.ok ? 200 : 429);
       }
       if (url.pathname === '/scores' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);

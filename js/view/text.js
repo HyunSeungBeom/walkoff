@@ -6,6 +6,14 @@ import { hrExtra } from '../core/flight.js';
 
 export const PITCH_NAMES = { fastball: '직구', slider: '슬라이더', curve: '커브', change: '체인지업', fork: '포크' };
 export const PITCH_COLORS = { fastball: '#ffffff', slider: '#7fd1ff', curve: '#c49bff', change: '#8ef0a8', fork: '#ffb86b' };
+// 이번 주 투수 유형(core PITCHER_STYLES)의 이름과 시작 화면의 짧은 말. 말은 그 유형의 숫자에 맞춘다(강속구형 직구 50%·151~158km, 기교파 빠지는 공 45%, 포크볼러 포크 45%)
+export const STYLE_NAMES = { classic: '정통파', power: '강속구형', finesse: '기교파', forkball: '포크볼러' };
+export const STYLE_TIPS = {
+  classic: '직구와 변화구를 고루 던져요',
+  power: '150km 넘는 직구가 절반, 체인지업이 함정이에요',
+  finesse: '느린 변화구에 빠지는 공도 많아요. 잘 골라내세요',
+  forkball: '뚝 떨어지는 포크가 많아요. 낮은 볼은 참으세요',
+};
 
 export function hasBatchim(word) {
   const c = word.charCodeAt(word.length - 1) - 0xac00;

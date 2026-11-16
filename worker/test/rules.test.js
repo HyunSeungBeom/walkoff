@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate, DAILY_LAST_DAY } from '../src/rules.js';
+import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate, DAILY_LAST_DAY, styleAt } from '../src/rules.js';
 import { SEED_TTL_MS, MIN_PITCH_MS } from '../src/seeds.js';
 import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../../js/core/pitches.js';
 
@@ -44,9 +44,9 @@ test('전광판이 그 공 순서로 나올 수 있을 때만 최대 점수를 �
 const NOW = Date.parse('2026-10-28T03:00:00Z');   // 한국 시간 2026-10-28 12:00(수)
 const PID = 'p-1234abcd';   // 로그인 표에서 꺼낸 사람 ID
 // 실제 공 순서대로 친 전광판: 존 밖 공은 골라내고(Y), 존 안 공은 쳐서 안타(G). 기회 10번을 다 쓰면 끝
-const played = (seed) => {
+const played = (seed, style = 'classic') => {
   let out = '', left = 10;
-  for (const p of makeSequence(seed, pitcherHand(seed) === 'L')) { if (!left) break; if (zoneMiss(p) > 0) out += 'Y'; else { out += 'G'; left--; } }
+  for (const p of makeSequence(seed, pitcherHand(seed) === 'L', style)) { if (!left) break; if (zoneMiss(p) > 0) out += 'Y'; else { out += 'G'; left--; } }
   return out;
 };
 const DAY = '2026-10-28', LIGHTS = played(dailySeed(DAY));
@@ -57,7 +57,7 @@ const ticket = (seed, patch = {}) => ({ id: 'tk', player_id: PID, seed, issued_a
 const challenge = (seed, patch = {}, tk = ticket(seed)) => validateSubmission({ ...base, mode: 'challenge', token: 'tk', lights: played(seed), ...patch }, NOW, PID, tk);
 
 test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
-  assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26', seed: dailySeed(DAY) } });   // mode가 없는 예전 게임은 오늘의 10구로 본다(seed는 맞은 공 순서의 시드)
+  assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26', seed: dailySeed(DAY), style: 'classic' } });   // mode가 없는 예전 게임은 오늘의 10구로 본다(seed는 맞은 공 순서의 시드)
   assert.equal(check({ mode: 'daily' }).ok, true);
   assert.equal(check({ playerId: 'someone-else' }).value.playerId, PID);   // 보낸 내용의 ID는 쓰지 않는다
   assert.equal(check({ day: '2026-10-26', lights: played(dailySeed('2026-10-26')) }).ok, true);   // 이틀 전까지 받는다
@@ -117,6 +117,25 @@ test('오늘의 10구는 없어진 날(2026-10-30)까지 친 판만 받는다', 
   assert.equal(daily('2026-10-30').ok, true);   // 열어 둔 예전 탭이 자정 전에 친 판
   assert.equal(daily('2026-10-31').error, 'mode_removed');   // mode가 없는 예전 게임
   assert.equal(daily('2026-10-31', { mode: 'daily' }).error, 'mode_removed');
+});
+
+test('이번 주 투수(2026-11-16): 표를 내준 주의 유형 공 순서로 검사하고, 주 경계는 한국 시간 월요일 0시다', () => {
+  assert.equal(styleAt(Date.parse('2026-11-22T14:59:59Z')), 'classic');   // 한국 시간 11-22(일) 23:59:59까지는 정통파
+  assert.equal(styleAt(Date.parse('2026-11-22T15:00:00Z')), 'power');     // 11-23(월) 0시부터 강속구형
+  assert.equal(styleAt(Date.parse('2026-11-29T14:59:59Z')), 'power');
+  assert.equal(styleAt(Date.parse('2026-11-29T15:00:00Z')), 'finesse');   // 11-30(월) 기교파
+  const now = Date.parse('2026-11-24T03:00:00Z'), day = '2026-11-24';   // 한국 시간 11-24(화) 12:00, 강속구형 주
+  const tk = (seed, issued = now - 60e3) => ({ id: 'tk', player_id: PID, seed, issued_at: issued, used_at: null });
+  const send = (seed, lights, t = tk(seed), at = now, d = day) => validateSubmission({ ...base, day: d, mode: 'challenge', token: 'tk', lights }, at, PID, t);
+  // 정통파 공 순서로 친 전광판이 강속구형 공 순서로는 나올 수 없는 시드(시드 1~40 가운데 처음 것)
+  const seed = Array.from({ length: 40 }, (_, i) => i + 1).find((s) => maxScoreFor(played(s), makeSequence(s, pitcherHand(s) === 'L', 'power')) === null);
+  assert.ok(seed, '유형이 바뀌면 공 순서가 달라진다');
+  const ok = send(seed, played(seed, 'power'));
+  assert.deepEqual([ok.ok, ok.value?.style, ok.value?.week], [true, 'power', '2026-11-23']);
+  assert.equal(send(seed, played(seed)).error, 'bad_lights');   // 정통파로 친 판은 받지 않는다
+  // 일요일 밤(정통파 주)에 받은 표로 자정을 넘겨 끝낸 판: 정통파로 보고 받는다. 날짜가 월요일이라 새 주 랭킹에 들어간다
+  const late = send(seed, played(seed), tk(seed, Date.parse('2026-11-22T14:58:00Z')), Date.parse('2026-11-22T15:01:00Z'), '2026-11-23');
+  assert.deepEqual([late.ok, late.value?.style, late.value?.week], [true, 'classic', '2026-11-23']);
 });
 
 test('주간 순위: 이번 주 최고 기록으로 줄 세우고, 같은 점수는 같은 등수, 팀 점수는 팀원 최고 기록의 합', () => {

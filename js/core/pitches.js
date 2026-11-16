@@ -1,5 +1,5 @@
-// 구종과 공 순서: 구종의 물리(빠르기·휘는 양), 공 만들기, 판마다 공 순서·투수 손·날짜 시드, 존에서 빠진 거리.
-// 랭킹 서버도 같은 공 순서로 점수를 검사한다(서버 worker/src/pitches.js에 아직 복사본이 있고 tests/core가 같은지 본다). 바꾸면 서버도 다시 배포한다
+// 구종과 공 순서: 구종의 물리(빠르기·휘는 양), 공 만들기, 이번 주 투수 유형, 판마다 공 순서·투수 손·날짜 시드, 존에서 빠진 거리.
+// 랭킹 서버도 이 파일을 그대로 가져다 같은 공 순서로 점수를 검사한다(worker/src/rules.js). 바꾸면 서버도 다시 배포한다
 import { lerp, mulberry32, pickWeighted } from './math.js';
 import { RELEASE, ZONE } from './field.js';
 
@@ -22,10 +22,34 @@ export const SEQ_LEN = 40;
 
 export const PITCH_MIX = { fastball: 3, slider: 2, curve: 1.5, change: 2, fork: 1.5 };
 
-// 공 하나. inZone 확률로 존 안에 넣고, 빠질 때는 구종마다 빠지는 쪽이 다르다(우투수 기준)
-export function makePitch(rnd, type, inZone, extra = {}) {
+// 이번 주 투수(2026-11-16 사용자): 10구는 주마다 모두 같은 유형의 투수를 상대한다(주간 랭킹이 공정하다). 유형마다 구종 비율(mix, 키 순서는
+// PITCH_MIX와 같게), 직구에 더하는 빠르기(fastKmh), 4구부터 존 안에 넣는 비율(zone)만 다르고 판정 숫자는 그대로다. 이름·말은 view/text.js
+export const PITCHER_STYLES = {
+  classic:  { mix: PITCH_MIX, fastKmh: 0, zone: 0.6 },                                                 // 정통파(지금 그대로)
+  power:    { mix: { fastball: 5, slider: 2, curve: 0.5, change: 1, fork: 1.5 }, fastKmh: 5, zone: 0.6 },     // 강속구형: 직구 151~158
+  finesse:  { mix: { fastball: 2, slider: 2, curve: 2.5, change: 3, fork: 0.5 }, fastKmh: -5, zone: 0.55 },  // 기교파: 직구 141~148
+  forkball: { mix: { fastball: 3, slider: 1, curve: 0.5, change: 1, fork: 4.5 }, fastKmh: 0, zone: 0.6 },    // 포크볼러
+};
+// 아는 유형 id인지(서버 답·주소 값을 받을 때). 'toString' 같은 물려받은 이름은 아니다
+export const isStyle = (s) => typeof s === 'string' && Object.keys(PITCHER_STYLES).includes(s);
+// 2026-11-23(월) 주부터 이 순서로 돌고, 그 전 주는 모두 정통파다(첫 주는 차이가 가장 큰 강속구형)
+export const STYLE_START = '2026-11-23';
+export const STYLE_ORDER = ['power', 'finesse', 'forkball', 'classic'];
+// 'YYYY-MM-DD'를 1970-01-01부터 센 날 수로(core는 시간을 몰라서 Date 없이 셈한다)
+function dayNo(day) {
+  const [y0, m, d] = day.split('-').map(Number), y = m <= 2 ? y0 - 1 : y0, era = Math.floor(y / 400), yoe = y - era * 400;
+  return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + Math.floor((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1 - 719468;
+}
+// 한국 시간 날짜(아무 요일이나)가 든 주의 투수 유형. 서버는 시드 표를 내준 날로, 게임은 서버가 표와 같이 알려 준 값이나 오늘로 정한다
+export function styleOn(day) {
+  const n = Math.floor((dayNo(day) - dayNo(STYLE_START)) / 7);
+  return n < 0 ? 'classic' : STYLE_ORDER[n % STYLE_ORDER.length];
+}
+
+// 공 하나. inZone 확률로 존 안에 넣고, 빠질 때는 구종마다 빠지는 쪽이 다르다(우투수 기준). kmhAdd는 투수 유형의 직구 빠르기
+export function makePitch(rnd, type, inZone, extra = {}, kmhAdd = 0) {
   const def = PITCHES[type];
-  const kmh = Math.round(lerp(def.kmh[0], def.kmh[1], rnd()));
+  const kmh = Math.round(lerp(def.kmh[0], def.kmh[1], rnd())) + kmhAdd;
   let tx, ty;
   if (rnd() < inZone) {
     tx = lerp(-0.2, 0.2, rnd()); ty = lerp(0.58, 1.02, rnd());
@@ -40,13 +64,13 @@ export function makePitch(rnd, type, inZone, extra = {}) {
   return { type, kmh, tx: extra.lefty ? -tx : tx, ty, T: flightTime(kmh), ...extra };   // 좌투수는 좌우가 뒤집힌다
 }
 
-// 10구 흐름: 1~2구는 직구로 감을 잡고, 3구부터 변화구를 섞는다
-export function makeSequence(seed, lefty = false) {
-  const rnd = mulberry32(seed);
-  // 볼을 골라내면 기회가 늘어서 공을 SEQ_LEN개 미리 만든다. 같은 시드면 n번째 공은 누구에게나 같고, 길이를 늘려도 앞의 공은 그대로다
+// 10구 흐름: 1~2구는 직구로 감을 잡고, 3구부터 변화구를 섞는다(투수 유형마다 같다). style은 PITCHER_STYLES의 id이고, 정통파는 유형이 생기기 전과 같은 공이다
+export function makeSequence(seed, lefty = false, style = 'classic') {
+  const rnd = mulberry32(seed), st = PITCHER_STYLES[isStyle(style) ? style : 'classic'];
+  // 볼을 골라내면 기회가 늘어서 공을 SEQ_LEN개 미리 만든다. 같은 시드·유형이면 n번째 공은 누구에게나 같고, 길이를 늘려도 앞의 공은 그대로다
   return Array.from({ length: SEQ_LEN }, (_, i) => {
-    const type = i < 2 ? 'fastball' : i === 2 ? (rnd() < 0.5 ? 'fastball' : 'slider') : pickWeighted(rnd, PITCH_MIX);
-    return makePitch(rnd, type, i < 3 ? 0.8 : 0.6, { n: i + 1, lefty });
+    const type = i < 2 ? 'fastball' : i === 2 ? (rnd() < 0.5 ? 'fastball' : 'slider') : pickWeighted(rnd, st.mix);
+    return makePitch(rnd, type, i < 3 ? 0.8 : st.zone, { n: i + 1, lefty }, type === 'fastball' ? st.fastKmh : 0);
   });
 }
 

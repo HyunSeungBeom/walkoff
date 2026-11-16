@@ -4,6 +4,7 @@
 // title → windup(투수 와인드업) → pitch(공이 날아옴) → result → 다음 공 … → over
 export const game = {
   state: 'title', mode: 'challenge', throws: 'R', seq: [], i: 0, score: 0, results: [], seed: 0, summary: null,
+  style: 'classic',  // 이번 판 투수 유형(core PITCHER_STYLES, 10구만 주마다 바뀐다)
   t: 0,              // 와인드업 시작부터 흐른 시간(초). 맞는 순간 멈춤 동안은 흐르지 않는다
   clockAt: 0,        // t를 마지막으로 올린 시각(performance.now 기준)
   swingAt: null,     // 공을 놓은 뒤 몇 초에 휘둘렀는지

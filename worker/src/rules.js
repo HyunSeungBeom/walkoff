@@ -1,6 +1,6 @@
 // 랭킹 규칙. 공 순서·점수 상한(maxScoreFor)·팀 목록은 게임과 같은 파일(js/core)을 그대로 가져다 쓴다(2026-11-03 코드 나누기.
 // 전에는 worker/src/pitches.js와 이 파일에 복사본을 두고 테스트로 둘이 같은지 맞춰 봤다). 주 계산은 게임도 같은 규칙이라 테스트가 맞춰 본다
-import { makeSequence, pitcherHand, dailySeed } from '../../js/core/pitches.js';
+import { makeSequence, pitcherHand, dailySeed, styleOn } from '../../js/core/pitches.js';
 import { maxScoreFor, scoreRange } from '../../js/core/score.js';
 import { TEAM_IDS } from '../../js/core/catalog.js';
 import { ticketError } from './seeds.js';
@@ -18,17 +18,21 @@ export function weekStart(day) {
   return addDays(day, -((dow + 6) % 7));
 }
 
-// 그 판의 공 순서를 만들 시드. 오늘의 10구는 날짜로 정해지고(자정을 넘겨 끝난 판을 위해 전날 순서도 본다), mode가 없는 예전 게임도
-// 오늘의 10구로 본다. 2026-10-30에 없어져서 그날까지 친 판만 받는다(열어 둔 예전 탭).
-// 10구 도전은 서버가 내준 표(seeds.js, ticket)의 시드로만 본다. 게임이 보낸 시드는 쓰지 않는다
+// 이번 주 투수(js/core/pitches.js styleOn): 시드 표를 내준 때의 한국 시간 주로 정한다. /seeds가 표와 같이 알려 주고 게임은 그 유형으로 친다
+// (기기 시계가 어긋나도 서버와 같은 공). 일요일 밤에 받은 표로 자정을 넘겨 끝낸 판은 새 주 랭킹에 들어가지만 지난주 투수로 친 판이다
+export const styleAt = (ms) => styleOn(kstDay(ms));
+
+// 그 판의 공 순서를 만들 시드와 투수 유형. 오늘의 10구는 날짜로 정해지고(자정을 넘겨 끝난 판을 위해 전날 순서도 본다), mode가 없는 예전 게임도
+// 오늘의 10구로 본다. 2026-10-30에 없어져서 그날까지 친 판만 받는다(열어 둔 예전 탭, 투수 유형이 생기기 전이라 정통파).
+// 10구 도전은 서버가 내준 표(seeds.js, ticket)의 시드와 그 표를 내준 주의 유형으로만 본다. 게임이 보낸 시드는 쓰지 않는다
 function seedsFor(b, day, ticket, playerId, pitches, nowMs) {
   const mode = b.mode ?? 'daily';
-  if (mode === 'daily') return day > DAILY_LAST_DAY ? { error: 'mode_removed' } : { seeds: [dailySeed(day), dailySeed(addDays(day, -1))] };
+  if (mode === 'daily') return day > DAILY_LAST_DAY ? { error: 'mode_removed' } : { seeds: [dailySeed(day), dailySeed(addDays(day, -1))], style: 'classic' };
   if (mode !== 'challenge') return { error: 'bad_mode' };
   const error = ticketError(b.token, ticket, playerId, nowMs, pitches);
-  return error ? { error } : { seeds: [ticket.seed] };
+  return error ? { error } : { seeds: [ticket.seed], style: styleAt(ticket.issued_at) };
 }
-export const seqOf = (seed) => makeSequence(seed, pitcherHand(seed) === 'L');
+export const seqOf = (seed, style = 'classic') => makeSequence(seed, pitcherHand(seed) === 'L', style);
 
 // 닉네임(10자까지)과 팀
 export function validateProfile(b) {
@@ -56,11 +60,11 @@ export function validateSubmission(b, nowMs, playerId, ticket = null) {
   if (!/^[GSDTHYR]{1,40}$/.test(lights) || (lights.includes('G') && /[SDTH]/.test(lights))) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
   const found = seedsFor(b, day, ticket, playerId, lights.length, nowMs);
   if (found.error) return { ok: false, error: found.error };
-  const ranges = found.seeds.map((seed) => ({ seed, r: scoreRange(lights, seqOf(seed)) })).filter((x) => x.r);
+  const ranges = found.seeds.map((seed) => ({ seed, r: scoreRange(lights, seqOf(seed, found.style)) })).filter((x) => x.r);
   if (!ranges.length) return { ok: false, error: 'bad_lights' };
   const hit = Number.isInteger(score) && score >= 0 ? ranges.find(({ r }) => score >= r.min && score <= r.max) : null;
   if (!hit) return { ok: false, error: 'bad_score' };
-  return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights, seed: hit.seed } };   // seed: 칭호를 쌓을 때 공 순서를 다시 만든다
+  return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights, seed: hit.seed, style: found.style } };   // seed·style: 칭호를 쌓을 때 공 순서를 다시 만든다
 }
 
 // key가 큰 순서로 줄 세우고, 같은 값은 같은 등수(1, 2, 2, 4)

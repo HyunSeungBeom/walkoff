@@ -22,8 +22,8 @@ export const withTitle = (look, title) => (title ? { ...look, title } : look);  
 export function countsIn(raw) {
   try { return cleanCounts(JSON.parse(raw ?? '{}')); } catch { return {}; }
 }
-// 검사를 마친 10구 판(validateSubmission의 value: lights·seed·score)으로 쌓는 수
-export const gameCounts = (s) => countsOf(s.lights, seqOf(s.seed), pitcherHand(s.seed) === 'L', s.score);
+// 검사를 마친 10구 판(validateSubmission의 value: lights·seed·style·score)으로 쌓는 수
+export const gameCounts = (s) => countsOf(s.lights, seqOf(s.seed, s.style), pitcherHand(s.seed) === 'L', s.score);
 
 // 그 판에서 쌓은 수(inc)를 계정에 더하고, 닿은 칭호 가운데 처음 받는 것을 더해 { added: 새로 받은 것, titles: 받은 칭호 모두, counts: 쌓은 수 }를 돌려준다.
 // 읽은 값 그대로일 때만 고쳐 써서, 같은 사람의 두 판이 동시에 와도 한쪽 수가 지워지지 않는다(어긋나면 다시 읽어 두 번 더)

@@ -81,7 +81,8 @@ async function mockApi(page, opts = {}) {
     if (url.pathname === '/seeds') {
       if (opts.seedFail) return reply({ ok: false, error: 'server_error' }, 500);
       if (opts.seedExpired) return reply({ ok: false, error: 'login_required' }, 401);
-      const t = { token: `00000000-0000-4000-8000-${String(tickets.length + 1).padStart(12, '0')}`, seed: opts.seed ?? 42 };
+      // style: 실제 서버처럼 이번 주 투수 유형을 같이 준다(opts.style, 없으면 유형이 생기기 전 서버처럼 안 준다)
+      const t = { token: `00000000-0000-4000-8000-${String(tickets.length + 1).padStart(12, '0')}`, seed: opts.seed ?? 42, ...(opts.style ? { style: opts.style } : {}) };
       tickets.push({ ...t, at: Date.now(), used: false });
       return (opts.seedHold ? new Promise((done) => heldSeeds.push(done)) : Promise.resolve()).then(() => reply({ ok: true, ...t }));
     }
@@ -125,7 +126,7 @@ async function mockApi(page, opts = {}) {
       const earned = opts.earned ?? Math.floor(score / 100), best = lower ? score + 1000 : score;
       shop.coins += earned;
       record.allTime = Math.max(record.allTime ?? 0, best);
-      const lefty = !!ticket && pitcherHand(ticket.seed) === 'L', seq = ticket ? makeSequence(ticket.seed, lefty) : [];
+      const lefty = !!ticket && pitcherHand(ticket.seed) === 'L', seq = ticket ? makeSequence(ticket.seed, lefty, ticket.style) : [];
       record.counts = addCounts(record.counts, countsOf(lights, seq, lefty, score));
       const newTitles = titlesFor(record.counts).filter((id) => !record.titles.includes(id));
       record.titles = TITLE_IDS.filter((id) => record.titles.includes(id) || newTitles.includes(id));
@@ -4255,7 +4256,7 @@ test.describe('가운데 큰 전광판', () => {
     expect(errors).toEqual([]);
   });
 
-  test('투구 중에는 상대 투수를 보여 준다: 첫 공은 팀·선발·등번호·좌완/우완과 이번 판의 직구 최고 구속·주무기, 그 뒤는 큰 등번호·주무기·직전 공', async ({ page }) => {
+  test('투구 중에는 상대 투수를 보여 준다: 첫 공은 팀·이번 주 투수 유형·좌완/우완과 이번 판의 직구 최고 구속·주무기, 그 뒤는 큰 등번호·주무기·직전 공', async ({ page }) => {
     const errors = await open(page, '?seed=42');
     expect(await boardWords(page)).toEqual(['WALK', 'OFF']);   // 시작 화면은 그대로(og.png)
     await page.evaluate(() => walkoff.startGame('challenge'));
@@ -4263,19 +4264,20 @@ test.describe('가운데 큰 전광판', () => {
     const c = await page.evaluate(() => walkoff.pitcherCard());
     // seed 42(내 팀 LG): 한화 우완, 앞 16구의 직구 최고 151km/h, 변화구는 슬라이더 3·포크 3·커브 1이라 먼저 나온 슬라이더
     expect(c).toMatchObject({ team: { short: '한화' }, hand: '우완', thrown: 0, last: null, profile: { top: 151, main: '슬라이더' } });
-    expect(await boardWords(page)).toEqual([`한화 선발 ${c.no} · 우완`, '직구 최고 151', '주무기 슬라이더']);
+    expect(await boardWords(page)).toEqual(['한화 정통파 · 우완', '직구 최고 151', '주무기 슬라이더']);   // ?seed= 판은 정통파. 유형 이름이 길어 첫 공은 등번호를 뺀다
     await playPitch(page, null);   // 첫 공을 보내면 다음 공부터 직전 공이 나온다
     await page.waitForFunction(() => walkoff.game.state === 'windup' && walkoff.game.i === 1);
     const first = await page.evaluate(() => walkoff.game.seq[0]);
-    expect(await boardWords(page)).toEqual(['한화 선발 · 우완', 'No.', String(c.no), '주무기 슬라이더', `직전 직구 ${first.kmh}`]);
+    expect(await boardWords(page)).toEqual(['한화 정통파 · 우완', 'No.', String(c.no), '주무기 슬라이더', `직전 직구 ${first.kmh}`]);
     expect(await page.evaluate(() => walkoff.pitcherCard().no)).toBe(c.no);   // 등번호는 판 내내 같다
     expect(errors).toEqual([]);
   });
 
-  test('폰 360폭에서도 투수판 글자는 10px 이상이고 판 밖으로 넘치지 않는다', async ({ page }) => {
+  test('폰 360폭에서도 투수판 글자는 10px 이상이고 판 밖으로 넘치지 않는다(이름이 가장 긴 포크볼러도)', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 780 });
-    const errors = await open(page, '?seed=42');
+    const errors = await open(page, '?seed=42&pitcher=forkball');
     await page.evaluate(() => walkoff.startGame('challenge'));
+    expect((await boardWords(page))[0]).toBe('한화 포크볼러 · 우완');
     for (const i of [0, 1]) {
       await page.waitForFunction((i) => walkoff.game.state === 'windup' && walkoff.game.i === i, i);
       const R = await page.evaluate(() => walkoff.scoreboardRect()), glyphs = await boardGlyphs(page);
@@ -5130,5 +5132,91 @@ test.describe("끝 화면 '한 판 더' 줄(2026-11-16)", () => {
     await guest.waitForFunction(() => walkoff.game.state === 'over' && walkoff.ui.buttons.some((b) => b.label === '다시 하기'));
     expect(goalOf(await drawnTexts(guest))).toBe(null);
     await guest.close();
+  });
+});
+
+test.describe('이번 주 투수(2026-11-16)', () => {
+  // 시계는 page.clock.setFixedTime으로 날짜만 고정한다(그리기·타이머는 그대로 흐른다)
+  const kst = (s) => new Date(`${s}+09:00`);
+  const seqIs = (page, seed, style) => page.evaluate(([seed, style]) => JSON.stringify(walkoff.game.seq) === JSON.stringify(walkoff.makeSequence(seed, walkoff.pitcherHand(seed) === 'L', style)), [seed, style]);
+
+  test('시작 화면 두 줄: 11-22까지는 다음 주(11/23) 강속구형을 미리 알리고, 그 뒤는 그 주 유형과 짧은 말. 링크 미리보기(?og=1)에는 넣지 않는다', async ({ page }) => {
+    await page.clock.setFixedTime(kst('2026-11-18T12:00:00'));
+    const errors = await open(page, '');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['다음 주(11/23) 투수 · 강속구형', '월요일마다 상대 투수가 바뀌어요', '주간 랭킹은 이번 주 최고 기록이에요']));
+    await page.clock.setFixedTime(kst('2026-11-24T12:00:00'));
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['이번 주 투수 · 강속구형', '150km 넘는 직구가 절반, 체인지업이 함정이에요']));
+    expect(await page.evaluate(() => ['2026-11-30', '2026-12-13', '2026-12-14', '2026-12-21'].map((d) => walkoff.weekPitcherLines(d))))
+      .toEqual([['이번 주 투수 · 기교파', '느린 변화구에 빠지는 공도 많아요. 잘 골라내세요'], ['이번 주 투수 · 포크볼러', '뚝 떨어지는 포크가 많아요. 낮은 볼은 참으세요'],
+        ['이번 주 투수 · 정통파', '직구와 변화구를 고루 던져요'], ['이번 주 투수 · 강속구형', '150km 넘는 직구가 절반, 체인지업이 함정이에요']]);
+    await page.goto(PAGE + '?og=1');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    const og = await drawnTexts(page);
+    expect([og.some((t) => t.includes('투수 ·')), og.includes('주간 랭킹은 이번 주 최고 기록이에요')]).toEqual([false, true]);
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인한 10구는 서버가 표와 같이 준 유형으로 친다(투수판 머리줄도)', async ({ page }) => {
+    const errors = await open(page, '', { login: true, api: { seed: 7, style: 'power' } });
+    await seedReady(page);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect([await page.evaluate(() => walkoff.game.style), await seqIs(page, 7, 'power'), await seqIs(page, 7, 'classic')]).toEqual(['power', true, false]);
+    expect((await boardWords(page))[0]).toMatch(/^\S+ 강속구형 · [좌우]완$/);
+    expect(await page.evaluate(() => walkoff.game.seq.filter((p) => p.type === 'fastball').every((p) => p.kmh >= 151 && p.kmh <= 158))).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  test('유형이 없는 표(유형이 생기기 전 서버)는 정통파로 친다. 그 서버도 정통파로 검사한다', async ({ page }) => {
+    const errors = await open(page, '', { login: true, api: { seed: 7 } });
+    await seedReady(page);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect([await page.evaluate(() => walkoff.game.style), await seqIs(page, 7, 'classic')]).toEqual(['classic', true]);
+    expect(errors).toEqual([]);
+  });
+
+  test('?seed= 판은 정통파이고 ?pitcher=로 다른 유형을 쳐 볼 수 있다. 로그인 안 한 10구는 오늘이 든 주의 유형, 끝내기 상황·연습·조준 판은 정통파', async ({ page }) => {
+    await page.clock.setFixedTime(kst('2026-12-02T12:00:00'));   // 기교파 주
+    const errors = await open(page, '?seed=42');
+    const startAs = (mode, opts = {}) => page.evaluate(([mode, opts]) => { walkoff.startGame(mode, false, opts); return walkoff.game.style; }, [mode, opts]);
+    expect(await startAs('challenge')).toBe('classic');
+    for (const [q, style] of [['?seed=42&pitcher=forkball', 'forkball'], ['?seed=42&pitcher=toString', 'classic'], ['', 'finesse']]) {
+      await page.goto(PAGE + q);
+      await page.waitForFunction(() => walkoff.game.state === 'title');
+      expect(await startAs('challenge'), q).toBe(style);
+      expect(await page.evaluate(() => walkoff.game.ticket)).toBe(null);
+      expect(await seqIs(page, await page.evaluate(() => walkoff.game.seed), style), q).toBe(true);
+    }
+    expect([await startAs('scenario'), await startAs('practice'), await startAs('challenge', { aim: true })]).toEqual(['classic', 'classic', 'classic']);
+    expect(errors).toEqual([]);
+  });
+
+  test('받아 둔 표가 지난주에 받은 것이면 6시간 안이라도 버리고 새로 받는다(그 주 표는 그대로 쓴다)', async ({ page }) => {
+    await page.clock.setFixedTime(kst('2026-11-23T00:30:00'));   // 월요일 0시 30분
+    const errors = await open(page, '', { login: true, api: { seed: 7, style: 'power' } });
+    await seedReady(page);
+    const tokenOf = () => page.evaluate(() => walkoff.seedTicket.ready?.token ?? null);
+    const kept = await tokenOf();
+    await page.evaluate((at) => { walkoff.seedTicket.ready.at = at; }, kst('2026-11-23T00:10:00').getTime());   // 20분 전(이번 주)에 받은 표
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect(await page.evaluate(() => walkoff.game.ticket.token)).toBe(kept);
+    await seedReady(page);
+    const stale = await tokenOf();
+    await page.evaluate((at) => { walkoff.seedTicket.ready.at = at; }, kst('2026-11-22T23:00:00').getTime());   // 한 시간 반 전(일요일 밤, 지난주)에 받은 표
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'windup' && walkoff.game.ticket != null);
+    const used = await page.evaluate(() => walkoff.game.ticket.token);
+    expect([used === stale, used === kept, seedCalls(errors).length >= 3]).toEqual([false, false, true]);
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹 머리에 이번 주와 다음 주 투수를 보여 준다', async ({ page }) => {
+    const errors = await open(page, '', { api: { rankings: { ...EMPTY_RANKING, week: '2026-11-23' } } });
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await expect.poll(async () => (await drawnTexts(page)).includes('이번 주 투수 강속구형 · 다음 주 기교파')).toBe(true);
+    expect(errors).toEqual([]);
   });
 });

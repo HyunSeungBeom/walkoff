@@ -12,7 +12,7 @@ const ROOT = path.join(__dirname, '..');
   await new Promise((resolve) => server.stdout.once('data', resolve));
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
-  await page.goto(`http://127.0.0.1:${port}/index.html`);
+  await page.goto(`http://127.0.0.1:${port}/index.html?og=1`);   // 주마다 바뀌는 이번 주 투수 줄은 그림에 넣지 않는다(main.js OG_SHOT)
   await page.waitForFunction(() => !!window.walkoff);
   await page.evaluate(() => walkoff.goTitle());   // 처음 온 사람은 팀 고르기부터 나오지만, 그림은 팀을 안 고른 기본 색의 시작 화면으로 찍는다
   await page.addStyleTag({ content: '#build { display: none; }' });   // 커밋 번호 표시는 그림에 넣지 않는다

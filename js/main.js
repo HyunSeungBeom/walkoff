@@ -2,7 +2,7 @@
 // 바깥 연결(저장소·랭킹 서버·로그인·시드·소리·공유·통계·진동)은 js/infra/에서 가져온다(2026-11-03 코드 나누기 2단계, 2026-11-04 3단계, 2026-11-06 4단계. 나머지도 차례로 나눈다)
 import { clamp, DEG, easeOut, lerp, mulberry32, pickWeighted, polar } from './core/math.js';
 import { BALL_R, BASE1, BASE2, BASE3, FAIR_SPRAY, fenceDist, INFIELDERS, MOUND, OUTFIELDERS, RELEASE, ZONE } from './core/field.js';
-import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, REACH_M, zoneMiss } from './core/pitches.js';
+import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, REACH_M, STYLE_START, styleOn, zoneMiss } from './core/pitches.js';
 import { CHANCES, hitStreakBefore as hitStreakIn, hitStreakBonus, hrStreakBefore as hrStreakIn, hrStreakBonus, PERFECT_BONUS } from './core/score.js';
 import { groundPath, interceptGround, sprintTime } from './core/race.js';
 import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
@@ -19,12 +19,12 @@ import { plantDist, runnerSkeleton, runStep } from './sim/runpose.js';
 import { actorSkeleton, actorState, CATCHER_F, DEFENSE, FIELDERS, fieldersAt, fieldPlay, homeOf, PITCHER_F, pitcherFielding } from './sim/fielding.js';
 import { baseRunnersAt, DUGOUT, runnerAt, scenarioRuns as scenarioRunsIn, walkoffTime as walkoffTimeIn } from './sim/runner.js';
 import { faceMood, facesFor } from './sim/faces.js';
-import { addTiming, labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
+import { addTiming, labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, STYLE_NAMES, STYLE_TIPS, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
 import { game, settings } from './game/state.js';
 import { cleanNick, duelCode, duelEntry, duelLog, parseDuel } from './game/duel.js';
 import { api, auth, fetchRanking, loggedIn, postScenario, postScore, RANKING_API } from './infra/api.js';
 import { goKakaoLogin, readLoginReturn } from './infra/auth.js';
-import { onSeedExpired, prefetchSeed, SEED_WAIT_MS, seedTicket, takeSeedTicket, urlSeed } from './infra/seeds.js';
+import { onSeedExpired, prefetchSeed, SEED_WAIT_MS, seedTicket, takeSeedTicket, urlSeed, urlStyle } from './infra/seeds.js';
 import { canShareFiles, canShareSheet, copyText, pngFile, shareSheet } from './infra/share.js';
 import { Sound } from './infra/sound.js';
 import { track, trackSwing } from './infra/stats.js';
@@ -367,9 +367,11 @@ function pitcherCard() {
     team: t && { short: t.short, main: t.main, accent: t.accent },
     last: last && { name: PITCH_NAMES[last.type], kmh: last.kmh },
     profile: game.mode === 'challenge' ? pitcherProfile(game.seq) : null,
+    style: game.mode === 'challenge' ? STYLE_NAMES[game.style] : null,   // 이번 주 투수 유형(10구만)
   };
 }
-const pitcherRole = (c) => `${c.team ? c.team.short : '상대'} ${c.mode === 'scenario' ? '마무리' : '선발'}`;
+// 머리줄의 투수: 10구는 이번 주 투수 유형('LG 강속구형'), 끝내기 상황은 마무리, 그 밖은 선발
+const pitcherRole = (c) => `${c.team ? c.team.short : '상대'} ${c.style ?? (c.mode === 'scenario' ? '마무리' : '선발')}`;
 // 전광판 그림(g)에 글자를 쓴다. 폭(maxW)을 넘으면 글자를 줄인다
 function boardText(g, str, x, y, maxW, size, color = '#fff', weight = 800, align = 'center') {
   g.font = font(size, weight);
@@ -388,7 +390,7 @@ function boardHeader(g, W, H, c, str) {
 function drawPitcherBoard(g, W, H, c) {
   if (c.mode === 'practice') { drawPracticeBoard(g, W, H, c); return; }
   if (c.thrown === 0) {   // 첫 공: 어떤 투수인지. 폰은 첫 공에 마운드 위 '우완 투수' 알림(drawPitcherTag)이 판 아래 4분의 1을 가려서 위쪽에 담는다
-    boardHeader(g, W, H, c, `${pitcherRole(c)} ${c.no} · ${c.hand}`);
+    boardHeader(g, W, H, c, c.style ? `${pitcherRole(c)} · ${c.hand}` : `${pitcherRole(c)} ${c.no} · ${c.hand}`);   // 유형 이름이 길어 10구는 등번호를 둘째 공부터 크게만 보인다(폰 판 폭 111px)
     const size = Math.max(10, H * 0.15);
     if (c.profile) {
       boardText(g, `직구 최고 ${c.profile.top}`, W / 2, H * 0.41, W * 0.92, size, LED_AMBER);
@@ -4163,6 +4165,12 @@ function weekStartOf(day) {
   const dow = new Date(`${day}T00:00:00Z`).getUTCDay();   // 0 일요일 … 6 토요일
   return addDay(day, -((dow + 6) % 7));
 }
+// 이번 주 투수(2026-11-16 사용자): 시작 화면의 두 줄(유형과 짧은 말). 유형이 돌기 전 주(2026-11-22까지)에는 첫 주 투수를 미리 알린다
+function weekPitcherLines(day = today()) {
+  if (day < STYLE_START) return [`다음 주(${Number(STYLE_START.slice(5, 7))}/${Number(STYLE_START.slice(8, 10))}) 투수 · ${STYLE_NAMES[styleOn(STYLE_START)]}`, '월요일마다 상대 투수가 바뀌어요'];
+  const style = styleOn(day);
+  return [`이번 주 투수 · ${STYLE_NAMES[style]}`, STYLE_TIPS[style]];
+}
 // 이번 주 최고 기록(메뉴 칩, 2026-11-05 사용자 결정 '이번 주와 역대 둘 다'. 메뉴 '최고'가 이번 주 랭킹의 내 기록과 달라 보였다).
 // 이 기기에 주(한국 시간 월요일)마다 { week, best }. 로그인했으면 점수를 보내고 받은 서버의 이번 주 최고(다른 기기 포함, 랭킹과 같은 숫자),
 // 아니면 이 기기에서 이번 주에 끝낸 10구 판의 최고(?seed= 판·조준 판은 빼고). 주가 바뀌면 없는 것으로 본다
@@ -4456,6 +4464,8 @@ function drawRanking() {
   y += m ? 28 : 34;
   const week = d?.week ?? weekStartOf(today());
   text(`${fmtMD(week)}(월) ~ ${fmtMD(addDay(week, 6))}(일) · ${untilNextWeek(week)}`, cx, y, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.65)' });
+  y += m ? 20 : 24;
+  text(`이번 주 투수 ${STYLE_NAMES[styleOn(week)]} · 다음 주 ${STYLE_NAMES[styleOn(addDay(week, 7))]}`, cx, y, { size: m ? 12 : 14, weight: 700, color: '#f2c94c' });
   y += m ? 30 : 36;
   rowRects(cx, y, m ? 220 : 260, 36, 2, 8).forEach((r, i) => {
     const tab = i ? 'teams' : 'players';
@@ -5917,6 +5927,7 @@ function startDefault() {
   else startGame('challenge');
 }
 
+const OG_SHOT = new URLSearchParams(location.search).has('og');
 function drawTitle(time) {
   dim(0.6);
   const m = view.mobile, cx = view.w / 2, cy = view.h * 0.38;
@@ -5939,16 +5950,22 @@ function drawTitle(time) {
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
   pill(`${m ? '탭해서' : '스페이스바 · 빈 곳 클릭으로'} ${duel ? '도전' : '시작'}`, cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
   ctx.globalAlpha = 1;
-  if (duel) {   // 도전장을 나가 랭킹 판으로(연속 기록 줄 자리)
+  if (duel) {   // 도전장을 나가 랭킹 판으로(연속 기록 줄 자리). 도전장 공은 보낸 사람이 친 주의 투수라서 이번 주 투수 줄은 넣지 않는다
     const label = '10구 도전 하기';
     ctx.font = font(14, 600);
     const lw = ctx.measureText(label).width + 40;
     addButton({ x: cx - lw / 2, y: cy + (m ? 196 : 250) - 15, w: lw, h: 30 }, label, 'link', () => { leaveDuel(); startDefault(); });
   } else {
+    // 이번 주 투수 두 줄. 링크 미리보기 그림(scripts/og-image.js, ?og=1)에는 주마다 바뀌는 줄을 넣지 않고 아래 줄도 옛 자리에 둔다
+    const week = OG_SHOT ? null : weekPitcherLines(), below = week ? (m ? 50 : 58) : 0;
+    if (week) {
+      text(week[0], cx, cy + (m ? 200 : 254), { size: m ? 12 : 15, weight: 700, color: '#f2c94c' });
+      text(week[1], cx, cy + (m ? 218 : 276), { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.7)' });
+    }
     const streak = playStreak(), hot = !playedDays().has(today()) && streak >= 1;   // 이어 친 날이 있는데 오늘 아직 안 쳤으면 노랗게 보여 오늘도 치게 한다
     const line = hot ? (streak >= 2 ? `${streak}일 연속 중 · 오늘 치면 ${streak + 1}일` : '오늘 치면 2일 연속')
       : `${streak >= 2 ? `${streak}일 연속 · ` : ''}주간 랭킹은 이번 주 최고 기록이에요`;
-    text(line, cx, cy + (m ? 196 : 250), { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
+    text(line, cx, cy + (m ? 196 : 250) + below, { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
   }
   const mb = menuButtonRect();   // 오른쪽 위 '≡ 메뉴'(안 읽은 새 소식이나 안 본 받은 선물은 NEW), 메뉴를 한 번도 안 연 사람에게는 아래 말풍선
   drawMenuButton(mb, newsUnread() || (loggedIn() && giftBox.inbox.length > 0));
@@ -6499,6 +6516,9 @@ function startGame(mode, waited = false, opts = {}) {
   game.fixedSeed = mode === 'challenge' && urlSeed() != null;
   game.seed = duel ? duel.seed : game.ticket?.seed ?? seedFromUrl();
   game.duelTry = duel ? startDuelTry(duel.seed) : 0;   // 시작할 때 센다(중간에 처음부터 다시 해도 본 공이다)
+  // 이번 주 투수(core styleOn): 도전장은 주소에 실린 유형, 서버 시드 판은 서버가 표와 같이 준 유형, ?seed= 판은 ?pitcher=(없으면 정통파),
+  // 그 밖의 10구는 오늘이 든 주의 유형. 끝내기 상황·연습·조준 판(실험)은 정통파 그대로다
+  game.style = mode !== 'challenge' || aim ? 'classic' : duel ? duel.style ?? 'classic' : game.ticket ? game.ticket.style ?? 'classic' : game.fixedSeed ? urlStyle() ?? 'classic' : styleOn(today());
   Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0, recorded: false, moves: [], scnCoin: null, timing: null, away: null });
   game.throws = pitcherHand(game.seed);
   game.opponent = pickOpponent(game.seed);
@@ -6517,7 +6537,7 @@ function startGame(mode, waited = false, opts = {}) {
     game.throws = game.practice.throws;
     game.seq = [];
     game.seq.push(nextPracticePitch());
-  } else game.seq = makeSequence(game.seed, game.throws === 'L');
+  } else game.seq = makeSequence(game.seed, game.throws === 'L', game.style);
   startPitch();
   track('start', game.aim ? 'aim' : duel ? 'duel' : game.mode);
 }
@@ -7250,6 +7270,6 @@ prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함
 warmUp();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, boardLayout, leaveDuel, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, boardLayout, leaveDuel, judgeSwing, judgeTake, makeSequence, styleOn, weekPitcherLines, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction,
   FACE_PX, facesNow, pitcherMood, drawBatterFigure, defenseColors, paused: false };

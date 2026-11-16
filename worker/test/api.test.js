@@ -2,7 +2,7 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { sign, verify, allowedReturn, newSession } from '../src/auth.js';
-import { kstDay, weekStart, addDays, maxScoreFor } from '../src/rules.js';
+import { kstDay, weekStart, addDays, maxScoreFor, styleAt } from '../src/rules.js';
 import { DEFAULTS } from '../src/shop.js';
 import { makeSequence, pitcherHand, zoneMiss } from '../../js/core/pitches.js';
 import { scoreRange } from '../../js/core/score.js';
@@ -50,10 +50,12 @@ async function login(code, pid = '') {
 }
 const me = async (token) => (await call('GET', '/me', { token })).json();
 const profile = ({ ok, playerId, nick, team }) => ({ ok, playerId, nick, team });   // /me에서 지갑을 뺀 계정 정보
-// 실제 공 순서대로 친 전광판: 존 밖 공은 골라내고(Y), 존 안 공은 쳐서 안타(G). 서버가 그 판의 공 순서로 맞춰 본다
-const played = (seed) => {
+// 실제 공 순서대로 친 전광판: 존 밖 공은 골라내고(Y), 존 안 공은 쳐서 안타(G). 서버가 그 판의 공 순서(표를 내준 주의 투수 유형, /seeds의 style)로 맞춰 본다.
+// 테스트는 오늘 시각으로 표를 받아서 유형이 주마다 바뀐다(2026-11-23부터). 그래서 표의 style로 공 순서를 만든다
+const seqFor = (seed, style = 'classic') => makeSequence(seed, pitcherHand(seed) === 'L', style);
+const played = (seed, style) => {
   let out = '', left = 10;
-  for (const p of makeSequence(seed, pitcherHand(seed) === 'L')) { if (!left) break; if (zoneMiss(p) > 0) out += 'Y'; else { out += 'G'; left--; } }
+  for (const p of seqFor(seed, style)) { if (!left) break; if (zoneMiss(p) > 0) out += 'Y'; else { out += 'G'; left--; } }
   return out;
 };
 // 10구 도전 한 판은 /seeds로 받은 표의 시드로 친다. 서버는 한 판 칠 시간이 지나야 받으므로 10분 전에 받은 것처럼 받은 시각을 당긴다
@@ -62,10 +64,10 @@ async function seeded(token) {
   await env.DB.prepare('UPDATE seed_tokens SET issued_at = issued_at - 600000 WHERE id = ?').bind(t.token).run();
   return t;
 }
-const score = (t, patch = {}) => ({ nick: '민성', team: 'lg', day: kstDay(Date.now()), mode: 'challenge', token: t.token, seed: t.seed, lights: played(t.seed), score: 3000, ...patch });
+const score = (t, patch = {}) => ({ nick: '민성', team: 'lg', day: kstDay(Date.now()), mode: 'challenge', token: t.token, seed: t.seed, lights: played(t.seed, t.style), score: 3000, ...patch });
 // 2026-11-05부터 게임이 보내는 전광판: 안타 종류(S 단타·D 2루타·T 3루타·H 홈런)를 담는다. 존 안 공을 모두 code 안타로 친 판과, 그 판으로 낼 수 있는 점수 범위
-const playedAs = (seed, code) => played(seed).replace(/G/g, code);
-const rangeOf = (seed, lights) => scoreRange(lights, makeSequence(seed, pitcherHand(seed) === 'L'));
+const playedAs = (seed, code, style) => played(seed, style).replace(/G/g, code);
+const rangeOf = (seed, lights, style) => scoreRange(lights, seqFor(seed, style));
 const NO_TICKET = { token: 'no-such-token', seed: 42 };   // 로그인부터 막히는 요청에 넣는 아무 표
 
 test('로그인 시작: 카카오로 보내고, 허용하지 않은 돌아갈 주소는 거절한다', async () => {
@@ -149,6 +151,7 @@ test('10구 도전은 서버가 내준 표로만 받는다: 표 하나에 한 �
   assert.equal(res.status, 200);
   assert.match(fresh.token, /^[0-9a-f-]{36}$/);
   assert.ok(Number.isInteger(fresh.seed) && fresh.seed > 0 && fresh.seed < 2 ** 31, String(fresh.seed));
+  assert.equal(fresh.style, styleAt(Date.now()));   // 이번 주 투수 유형도 같이 준다(게임은 이 유형으로 친다)
   assert.deepEqual(await post(score(fresh)), [400, 'too_fast']);   // 받자마자 낸 판(한 판 칠 시간이 안 지났다)
 
   const t = await seeded(token);
@@ -158,9 +161,9 @@ test('10구 도전은 서버가 내준 표로만 받는다: 표 하나에 한 �
   assert.deepEqual(await post(score(t), other), [400, 'bad_seed']);   // 남이 받은 표
   // 게임이 보낸 시드는 쓰지 않는다. 표의 시드는 무작위라 다른 시드를 7로 고정하면 그 전광판이 우연히 표의 공 순서에도 들어맞아
   // 12%쯤 실패했다(2026-10-30 CI). 표의 공 순서로는 나올 수 없는 전광판을 내는 시드를 고른다
-  const seqOfTicket = makeSequence(t.seed, pitcherHand(t.seed) === 'L');
-  const otherSeed = Array.from({ length: 40 }, (_, i) => i + 7).find((s) => maxScoreFor(played(s), seqOfTicket) === null);
-  assert.deepEqual(await post(score(t, { seed: otherSeed, lights: played(otherSeed) })), [400, 'bad_lights']);
+  const seqOfTicket = seqFor(t.seed, t.style);
+  const otherSeed = Array.from({ length: 40 }, (_, i) => i + 7).find((s) => maxScoreFor(played(s, t.style), seqOfTicket) === null);
+  assert.deepEqual(await post(score(t, { seed: otherSeed, lights: played(otherSeed, t.style) })), [400, 'bad_lights']);
   assert.deepEqual(await post(score(t)), [200, 'ok']);
   assert.deepEqual(await post(score(t)), [400, 'seed_used']);   // 같은 표로 또
   assert.deepEqual(env.DB.rows('SELECT used_at IS NOT NULL AS used FROM seed_tokens WHERE id = ?', t.token), [{ used: 1 }]);
@@ -337,7 +340,7 @@ test('로그인 표: 서명, 종류, 기한을 모두 본다', async () => {
 
 test('점수 검사(2026-11-05): 안타 종류를 담은 전광판은 점수 하한·상한을 모두 본다. 예전 G 전광판은 그대로(상한만) 받고, G와 종류를 섞으면 거절한다', async () => {
   const a = (await login('c1', 'p-device-0001')).hash.login;
-  const send = async (patch) => { const t = await seeded(a), lights = patch.lights?.(t.seed) ?? playedAs(t.seed, 'S'), r = rangeOf(t.seed, lights); return [r, await call('POST', '/scores', { token: a, body: score(t, { lights, score: patch.score(r) }) })]; };
+  const send = async (patch) => { const t = await seeded(a), lights = patch.lights?.(t) ?? playedAs(t.seed, 'S', t.style), r = rangeOf(t.seed, lights, t.style); return [r, await call('POST', '/scores', { token: a, body: score(t, { lights, score: patch.score(r) }) })]; };
   const [r, ok] = await send({ score: (x) => x.min });
   assert.ok(r.max > r.min);   // 존 안 공 안타마다 정타 +100만 모른다
   assert.equal(ok.status, 200);
@@ -346,7 +349,7 @@ test('점수 검사(2026-11-05): 안타 종류를 담은 전광판은 점수 하
     const [, res] = await send({ score: bad });
     assert.deepEqual([res.status, (await res.json()).error], [400, 'bad_score']);
   }
-  const [, mixed] = await send({ lights: (seed) => playedAs(seed, 'S').replace('S', 'G'), score: () => 3000 });
+  const [, mixed] = await send({ lights: (t) => playedAs(t.seed, 'S', t.style).replace('S', 'G'), score: () => 3000 });
   assert.deepEqual([mixed.status, (await mixed.json()).error], [400, 'bad_lights']);
   const legacy = await call('POST', '/scores', { token: a, body: score(await seeded(a)) });   // 예전 게임(G, 상한만 본다)
   assert.equal(legacy.status, 200);
@@ -354,7 +357,7 @@ test('점수 검사(2026-11-05): 안타 종류를 담은 전광판은 점수 하
 
 test('칭호(2026-11-06 쌓아서 받기): 10구 판마다 전광판·공 순서·점수로 쌓는 수를 계정에 더하고, 정한 수에 닿은 칭호만 준다(같은 칭호는 한 번). /me와 /rankings(대표 칭호 하나)에 보인다', async () => {
   const a = (await login('c1', 'p-device-0001')).hash.login, b = (await login('c3', 'p-device-0002')).hash.login;
-  const hit = async (token, code, nick) => { const t = await seeded(token), lights = playedAs(t.seed, code); return (await call('POST', '/scores', { token, body: score(t, { nick, lights, score: rangeOf(t.seed, lights).min }) })).json(); };
+  const hit = async (token, code, nick) => { const t = await seeded(token), lights = playedAs(t.seed, code, t.style); return (await call('POST', '/scores', { token, body: score(t, { nick, lights, score: rangeOf(t.seed, lights, t.style).min }) })).json(); };
   const first = await hit(a, 'H', '가람');   // 존 안 공을 모두 홈런: 기회 10번 모두 홈런(⭐야구의신⭐)
   assert.equal(first.ok, true);
   for (const id of ['god', 'hit10', 'firsthr']) assert.ok(first.newTitles.includes(id), `${id}를 받는다`);
@@ -380,8 +383,8 @@ test('칭호(2026-11-06 쌓아서 받기): 10구 판마다 전광판·공 순서
 
 test('대표 칭호 고르기(2026-11-10): 받은 칭호만 달고(안 받은·모르는 칭호는 거절), 안 고르면 가장 높은 것, 물건을 갈아입어도 남고, null이면 자동으로 돌아간다. /me와 /rankings에 보인다', async () => {
   assert.equal((await call('POST', '/title', { body: { title: 'god' } })).status, 401);
-  const a = (await login('c1', 'p-device-0001')).hash.login, t = await seeded(a), lights = playedAs(t.seed, 'H');
-  const first = await (await call('POST', '/scores', { token: a, body: score(t, { nick: '가람', lights, score: rangeOf(t.seed, lights).min }) })).json();   // 기회 10번 모두 홈런: god·hit10·firsthr
+  const a = (await login('c1', 'p-device-0001')).hash.login, t = await seeded(a), lights = playedAs(t.seed, 'H', t.style);
+  const first = await (await call('POST', '/scores', { token: a, body: score(t, { nick: '가람', lights, score: rangeOf(t.seed, lights, t.style).min }) })).json();   // 기회 10번 모두 홈런: god·hit10·firsthr
   assert.deepEqual([first.ok, ['god', 'hit10', 'firsthr'].every((id) => first.titles.includes(id)), first.titles.includes('hrking')], [true, true, false]);
   const pick = async (title) => { const r = await call('POST', '/title', { token: a, body: { title } }); return [r.status, await r.json()]; };
   const shown = async () => [(await me(a)).title, (await (await call('GET', '/rankings')).json()).players.find((p) => p.nick === '가람').title];   // [/me의 고른 칭호, 랭킹 배지]
