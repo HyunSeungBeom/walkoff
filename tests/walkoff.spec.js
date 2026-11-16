@@ -3229,6 +3229,137 @@ test.describe('수비', () => {
   });
 });
 
+// 친구 도전장(2026-11-16, js/game/duel.js): 10구 끝 화면 공유가 그 판의 공 순서·점수·불·팀·타석·닉네임을 주소 ?vs=에 싣고, 받은 사람은 같은 공으로 겨룬다
+const duelMod = () => import(pathToFileURL(path.join(__dirname, '..', 'js', 'game', 'duel.js')).href);
+// 보낸 사람 판: 시드 42 첫 공 단타 뒤 아웃 9번(이 전광판으로 낼 수 있는 점수는 300~400점), 한화·좌타
+const SENDER = { seed: 42, score: 300, lights: 'SRRRRRRRRR', team: 'hanwha', bats: 'L', n: 1, nick: '명은' };
+const duelQuery = async (patch = {}) => `?vs=${(await duelMod()).duelCode({ ...SENDER, ...patch })}`;
+// 지금 판의 공이 결과까지 가면 다음으로 넘겨 끝 화면을 기다린다. full이면 앞 9번을 아웃으로 채운 10번째 공으로 끝내(시드 42의 10번째 공은 존 안이라
+// 지켜보면 스트라이크) 실제로 나올 수 있는 전광판이 되고, 아니면 공 하나로 끝낸다. score를 주면 그 점수로 끝난다
+async function endTry(page, { full = false, score = null } = {}) {
+  await page.evaluate(({ full, score }) => {
+    Object.assign(walkoff.game, { left: 1, extra: 99 }, full ? { results: Array.from({ length: 9 }, () => ({ kind: 'strike' })), i: 9 } : {}, score != null ? { score } : {});
+  }, { full, score });
+  await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => walkoff.game.state === 'over');
+}
+const startTap = async (page) => { const vp = page.viewportSize(); await page.mouse.click(20, vp.height - 20); };   // 시작 화면 빈 곳
+
+test.describe('친구 도전장', () => {
+  test.beforeEach(async ({ page }) => {   // 모바일은 공유 창, PC는 클립보드로 나간다. 둘 다 가로채서 나간 글을 window.__shared에 남긴다
+    await page.addInitScript(() => {
+      window.__shared = null;
+      navigator.share = async (data) => { window.__shared = data.text; };
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__shared = t; } } });
+    });
+  });
+
+  test('도전장 주소로 열면 보낸 사람 판이 보이고 탭 한 번에 같은 공·같은 타석으로 친다. 랭킹·기록 없이 첫 판만 승부이고, 다시 치면 N번째 도전이다', async ({ page }) => {
+    const errors = await open(page, await duelQuery());
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, duel: walkoff.game.duel, bats: walkoff.settings.bats, saved: localStorage.getItem('walkoff.bats') })))
+      .toEqual({ state: 'title', duel: SENDER, bats: 'L', saved: null });   // 보낸 사람 타석을 고르지만 저장하지는 않는다
+    const title = await drawnTexts(page);
+    expect(title).toEqual(expect.arrayContaining(['명은님의 도전장 · 300점', '같은 공으로 넘겨 보세요 · 랭킹 없음']));
+    expect(title.some((t) => /(탭해서|클릭으로) 도전$/.test(t))).toBe(true);
+    await startTap(page);
+    expect(await page.evaluate(() => {
+      const g = walkoff.game, want = walkoff.makeSequence(42, walkoff.pitcherHand(42) === 'L');
+      return { state: g.state, mode: g.mode, seed: g.seed, duelTry: g.duelTry, same: JSON.stringify(g.seq) === JSON.stringify(want), ticket: g.ticket };
+    })).toEqual({ state: 'windup', mode: 'challenge', seed: 42, duelTry: 1, same: true, ticket: null });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['명은', '300점']));   // 전광판 아래 보낸 사람 줄
+    // 보낸 사람 줄은 전광판 아래·화면 안이고, 끝내기 찬스 띠는 그 줄 아래로 내려간다(폰에서도 겹치지 않는다)
+    await page.evaluate(() => Object.assign(walkoff.game, { lastChance: true }));
+    const [stripBg, noteBg] = [await norm(page, 'rgba(8,11,19,0.82)'), await norm(page, '#12060a')];
+    const ops = await drawnOps(page), L = await page.evaluate(() => walkoff.boardLayout()), vw = page.viewportSize().width;
+    const strip = ops.find((o) => o.t === 'fill' && o.style === stripBg), note = ops.find((o) => o.t === 'fill' && o.style === noteBg);
+    expect(strip.y).toBeGreaterThanOrEqual(L.py + L.ph);
+    expect(note.y).toBeGreaterThanOrEqual(strip.y + strip.h);
+    expect(strip.x >= 0 && strip.x + strip.w <= vw).toBe(true);
+    await endTry(page);
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['명은님의 도전장 · 300점', '졌어요 · 300점 모자라요']));
+    const labels = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
+    expect(labels).toEqual(expect.arrayContaining(['되갚기', '다시 하기', '10구 도전 하기', '도전장 판은 랭킹에 안 올라가요 · 카카오 로그인 ›']));
+    expect(labels.filter((l) => ['결과 공유하기', '처음으로'].includes(l))).toEqual([]);
+    const records = () => page.evaluate(() => ({ duels: walkoff.store.get('duels', null), played: walkoff.store.keys('played.').length, best: walkoff.store.get('best', 0),
+      counts: walkoff.store.get('titleCounts', null), week: walkoff.store.get('weekBest', null), timing: walkoff.store.get('timingLog', null) }));
+    expect(await records()).toEqual({ duels: [{ seed: 42, tries: 1, first: 0 }], played: 0, best: 0, counts: null, week: null, timing: null });   // 연속·최고·칭호·주간 기록에 안 들어간다
+    await tap(page, '다시 하기');
+    expect(await page.evaluate(() => ({ seed: walkoff.game.seed, duelTry: walkoff.game.duelTry }))).toEqual({ seed: 42, duelTry: 2 });
+    await endTry(page, { score: 900 });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['명은님의 도전장 · 2번째 도전', '명은님 300점보다 600점 더 쳤어요']));   // 이겨도 첫 판이 아니라 이겼다고 하지 않는다
+    expect((await records()).duels).toEqual([{ seed: 42, tries: 2, first: 0 }]);   // 첫 판 점수는 그대로
+    await tap(page, '10구 도전 하기');   // 도전장을 나가 랭킹 판으로: 주소의 ?vs=를 지우고 저장한 타석으로
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, duel: walkoff.game.duel, bats: walkoff.settings.bats, search: location.search })))
+      .toEqual({ state: 'loginPrompt', duel: null, bats: 'R', search: '' });
+    expect(errors.calls).toEqual([]);   // 로그인 안 한 도전장 판은 서버에 아무것도 보내지 않는다
+    expect(errors).toEqual([]);
+  });
+
+  test('처음 온 사람이 도전장을 열면 팀 고르기 없이 보낸 사람 팀 옷으로 치고, 끝 화면에서 팀을 고른다. 첫 판에 넘기면 이겼다고 보인다', async ({ page }) => {
+    const errors = await open(page, await duelQuery({ score: 0, lights: 'RRRRRRRRRR' }), { team: null });
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, jersey: walkoff.batterColors().jersey, team: walkoff.settings.team }))).toEqual({ state: 'title', jersey: '#e65c00', team: null });
+    await startTap(page);
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, opp: walkoff.game.opponent !== 'hanwha' }))).toEqual({ state: 'windup', opp: true });   // 로그인 권유 없이, 상대는 보낸 사람 팀이 아닌 팀
+    await endTry(page, { score: 500 });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['명은님의 도전장 · 0점', '이겼어요! 500점 더 쳤어요']));
+    expect(await page.evaluate(() => walkoff.batterColors().jersey)).toBe('#e65c00');   // 끝 화면까지 보낸 사람 팀 옷
+    await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
+    await tap(page, '두산 베어스');
+    await tap(page, '나중에 로그인하기');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team, duel: walkoff.game.duel?.nick }))).toEqual({ state: 'over', team: 'doosan', duel: '명은' });
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '도전장 판은 랭킹에 안 올라가요 · 카카오 로그인 ›'));
+    expect(await page.evaluate(() => walkoff.batterColors().jersey)).not.toBe('#e65c00');   // 이제 내 팀 옷
+    expect(errors.calls).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('10구 공유는 도전장이다: 같은 공을 칠 주소와 닉네임이 실리고, 보낸 사람이 되갚기 주소를 열면 처음 친 점수와 견주며 다시 치면 2번째 도전이다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const { parseDuel, duelCode } = await duelMod();
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await endTry(page, { full: true });
+    await tap(page, '결과 공유하기');
+    await page.waitForFunction(() => window.__shared != null);
+    let lines = (await page.evaluate(() => window.__shared)).split('\n');
+    expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 (우타)', '🔴'.repeat(10), '테스트님 0점 · 홈런 0', '같은 공 40개로 이 점수를 넘겨 보세요']);
+    let link = new URL(lines.at(-1));
+    expect(`${link.origin}${link.pathname}`).toBe('https://hyunseungbeom.github.io/walkoff/');
+    expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 1, nick: '테스트' });
+    expect(await page.evaluate(() => walkoff.store.get('duels', null))).toEqual([{ seed: 42, tries: 1, first: 0 }]);   // 보낸 사람도 그 공을 한 번 쳤다
+    // 친구(민성)가 같은 공으로 6,800점을 쳐서 되갚은 주소를 보낸 사람이 연다
+    await page.goto(`${PAGE}?vs=${duelCode({ seed: 42, score: 6800, lights: 'HSRHSRHSRH', team: 'lg', bats: 'R', n: 1, nick: '민성' })}`);
+    await page.waitForFunction(() => !!window.walkoff);
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['민성님의 도전장 · 6,800점', '이미 친 공 · 내 첫 판 0점 · 졌어요']));
+    await startTap(page);
+    expect(await page.evaluate(() => walkoff.game.duelTry)).toBe(2);
+    await endTry(page, { full: true });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['민성님의 도전장 · 2번째 도전', '민성님 6,800점에 6,800점 모자라요']));
+    await tap(page, '되갚기');
+    await page.waitForFunction(() => window.__shared != null);
+    lines = (await page.evaluate(() => window.__shared)).split('\n');
+    expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 되갚기 (우타)', '🔴'.repeat(10), '테스트님 0점(2번째 도전) · 홈런 0', '민성님 6,800점에 6,800점 모자라요', '같은 공 40개로 다시 넘겨 보세요']);
+    link = new URL(lines.at(-1));
+    expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 2, nick: '테스트' });
+    expect(sentScores(errors)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('잘못된 도전장 주소는 도전장 없이 시작 화면을 열고 알린다', async ({ page }) => {
+    const { duelCode } = await duelMod();
+    const bad = ['a.16', 'zz', duelCode({ ...SENDER, score: 401 }), duelCode({ ...SENDER, lights: 'GRRRRRRRRR' }), duelCode({ ...SENDER, team: 'bears' }), duelCode({ ...SENDER, nick: '열한글자닉네임입니다요' }), `b${duelCode(SENDER).slice(1)}`];
+    const errors = await open(page, `?vs=${bad[0]}`);
+    for (const [i, code] of bad.entries()) {
+      if (i) { await page.goto(`${PAGE}?vs=${code}`); await page.waitForFunction(() => !!window.walkoff); }
+      expect(await page.evaluate(() => ({ state: walkoff.game.state, duel: walkoff.game.duel, toast: walkoff.game.toast?.text })), code)
+        .toEqual({ state: 'title', duel: null, toast: '도전장 주소가 잘못됐어요' });
+    }
+    await startTap(page);
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, duelTry: walkoff.game.duelTry }))).toEqual({ state: 'loginPrompt', duelTry: 0 });   // 그냥 10구 도전
+    expect(errors).toEqual([]);
+  });
+});
+
 test.describe('결과 공유', () => {
   // 모바일은 공유 창, PC는 클립보드로 나간다. 둘 다 가로채서 나간 글을 window.__shared에 남긴다
   test.beforeEach(async ({ page }) => {
@@ -3251,11 +3382,11 @@ test.describe('결과 공유', () => {
     await page.waitForFunction(() => walkoff.game.state === 'over');
   }
 
-  const MODES = [
-    ['10구 도전', 'challenge', /^walkoff 10구 도전 \(우타\)$/, '다시 하기'],
-    ['끝내기 상황', 'scenario', /^walkoff 끝내기 상황 \(우타\)$/, '다시 하기'],
+  const MODES = [   // 10구 공유는 도전장이라 마지막 줄이 같은 공을 칠 주소다(2026-11-16)
+    ['10구 도전', 'challenge', /^walkoff 10구 도전장 \(우타\)$/, '다시 하기', /^https:\/\/hyunseungbeom\.github\.io\/walkoff\/\?vs=a\.[0-9a-z]+\./],
+    ['끝내기 상황', 'scenario', /^walkoff 끝내기 상황 \(우타\)$/, '다시 하기', /^https:\/\/hyunseungbeom\.github\.io\/walkoff\/$/],
   ];
-  for (const [name, mode, firstLine, other] of MODES) {
+  for (const [name, mode, firstLine, other, lastLine] of MODES) {
     test(`${name} 끝 화면: 결과 공유하기를 누르면 첫 줄에 모드가 적힌 결과가 나간다`, async ({ page }) => {
       const errors = await open(page);
       await endAfterOnePitch(page, mode);
@@ -3266,7 +3397,7 @@ test.describe('결과 공유', () => {
       await page.waitForFunction(() => window.__shared != null);
       const lines = (await page.evaluate(() => window.__shared)).split('\n');
       expect(lines[0]).toMatch(firstLine);
-      expect(lines.at(-1)).toBe('https://hyunseungbeom.github.io/walkoff/');
+      expect(lines.at(-1)).toMatch(lastLine);
       expect(errors).toEqual([]);
     });
   }
@@ -3289,8 +3420,8 @@ test.describe('결과 공유', () => {
       return { files: d.files?.length ?? 0, type: f?.type, w: img?.width, h: img?.height, text: d.text };
     });
     expect(sent).toMatchObject({ files: 1, type: 'image/png', w: 1080, h: 1080 });
-    expect(sent.text.split('\n')[0]).toMatch(/^walkoff 10구 도전 \(우타\)$/);
-    expect(sent.text.split('\n').at(-1)).toBe('https://hyunseungbeom.github.io/walkoff/');
+    expect(sent.text.split('\n')[0]).toMatch(/^walkoff 10구 도전장 \(우타\)$/);
+    expect(sent.text.split('\n').at(-1)).toMatch(/^https:\/\/hyunseungbeom\.github\.io\/walkoff\/\?vs=a\./);
     // 그림 공유가 안 되는 브라우저는 예전처럼 글만 보낸다
     await page.evaluate(() => { window.__close(); window.__filesOk = false; });
     await expect.poll(() => page.evaluate(() => walkoff.game.sharing)).toBe(false);

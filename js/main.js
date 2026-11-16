@@ -21,6 +21,7 @@ import { baseRunnersAt, DUGOUT, runnerAt, scenarioRuns as scenarioRunsIn, walkof
 import { faceMood, facesFor } from './sim/faces.js';
 import { addTiming, labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
 import { game, settings } from './game/state.js';
+import { cleanNick, duelCode, duelEntry, duelLog, parseDuel } from './game/duel.js';
 import { api, auth, fetchRanking, loggedIn, postScenario, postScore, RANKING_API } from './infra/api.js';
 import { goKakaoLogin, readLoginReturn } from './infra/auth.js';
 import { onSeedExpired, prefetchSeed, SEED_WAIT_MS, seedTicket, takeSeedTicket, urlSeed } from './infra/seeds.js';
@@ -210,7 +211,7 @@ function crowdPalette(teamId) {
 function buildCrowd(key) {
   const pan = [view.panX, view.panY];
   view.panX = view.panY = 0;   // 공을 따라가는 화면 이동은 붙일 때 더한다
-  const rnd = mulberry32(20261029), home = crowdPalette(settings.team), away = crowdPalette(game.opponent), people = [];
+  const rnd = mulberry32(20261029), home = crowdPalette(myTeam()), away = crowdPalette(game.opponent), people = [];
   for (let k = CROWD_ROWS - 1; k >= 0; k--) {   // 뒷줄(화면 위)부터 그려서 앞줄 머리가 뒷줄 몸을 가린다
     const t = (k + 0.5) / CROWD_ROWS, y = 3 + 21 * t;
     for (let a = -57; a <= 57;) {
@@ -257,7 +258,7 @@ function cheerCrowd(power, dur, delay = 0) { Object.assign(crowd, { at: performa
 
 function drawCrowd() {
   if (!view.w) return;
-  const key = [view.w, view.h, view.dpr, sceneShift(), settings.team, game.opponent].join('|');
+  const key = [view.w, view.h, view.dpr, sceneShift(), myTeam(), game.opponent].join('|');
   if (crowd.key !== key) { const at = { ...cam }; Object.assign(cam, CAM_HOME); buildCrowd(key); Object.assign(cam, at); }   // 굽기는 늘 타석 시점으로
   if (!crowd.sit) return;
   if (camMoved()) { drawCrowdChase(); return; }
@@ -467,7 +468,7 @@ function drawScoreboard() {
   ctx.fillStyle = '#05070d'; ctx.fillRect(R.x - pad, R.y - pad, R.w + pad * 2, R.h + pad * 2);   // 틀
   ctx.fillStyle = '#0a101c'; ctx.fillRect(R.x, R.y, R.w, R.h);                                    // 화면
   ctx.strokeStyle = 'rgba(242,201,76,0.4)'; ctx.lineWidth = Math.max(1, pad * 0.4); ctx.strokeRect(R.x - pad * 0.5, R.y - pad * 0.5, R.w + pad, R.h + pad);
-  const us = teamById(settings.team), bm = boardMoment(), shows = scoreboardShows();
+  const us = teamById(myTeam()), bm = boardMoment(), shows = scoreboardShows();
   if (shows === 'moment') {   // HIT·HOMERUN: 우리 팀 색 바탕에 한 글자씩
     const u = game.resultT - bm.t0, main = us?.main ?? '#c2410c', alt = us?.accent && us.accent !== '#ffffff' ? us.accent : '#f2c94c', hr = bm.word === 'HOMERUN';
     ctx.save(); ctx.beginPath(); ctx.rect(R.x, R.y, R.w, R.h); ctx.clip();
@@ -947,10 +948,12 @@ const TEAM_LOOKS = {
 };
 const TEAMS = TEAM_IDS.map((id) => ({ id, ...TEAM_LOOKS[id] }));
 const teamById = (id) => TEAMS.find((t) => t.id === id) ?? null;
+// 판에 입는 내 팀: 고른 팀. 팀을 아직 안 고른 사람(처음 온 사람, 팀은 첫 판 끝 화면에서 고른다)은 도전장이면 보낸 사람 팀, 아니면 없음(중립 색)
+const myTeam = () => settings.team ?? game.duel?.team ?? null;
 
 // 상대 팀은 내 팀이 아닌 팀 가운데서 판마다 고른다. 공 순서와 다른 난수를 써서 순서는 그대로 둔다
 function pickOpponent(seed) {
-  const others = TEAMS.filter((t) => t.id !== settings.team);
+  const others = TEAMS.filter((t) => t.id !== myTeam());
   return others[Math.floor(mulberry32((seed ^ 0x51ed270b) >>> 0)() * others.length)].id;
 }
 // 끝내기 상황 점수판의 [원정, 홈] 이름. 팀을 안 골랐으면 원정·홈이라고 쓴다
@@ -968,7 +971,7 @@ const hexAlpha = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgb
 const paletteCache = {};
 // 그 위에 상점에서 산 유니폼 스타일과 배트·헬멧·장갑·신발 색을 덮는다(상점에서 고르는 중이면 그 물건을 미리 입힌다)
 function batterColors() {
-  const t = teamById(lookOverride ? lookOverride.team : game.state === 'onboard' && game.onboard?.team ? game.onboard.team : settings.team), look = currentLook();
+  const t = teamById(lookOverride ? lookOverride.team : game.state === 'onboard' && game.onboard?.team ? game.onboard.team : myTeam()), look = currentLook();
   const key = `b-${t?.id ?? '-'}-${look.bat}-${look.helmet}-${look.glove}-${look.shoe}-${look.uniform}`;
   if (paletteCache[key]) return paletteCache[key];
   const base = t ? { ...BATTER_COLOR, jersey: tint(t.main, 0.9), shade: tint(t.main, 0.7), helmet: tint(t.main, 0.75), accent: t.accent, sleeve: tint(t.main, 0.6), pants: '#b4b9c4', pantsShade: '#8f949f' } : BATTER_COLOR;
@@ -3193,7 +3196,32 @@ function drawTopBar() {
   ctx.drawImage(board.canvas, L.px - BOARD_M, L.py - BOARD_M, L.pw + 2 * BOARD_M, L.ph + 2 * BOARD_M);
   const q = board.ring;   // 지금 공 자리: 아직 불이 안 켜졌으면 흰 테두리가 깜빡인다
   if (q) { ctx.strokeStyle = `rgba(255,255,255,${0.65 + 0.35 * Math.sin(performance.now() / 180)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(q.x, q.y, q.r + 3, 0, Math.PI * 2); ctx.stroke(); }
-  if (v.note) ledNote(v.note, L.py + L.ph + (L.m ? 20 : 24));
+  const strip = game.duelTry > 0 && game.duel ? drawDuelStrip(game.duel, L) : 0;
+  if (v.note) ledNote(v.note, L.py + L.ph + (L.m ? 20 : 24) + strip);
+}
+// 도전장 판: 전광판 아래 띠에 보낸 사람 이름·그 판 불·점수. 지금 공 자리의 불에 테두리를 둘러 같은 공끼리 견주게 하고, 내 점수가 넘으면 초록 '넘음'.
+// 매 화면 그려서 빛 번짐 없이 칠한다(폰 성능). 차지한 높이를 돌려준다(그 아래 끝내기 찬스 띠를 내린다)
+function drawDuelStrip(d, L) {
+  const m = L.m, h = m ? 22 : 26, w = m ? L.pw : Math.min(L.pw, 620), x = view.w / 2 - w / 2, y = L.py + L.ph + (m ? 6 : 8), cy = y + h / 2, size = m ? 11 : 13;
+  roundRect(x, y, w, h, h / 2); ctx.fillStyle = 'rgba(8,11,19,0.82)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1; ctx.stroke();
+  const nameW = m ? 60 : 110, scoreW = m ? 74 : 100;
+  ctx.font = font(size, 800);
+  let name = d.nick;
+  while ([...name].length > 1 && ctx.measureText(name).width > nameW) name = [...name].slice(0, -1).join('');
+  text(name === d.nick ? name : `${name}…`, x + 12, cy + 0.5, { size, weight: 800, align: 'left', color: 'rgba(255,255,255,0.85)' });
+  const passed = game.score > d.score;
+  text(`${d.score.toLocaleString()}${passed ? ' 넘음' : '점'}`, x + w - 12, cy + 0.5, { size, weight: 800, align: 'right', color: passed ? LIGHT.hit : LED_AMBER });
+  const codes = d.lights.split(''), n = codes.length, c0 = x + 12 + nameW + 10, c1 = x + w - 12 - scoreW;
+  const gap = n > 1 ? Math.min((c1 - c0) / (n - 1), m ? 14 : 18) : 0, r = Math.min(m ? 4 : 5, gap * 0.34 || 5), x0 = (c0 + c1) / 2 - gap * (n - 1) / 2;
+  const now = game.state === 'over' ? -1 : game.i;
+  codes.forEach((c, i) => {
+    const lx = x0 + i * gap;
+    if (c === 'H') starPath(ctx, lx, cy, r * STAR_K); else { ctx.beginPath(); ctx.arc(lx, cy, r, 0, Math.PI * 2); }
+    ctx.fillStyle = LIGHT_BY_CODE[c]; ctx.fill();
+    if (i === now) { ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(lx, cy, r + 3, 0, Math.PI * 2); ctx.stroke(); }
+  });
+  return h + (m ? 6 : 8);
 }
 // 보이는 값 v를 board.canvas에 그린다. 패널 왼쪽 위가 (BOARD_M, BOARD_M)이다
 function renderBoard(v, L) {
@@ -3629,8 +3657,9 @@ function gameSummary() {
 const scenarioEndText = (end) => (end === 'win' ? '끝내기 승리!' : end === 'tie' ? '동점으로 끝' : '아쉬운 패배');
 const emojiLine = (codes) => codes.split('').map((c) => SHARE_EMOJI[c]).join('');
 
-// 공유 글. 첫 줄에 모드를 적고, 마지막 줄은 늘 게임 주소다
-function shareText(s, mode = 'challenge') {
+// 공유 글. 첫 줄에 모드를 적고, 마지막 줄은 늘 게임 주소다. 10구 끝 화면 공유는 도전장(dare, dareOf)이라 그 공을 칠 수 있는 주소가 마지막 줄이고,
+// 도전장 판의 되갚기는 받은 도전장 점수와 견준 줄을 더한다(2026-11-16)
+function shareText(s, mode = 'challenge', dare = null) {
   const bats = s.bats === 'L' ? '좌타' : '우타';
   if (mode === 'scenario') {
     return [
@@ -3641,12 +3670,58 @@ function shareText(s, mode = 'challenge') {
       SHARE_URL,
     ].filter(Boolean).join('\n');
   }
+  const line = `${s.score.toLocaleString()}점${dare?.n >= 2 ? `(${dare.n}번째 도전)` : ''}${s.newBest ? ' · 새 최고 기록' : ''} · 홈런 ${s.hr}${s.far ? ` · 최장 ${s.far}m` : ''}`;
+  if (!dare) return [`walkoff 10구 도전 (${bats})`, emojiLine(s.lights), line, SHARE_URL].join('\n');
+  const vs = dare.vs;
   return [
-    `walkoff 10구 도전 (${bats})`,
+    `walkoff 10구 도전장${vs ? ' 되갚기' : ''} (${bats})`,
     emojiLine(s.lights),
-    `${s.score.toLocaleString()}점${s.newBest ? ' · 새 최고 기록' : ''} · 홈런 ${s.hr}${s.far ? ` · 최장 ${s.far}m` : ''}`,
-    SHARE_URL,
-  ].join('\n');
+    `${dare.nick}님 ${line}`,
+    vs && duelGap(s.score, vs),
+    vs ? '같은 공 40개로 다시 넘겨 보세요' : '같은 공 40개로 이 점수를 넘겨 보세요',
+    dare.url,
+  ].filter(Boolean).join('\n');
+}
+// 받은 도전장(d) 점수와 견준 한 줄: "명은님 12,300점보다 800점 더 쳤어요"
+const duelGap = (score, d) => {
+  const diff = score - d.score, at = `${d.nick}님 ${d.score.toLocaleString()}점`;
+  return diff > 0 ? `${at}보다 ${diff.toLocaleString()}점 더 쳤어요` : diff < 0 ? `${at}에 ${(-diff).toLocaleString()}점 모자라요` : `${d.nick}님과 같은 점수예요`;
+};
+
+// ===== 친구 도전장(2026-11-16 사용자 '추천 순서대로') =====
+// 10구 끝 화면 '결과 공유하기'가 그 판의 공 순서(시드)·점수·전광판 불·팀·타석·닉네임을 주소 ?vs=에 실어 보낸다(game/duel.js). 받은 사람은 같은 공으로 겨룬다.
+// 받은 사람의 첫 판만 승부이고 다시 치면 'N번째 도전'이다(이 브라우저 기록 walkoff.duels). 도전장 판은 랭킹·코인·칭호·연속·최고 기록에 안 들어간다
+const DUELS_KEY = 'duels';
+const duelLogged = () => store.get(DUELS_KEY, []);
+// 공유할 도전장. 보내는 사람의 이 판도 그 공으로 친 판이라 기록에 남긴다(되갚기 주소를 열면 이 점수와 견주고, 다시 치면 2번째 도전이다)
+function dareOf() {
+  const s = game.summary, vs = game.duelTry > 0 ? game.duel : null;
+  if (!cleanNick(settings.nick)) { settings.nick = defaultNick(); store.set('nick', settings.nick); }   // 닉네임을 정하기 전이면 지금 정해 둔다(보낼 때마다 바뀌지 않게)
+  if (!vs && !duelEntry(duelLogged(), game.seed)) store.set(DUELS_KEY, duelLog(duelLogged(), game.seed, { start: true, score: s.score }));
+  const n = Math.min(999, vs ? game.duelTry : duelEntry(duelLogged(), game.seed)?.tries ?? 1);
+  const code = duelCode({ seed: game.seed, score: s.score, lights: s.lights, team: settings.team, bats: s.bats, n, nick: settings.nick });
+  return { url: `${SHARE_URL}?vs=${code}`, nick: settings.nick, n, vs };
+}
+// 주소의 도전장을 연다(열 때 한 번). 잘못된 주소면 도전장 없이 시작 화면을 열고 알린다
+function openDuelLink() {
+  const code = new URLSearchParams(location.search).get('vs');
+  if (code == null) return;
+  const d = parseDuel(code);
+  if (!d) { toast('도전장 주소가 잘못됐어요'); return; }
+  game.duel = d;
+  settings.bats = d.bats;   // 보낸 사람 타석을 기본으로 고른다(바꾸면 그때 저장한다). 도전장을 나가면 저장한 타석으로 돌린다
+}
+// 도전장을 나간다. 주소의 ?vs=도 지워서 새로고침해도 다시 열리지 않는다
+function leaveDuel() {
+  Object.assign(game, { duel: null, duelTry: 0 });
+  settings.bats = store.get('bats', 'R') === 'L' ? 'L' : 'R';
+  try { const u = new URL(location.href); u.searchParams.delete('vs'); history.replaceState(null, '', u); } catch { /* 주소를 못 바꿔도 이번 판은 된다 */ }
+}
+// 도전장 판을 시작한다: 그 공으로 몇 번째 친 판인지 하나 올려 돌려준다
+function startDuelTry(seed) {
+  const log = duelLog(duelLogged(), seed, { start: true });
+  store.set(DUELS_KEY, log);
+  return log[0].tries;
 }
 
 // 결과 그림 카드(1080x1080). 끝 화면의 큰 줄을 옮겨 그리고 맨 아래에 주소를 새긴다.
@@ -3710,7 +3785,9 @@ function prepareShareCard() {
 // 모바일은 공유 창을 띄우고(그림 공유가 되면 카드 그림과 글을 함께), 안 되면 클립보드에 복사한다
 async function shareResult() {
   if (game.sharing) return;   // 공유 창이 떠 있는 동안 또 누르면 무시한다(안드로이드 크롬은 InvalidStateError를 낸다)
-  const text = shareText(game.summary, game.mode);
+  const dare = game.mode === 'challenge' && !game.aim ? dareOf() : null;   // 10구는 도전장으로 보낸다
+  if (dare) track('start', 'invite');   // 도전장을 보낸 수(통계, 판 수에는 안 든다)
+  const text = shareText(game.summary, game.mode, dare);
   if (canShareSheet() && view.mobile) {   // 공유 창을 보냈거나 닫았으면 끝, 공유 창이 안 되면 복사한다
     game.sharing = true;
     try { if (await shareSheet(text, game.shareCard?.file)) return; } finally { game.sharing = false; }
@@ -3785,12 +3862,14 @@ function drawScenarioOver() {
   drawRetryShareButtons(y, m ? view.w - 48 : 340, () => startGame('scenario'));
 }
 
-// 10구 도전·끝내기 상황 끝 화면: [결과 공유하기 | 다시 하기] 아래에 처음으로. 스페이스바가 다시 하기라서 그쪽을 강조한다
-function drawRetryShareButtons(y, bw, retry) {
+// 10구 도전·끝내기 상황 끝 화면: [결과 공유하기 | 다시 하기] 아래에 처음으로. 스페이스바가 다시 하기라서 그쪽을 강조한다.
+// 도전장 판은 [되갚기(같은 공, 내 점수로 보내기) | 다시 하기] 아래에 도전장을 나가 랭킹 판을 치는 '10구 도전 하기'
+function drawRetryShareButtons(y, bw, retry, duel = false) {
   const cx = view.w / 2, [a, b] = rowRects(cx, y, bw, 48, 2);
-  addButton(a, '결과 공유하기', 'secondary', shareResult);
+  addButton(a, duel ? '되갚기' : '결과 공유하기', 'secondary', shareResult);
   addButton(b, '다시 하기', 'primary', retry);
-  addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
+  if (duel) addButton({ x: cx - 80, y: y + 58, w: 160, h: 36 }, '10구 도전 하기', 'link', () => { leaveDuel(); startDefault(); });
+  else addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
 }
 
 // 끝 화면을 캡처해서 보내도 주소가 함께 가도록 아래쪽에 새긴다
@@ -4020,7 +4099,7 @@ function confirmOnboard(how = 'local') {
 }
 // 로그인했는데 팀 없이 친 10구 판(서버 시드로 쳤다)은 끝 화면에서 팀을 고르면 그때 보낸다(점수는 팀과 같이 남는다)
 function submitTeamless() {
-  if (loggedIn() && game.mode === 'challenge' && !game.aim && game.recorded && !game.rankInfo && game.summary) submitScore(game.summary, 'challenge');
+  if (loggedIn() && game.mode === 'challenge' && !game.aim && !game.duelTry && game.recorded && !game.rankInfo && game.summary) submitScore(game.summary, 'challenge');
 }
 
 const UNOFFICIAL = 'KBO·각 구단과 관계없는 비공식 팬 게임이에요';
@@ -4276,6 +4355,7 @@ const coinNote = () => { const ri = game.rankInfo; return loggedIn() && ri?.earn
 // 끝 화면 한 줄: "이번 주 최고 기록! 3위 · 랭킹 보기 ›" 또는 "이번 주 최고 4,200점 · 3위 · 랭킹 보기 ›".
 // 로그인하지 않았으면 로그인하라는 줄, 랭킹에 안 올라간 판이면 그 까닭
 function rankLine() {
+  if (game.duelTry) return `도전장 판은 랭킹에 안 올라가요 · ${loggedIn() ? '랭킹 보기' : '카카오 로그인'} ›`;
   if (!loggedIn()) return '카카오로 로그인하면 다음 판부터 랭킹에 올라가요 ›';
   const ri = game.rankInfo;
   if (ri?.status === 'unranked') return '주소로 정한 공은 랭킹에 안 올라가요 · 랭킹 보기 ›';
@@ -5800,9 +5880,10 @@ function drawGiftConfirm() {
 // 시작 화면에는 "탭해서 시작"과 [좌타 | 우타]만 둔다(2026-10-28 사용자 피드백). 빈 곳 어디를 눌러도 시작한다.
 // 다른 모드와 설정은 오른쪽 위 메뉴에 있다. 누르면 늘 10구 도전(매번 다른 공)이다(2026-10-30 오늘의 10구를 없앰)
 // 로그인 안 한 사람이 10구 판을 시작하면 먼저 카카오 로그인을 권한다(아래 drawLoginPrompt).
-// 팀을 아직 안 고른 사람(처음 온 사람)은 팀 고르기·로그인 권유 없이 바로 첫 공이다
+// 도전장을 열었으면 그 공으로 친다(랭킹이 없어 로그인을 묻지 않는다). 팀을 아직 안 고른 사람(처음 온 사람)은 팀 고르기·로그인 권유 없이 바로 첫 공이다
 // (2026-11-16 사용자 '추천 순서대로': 전에는 열자마자 팀 고르기, 시작 화면, 탭으로 세 번 눌러야 첫 공이었다. 팀은 첫 판 끝 화면에서 고른다)
 function startDefault() {
+  if (game.duel) { startGame('challenge', false, { duel: true }); return; }
   if (!settings.team) { startGame('challenge'); return; }
   if (askLoginToday()) game.state = 'loginPrompt';
   else startGame('challenge');
@@ -5819,17 +5900,28 @@ function drawTitle(time) {
   }
   text('끝내기', cx, cy - (m ? 70 : 92), { size: m ? 16 : 20, weight: 700, color: '#f2c94c' });
   text('walkoff', cx, cy - (m ? 30 : 40), { size: m ? 52 : 76, weight: 900, shadow: true });
-  const lines = ['기회 10번, 타이밍만 맞춰 쳐 내세요.', '존 밖 공을 골라내면 기회가 1번 늘어요.', '마지막 기회는 9회말 끝내기 찬스, 점수 2배예요.'];
-  lines.forEach((l, i) => text(l, cx, cy + (m ? 28 : 36) + i * (m ? 24 : 30), { size: m ? 13 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' }));
+  const duel = game.duel;
+  if (duel) drawDuelCard(duel, cx, cy + (m ? 28 : 36));   // 주소로 연 도전장은 규칙 세 줄 자리에
+  else {
+    const lines = ['기회 10번, 타이밍만 맞춰 쳐 내세요.', '존 밖 공을 골라내면 기회가 1번 늘어요.', '마지막 기회는 9회말 끝내기 찬스, 점수 2배예요.'];
+    lines.forEach((l, i) => text(l, cx, cy + (m ? 28 : 36) + i * (m ? 24 : 30), { size: m ? 13 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' }));
+  }
   drawBatsToggle(cy + (m ? 112 : 134));
   if (!m) text('← → 키로도 바꿀 수 있어요', cx, cy + 168, { size: 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
-  pill(m ? '탭해서 시작' : '스페이스바 · 빈 곳 클릭으로 시작', cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
+  pill(`${m ? '탭해서' : '스페이스바 · 빈 곳 클릭으로'} ${duel ? '도전' : '시작'}`, cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
   ctx.globalAlpha = 1;
-  const streak = playStreak(), hot = !playedDays().has(today()) && streak >= 1;   // 이어 친 날이 있는데 오늘 아직 안 쳤으면 노랗게 보여 오늘도 치게 한다
-  const line = hot ? (streak >= 2 ? `${streak}일 연속 중 · 오늘 치면 ${streak + 1}일` : '오늘 치면 2일 연속')
-    : `${streak >= 2 ? `${streak}일 연속 · ` : ''}주간 랭킹은 이번 주 최고 기록이에요`;
-  text(line, cx, cy + (m ? 196 : 250), { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
+  if (duel) {   // 도전장을 나가 랭킹 판으로(연속 기록 줄 자리)
+    const label = '10구 도전 하기';
+    ctx.font = font(14, 600);
+    const lw = ctx.measureText(label).width + 40;
+    addButton({ x: cx - lw / 2, y: cy + (m ? 196 : 250) - 15, w: lw, h: 30 }, label, 'link', () => { leaveDuel(); startDefault(); });
+  } else {
+    const streak = playStreak(), hot = !playedDays().has(today()) && streak >= 1;   // 이어 친 날이 있는데 오늘 아직 안 쳤으면 노랗게 보여 오늘도 치게 한다
+    const line = hot ? (streak >= 2 ? `${streak}일 연속 중 · 오늘 치면 ${streak + 1}일` : '오늘 치면 2일 연속')
+      : `${streak >= 2 ? `${streak}일 연속 · ` : ''}주간 랭킹은 이번 주 최고 기록이에요`;
+    text(line, cx, cy + (m ? 196 : 250), { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
+  }
   const mb = menuButtonRect();   // 오른쪽 위 '≡ 메뉴'(안 읽은 새 소식이나 안 본 받은 선물은 NEW), 메뉴를 한 번도 안 연 사람에게는 아래 말풍선
   drawMenuButton(mb, newsUnread() || (loggedIn() && giftBox.inbox.length > 0));
   ui.buttons.push({ r: mb.hit, label: '메뉴', onTap: openMenu });
@@ -5838,6 +5930,18 @@ function drawTitle(time) {
     const r = drawCoinPill(mb.x - 8, mb.y + mb.h / 2, wallet.coins, 'right');
     ui.buttons.push({ r, label: '코인', onTap: () => openShop('shop') });
   }
+}
+
+// 시작 화면의 도전장: 보낸 사람과 점수, 그 판 전광판 불, 아래 한 줄(이 브라우저가 이미 그 공을 쳤으면 내 첫 판 점수와 승부)
+const duelVerdict = (diff) => (diff > 0 ? '이겼어요' : diff < 0 ? '졌어요' : '비겼어요');
+function drawDuelCard(d, cx, y) {
+  const m = view.mobile, mine = duelEntry(duelLogged(), d.seed), codes = d.lights.split('');
+  text(`${d.nick}님의 도전장 · ${d.score.toLocaleString()}점`, cx, y, { size: m ? 17 : 21, weight: 800, color: '#f2c94c', shadow: true });
+  const lg = Math.min(m ? 22 : 26, (m ? view.w - 80 : 480) / Math.max(1, codes.length - 1));
+  codes.forEach((c, i) => drawMark(cx + (i - (codes.length - 1) / 2) * lg, y + (m ? 26 : 32), Math.min(m ? 7 : 8, lg * 0.34), c));
+  const note = !mine?.tries ? (d.n >= 2 ? `${d.n}번째 도전 점수 · 같은 공으로 넘겨 보세요` : '같은 공으로 넘겨 보세요 · 랭킹 없음')
+    : mine.first != null ? `이미 친 공 · 내 첫 판 ${mine.first.toLocaleString()}점 · ${duelVerdict(mine.first - d.score)}` : `이미 본 공 · 다음 판은 ${mine.tries + 1}번째 도전`;
+  text(note, cx, y + (m ? 52 : 64), { size: m ? 12 : 15, weight: 600, color: 'rgba(255,255,255,0.78)' });
 }
 
 // ===== 새 소식(2026-11-04 사용자 결정, 문구는 사용자가 확인) =====
@@ -6266,9 +6370,9 @@ function drawGameOver() {
   drawSiteMark();
   if (game.mode === 'scenario') { drawScenarioOver(); return; }
   if (!game.aim) drawNewTitles();
-  // 랭킹 줄 자리: 10구는 이번 주 랭킹, 팀을 안 고른 사람(처음 온 사람)은 팀 고르기
-  const m = view.mobile, cx = view.w / 2, s = game.summary, rankRow = !game.aim && game.mode === 'challenge', tmStep = m ? 22 : 28;
-  let y = view.h * 0.19, tm = game.aim ? null : game.timing;
+  // 랭킹 줄 자리: 10구는 이번 주 랭킹(도전장 판은 랭킹이 없다는 안내), 팀을 안 고른 사람(처음 온 사람)은 팀 고르기
+  const m = view.mobile, cx = view.w / 2, s = game.summary, duel = game.duelTry > 0 ? game.duel : null, rankRow = !game.aim && game.mode === 'challenge', tmStep = m ? 22 : 28;
+  let y = view.h * 0.19, tm = game.aim || duel ? null : game.timing;
   // 조준 판은 의견 보내기 줄만큼 길어서, 낮은 화면(사파리 375×548)에서는 '처음으로' 밑줄이 아래 주소(drawSiteMark)와 8px 떨어지게 30px까지 당겨 올린다
   if (game.aim) y -= clamp(y + (m ? 466 : 529) - view.h, 0, 30);
   // 10구의 타이밍 습관 줄도 그 줄만큼까지 당겨 올린다(제목부터 '처음으로'까지 폰 398·PC 462px, 랭킹 줄이 없으면 30·36px 짧다).
@@ -6279,15 +6383,19 @@ function drawGameOver() {
     else y -= clamp(over, 0, tmStep);
   }
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
-  text(game.aim ? '조준 타격(실험)' : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
+  const head = duel ? `${duel.nick}님의 도전장 · ${game.duelTry >= 2 ? `${game.duelTry}번째 도전` : `${duel.score.toLocaleString()}점`}` : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`;
+  text(game.aim ? '조준 타격(실험)' : head, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
   y += m ? 54 : 70;
   text(s.score.toLocaleString(), cx, y, { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
   y += m ? 50 : 64;
   // 조준 판은 이 기기 조준 최고 기록(walkoff.aimBest). 10구는 로그인했으면 계정 역대 최고, 서버 답을 기다리면 '확인 중'(startBest)
   const best = game.mode === 'challenge', kind = game.aim ? '조준 최고 기록' : '최고 기록';
   const bestText = game.newBest ? `새 ${kind}!` : game.best != null ? `${kind} ${game.best.toLocaleString()}점` : game.bestWait ? `${kind} 확인 중…` : rankOf(s.score);
-  text((best ? bestText : rankOf(s.score)) + coinNote(), cx, y,
-    { size: m ? 18 : 22, color: best && game.newBest ? '#f2c94c' : '#fff' });
+  // 도전장 판은 최고 기록 대신 승부: 첫 판이면 이김·짐(점수 차), 다시 친 판은 받은 점수와 견준 차만(외워서 친 판이라 승부가 아니다)
+  const diff = duel ? s.score - duel.score : 0, won = duel && game.duelTry === 1 && diff > 0;
+  const duelLine = duel && (game.duelTry >= 2 ? duelGap(s.score, duel) : diff > 0 ? `이겼어요! ${diff.toLocaleString()}점 더 쳤어요` : diff < 0 ? `졌어요 · ${(-diff).toLocaleString()}점 모자라요` : '비겼어요 · 같은 점수예요');
+  text(duel ? duelLine : (best ? bestText : rankOf(s.score)) + coinNote(), cx, y,
+    { size: m ? 18 : 22, color: won || (!duel && best && game.newBest) ? '#f2c94c' : '#fff' });
   y += m ? 40 : 50;
   const lights = s.lights.split(''), lg = Math.min(m ? 30 : 36, (m ? view.w - 70 : 520) / Math.max(1, lights.length - 1));
   lights.forEach((c, i) => drawMark(cx + (i - (lights.length - 1) / 2) * lg, y, Math.min(m ? 10 : 12, lg * 0.36), c));
@@ -6318,7 +6426,7 @@ function drawGameOver() {
   if (game.aim) {   // 조준 판은 공유하지 않는다
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '다시 하기', 'primary', restartGame);
     addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
-  } else drawRetryShareButtons(y, bw, restartGame);
+  } else drawRetryShareButtons(y, bw, restartGame, !!duel);
 }
 
 // ===== 게임 진행 =====
@@ -6327,11 +6435,13 @@ function drawGameOver() {
 // 주소 끝 ?seed=숫자(infra/seeds.js의 urlSeed)가 있으면 그 시드, 없으면 지금 시각으로
 const seedFromUrl = () => urlSeed() ?? (Date.now() % 2147483647);
 
-// mode: 'challenge'(10구 도전, 매번 다른 공) | 'scenario'(끝내기 상황) | 'practice'(연습). opts.aim이면 10구 규칙의 조준 타격(실험)
+// mode: 'challenge'(10구 도전, 매번 다른 공) | 'scenario'(끝내기 상황) | 'practice'(연습). opts.aim이면 10구 규칙의 조준 타격(실험),
+// opts.duel이면 주소로 연 도전장(game.duel)의 공으로 치는 10구 판(랭킹 없음)
 // 로그인한 10구 도전은 서버가 내준 시드로 친다. 받아 둔 것이 없으면(막 열었을 때) 받을 때까지 잠깐 기다리고, 그동안 누른 것은 받지 않는다
 function startGame(mode, waited = false, opts = {}) {
   const aim = mode === 'challenge' && !!opts.aim;   // 조준 판은 랭킹에 안 올라가서 서버 시드가 필요 없다
-  const ranked = (mode === 'challenge' || mode === 'scenario') && loggedIn() && urlSeed() == null && !aim;   // 끝내기 상황도 서버 시드로 쳐야 코인을 받는다(2026-11-04)
+  const duel = mode === 'challenge' && !aim && opts.duel ? game.duel : null;
+  const ranked = (mode === 'challenge' || mode === 'scenario') && loggedIn() && urlSeed() == null && !aim && !duel;   // 끝내기 상황도 서버 시드로 쳐야 코인을 받는다(2026-11-04)
   if (ranked && !waited && prefetchSeed() && !seedTicket.ready) {   // prefetchSeed는 받아 둔 것이 없거나 오래됐으면 새로 받기 시작한다
     const from = game.state, slow = setTimeout(() => toast('공을 받는 중…'), 400);
     game.waitingSeed = true;
@@ -6347,7 +6457,8 @@ function startGame(mode, waited = false, opts = {}) {
   game.aim = aim; game.aims = [];
   game.ticket = ranked ? takeSeedTicket() : null;
   game.fixedSeed = mode === 'challenge' && urlSeed() != null;
-  game.seed = game.ticket?.seed ?? seedFromUrl();
+  game.seed = duel ? duel.seed : game.ticket?.seed ?? seedFromUrl();
+  game.duelTry = duel ? startDuelTry(duel.seed) : 0;   // 시작할 때 센다(중간에 처음부터 다시 해도 본 공이다)
   Object.assign(game, { i: 0, score: 0, results: [], summary: null, newBest: false, scn: null, scnEvent: '', left: mode === 'challenge' ? CHANCES : 0, extra: 0, recorded: false, moves: [], scnCoin: null, timing: null, away: null });
   game.throws = pitcherHand(game.seed);
   game.opponent = pickOpponent(game.seed);
@@ -6368,10 +6479,10 @@ function startGame(mode, waited = false, opts = {}) {
     game.seq.push(nextPracticePitch());
   } else game.seq = makeSequence(game.seed, game.throws === 'L');
   startPitch();
-  track('start', game.aim ? 'aim' : game.mode);
+  track('start', game.aim ? 'aim' : duel ? 'duel' : game.mode);
 }
-// 지금 판과 같은 모드로 처음부터(조준 판이면 조준 판으로)
-const restartGame = () => startGame(game.mode, false, { aim: game.aim });
+// 지금 판과 같은 모드로 처음부터(조준 판이면 조준 판으로, 도전장 판이면 그 도전장으로)
+const restartGame = () => startGame(game.mode, false, { aim: game.aim, duel: game.duelTry > 0 });
 
 const WINDUP_HOLD = 3;
 const screenHome = () => Math.abs(view.panX) < view.w * 0.02 && Math.abs(view.panY) < view.h * 0.02 && !camMoved();   // 화면 밀기·카메라가 타석 시점 가까이(2% 안)
@@ -6607,6 +6718,9 @@ function recordGame() {
     game.newBest = game.score > best;
     game.best = Math.max(best, game.score);
     if (game.newBest) store.set('aimBest', game.score);
+  } else if (game.duelTry) {   // 도전장 판: 랭킹·코인·칭호·연속·최고 기록에 넣지 않고, 그 공으로 처음 끝까지 친 점수만 이 브라우저에 남긴다
+    store.set(DUELS_KEY, duelLog(duelLogged(), game.seed, { score: game.score }));
+    Object.assign(game, { newBest: false, best: null, bestWait: false, newTitles: [] });
   } else if (game.mode === 'challenge') {
     store.set('played.' + today(), 1);   // 끝까지 친 날(연속 기록)
     const best = store.get('best', 0);   // 이 기기 최고(로그아웃했을 때 메뉴·끝 화면이 쓴다)
@@ -6617,7 +6731,7 @@ function recordGame() {
     noteTiming();
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
   }
-  track('end', game.aim ? 'aim' : game.mode);
+  track('end', game.aim ? 'aim' : game.duelTry ? 'duel' : game.mode);
 }
 // 끝 화면 타이밍 습관(view/text.js timingOf): 이번 판 값을 최근 판들(walkoff.timingLog)에 더하고 타이밍 보정을 권할지 본다.
 // 휘두른 공이 모자라면 줄도 기록도 없다. 보정을 저장하면 기록을 비운다(saveCalib)
@@ -7089,12 +7203,13 @@ function warmBallBoard() {
 initNews();
 resize();
 loginReturned();
+openDuelLink();   // 처음 온 사람도 팀 고르기 없이 시작 화면부터(팀은 첫 판 끝 화면에서 고른다, 2026-11-16)
 requestAnimationFrame(frame);
 syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다
 warmUp();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
-window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
+window.walkoff = { game, settings, setBats, store, ui, boardLayout, leaveDuel, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction,
   FACE_PX, facesNow, pitcherMood, drawBatterFigure, defenseColors, paused: false };

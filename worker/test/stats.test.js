@@ -66,7 +66,18 @@ test('npm run stats 표: 최근 7일만, 날짜마다 한 줄', async () => {
   await env.DB.prepare("INSERT INTO play_stats (day, mode, starts, ends) VALUES (?, 'daily', 5, 5)").bind(old).run();
   assert.deepEqual(env.DB.rows(STATS_SQL), [{
     날짜: today, 기기: 2, '터치 기기': 1, '시작한 판': 3, '끝낸 판': 1,
-    '10구 도전': 1, '끝내기 상황': 1, 연습: 0, '조준 실험': 0,
+    '10구 도전': 1, '끝내기 상황': 1, 연습: 0, '조준 실험': 0, '도전장 판': 0, '도전장 끝': 0, '도전장 보냄': 0,
+  }]);
+});
+
+// 친구 도전장(2026-11-16): 도전장으로 연 10구 판(duel)은 판으로 세고, 도전장을 보낸 수(invite)는 starts에만 세어 판 합계에서 뺀다
+test('npm run stats 표: 도전장 판의 시작·끝과 보낸 수를 따로 보이고, 보낸 수는 시작한 판·끝낸 판에 넣지 않는다', async () => {
+  const env = { DB: memoryD1() }, today = kstDay(Date.now());
+  assert.equal((await send(env, { device: 'd-device-0001', mobile: true, day: today, counts: { duel: { starts: 3, ends: 2 }, invite: { starts: 4, ends: 0 }, challenge: { starts: 5, ends: 1 } } })).status, 204);
+  assert.equal((await send(env, ev({ mode: 'duel', type: 'end' }))).status, 204);   // 한 건씩 보내는 꼴도 받는다
+  assert.deepEqual(env.DB.rows(STATS_SQL), [{
+    날짜: today, 기기: 1, '터치 기기': 1, '시작한 판': 8, '끝낸 판': 4,
+    '10구 도전': 5, '끝내기 상황': 0, 연습: 0, '조준 실험': 0, '도전장 판': 3, '도전장 끝': 3, '도전장 보냄': 4,
   }]);
 });
 

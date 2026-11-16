@@ -2,7 +2,9 @@
 // 랭킹 ID·닉네임·카카오 계정과는 잇지 않고, 날짜·모드별 판 수와 그날 기기 수만 남긴다
 import { addDays } from './rules.js';
 
-export const MODES = ['daily', 'challenge', 'scenario', 'practice', 'aim'];   // aim: 조준 타격(실험, 2026-11-05)
+// aim: 조준 타격(실험, 2026-11-05). duel: 친구 도전장으로 연 10구 판, invite: 도전장을 보낸 수(10구 끝 화면 공유를 누른 수, 2026-11-16).
+// invite는 판이 아니라서 starts에만 세고(ends는 늘 0) 아래 표의 시작한 판·끝낸 판 합계에서 뺀다(표를 새로 만들지 않으려고 같은 표에 둔다)
+export const MODES = ['daily', 'challenge', 'scenario', 'practice', 'aim', 'duel', 'invite'];
 // 스윙 결과 수(2026-11-05 조준 타격 실험): 모드·입력마다 스윙·맞힘(파울 포함)·안타·정타 수와 조준 자리(near·edge·miss) 수의 합계
 export const SWING_MODES = ['challenge', 'aim'], SWING_INPUTS = ['mouse', 'touch', 'key'];
 const SWING_KEYS = ['swings', 'contacts', 'hits', 'perfect', 'near', 'edge', 'miss'];
@@ -68,14 +70,17 @@ export async function recordEvent(db, e) {
   return true;
 }
 
-// 최근 7일(한국 시간) 표. 날짜마다 한 줄: 기기 수, 그중 터치 기기, 시작한 판·끝낸 판, 모드별 시작한 판(npm run stats).
+// 최근 7일(한국 시간) 표. 날짜마다 한 줄: 기기 수, 그중 터치 기기, 시작한 판·끝낸 판, 모드별 시작한 판, 도전장 판 끝·보낸 수(npm run stats).
 // 오늘의 10구는 2026-10-30에 없어져서 칸을 뺐다. 그 전 날짜의 오늘의 10구 판은 시작한 판·끝낸 판 합계에만 들어간다
 export const STATS_SQL = `SELECT d.day AS "날짜", d.devices AS "기기", d.touch AS "터치 기기",
-  COALESCE(SUM(s.starts), 0) AS "시작한 판", COALESCE(SUM(s.ends), 0) AS "끝낸 판",
+  COALESCE(SUM(CASE WHEN s.mode <> 'invite' THEN s.starts END), 0) AS "시작한 판", COALESCE(SUM(CASE WHEN s.mode <> 'invite' THEN s.ends END), 0) AS "끝낸 판",
   COALESCE(SUM(CASE s.mode WHEN 'challenge' THEN s.starts END), 0) AS "10구 도전",
   COALESCE(SUM(CASE s.mode WHEN 'scenario' THEN s.starts END), 0) AS "끝내기 상황",
   COALESCE(SUM(CASE s.mode WHEN 'practice' THEN s.starts END), 0) AS "연습",
-  COALESCE(SUM(CASE s.mode WHEN 'aim' THEN s.starts END), 0) AS "조준 실험"
+  COALESCE(SUM(CASE s.mode WHEN 'aim' THEN s.starts END), 0) AS "조준 실험",
+  COALESCE(SUM(CASE s.mode WHEN 'duel' THEN s.starts END), 0) AS "도전장 판",
+  COALESCE(SUM(CASE s.mode WHEN 'duel' THEN s.ends END), 0) AS "도전장 끝",
+  COALESCE(SUM(CASE s.mode WHEN 'invite' THEN s.starts END), 0) AS "도전장 보냄"
 FROM (SELECT day, COUNT(*) AS devices, SUM(mobile) AS touch FROM play_devices
       WHERE day >= date('now', '+9 hours', '-6 days') GROUP BY day) d
 LEFT JOIN play_stats s ON s.day = d.day
