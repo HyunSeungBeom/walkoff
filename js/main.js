@@ -18,6 +18,7 @@ import { batsOf, BATTER_X, BATTER_Z, runnerReach, runStartOf } from './sim/batte
 import { plantDist, runnerSkeleton, runStep } from './sim/runpose.js';
 import { actorSkeleton, actorState, CATCHER_F, DEFENSE, FIELDERS, fieldersAt, fieldPlay, homeOf, PITCHER_F, pitcherFielding } from './sim/fielding.js';
 import { baseRunnersAt, DUGOUT, runnerAt, scenarioRuns as scenarioRunsIn, walkoffTime as walkoffTimeIn } from './sim/runner.js';
+import { faceMood, facesFor } from './sim/faces.js';
 import { addTiming, labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
 import { game, settings } from './game/state.js';
 import { api, auth, fetchRanking, loggedIn, postScenario, postScore, RANKING_API } from './infra/api.js';
@@ -561,7 +562,19 @@ function drawPitcher(t, holdingBall, lefty, idle = null) {
   const pal = { jersey: C.jersey, shade: C.shade, pants: C.pants, pantsShade: C.shade, accent: C.navy, helmet: C.navy, brim: C.brim, belt: C.navy,
     skin: C.skin, shoe: C.shoe, glove: C.glove, pocket: C.pocket, sleeve: C.navy };
   if (holdingBall) k.ball = k.ballHand;
+  k.face = facesNow()[PITCHER_F.pos]; k.mood = pitcherMood();
   drawBatterFigure(k, (name) => pal[name], 0);
+}
+// 판의 얼굴(sim/faces.js facesFor). 시드가 바뀔 때만 다시 고른다(시작 화면은 시드 0)
+let faceCache = null;
+const facesNow = () => (faceCache?.seed === game.seed ? faceCache : (faceCache = { seed: game.seed, faces: facesFor(game.seed) })).faces;
+// 투구 그림의 투수 표정: 친 공이면 수비 장면과 같고(faceMood), 삼진을 잡으면 웃는다(끝내기 상황은 k-looking·k-swinging, 10구·연습은
+// 헛스윙과 루킹 스트라이크). 다시 보기 중에는 기본
+function pitcherMood() {
+  const r = game.state === 'result' && game.replay == null ? game.outcome : null;
+  if (!r) return null;
+  if (hasBattedBall()) return faceMood(r, fieldPlay(r), PITCHER_F.pos, game.flightT);
+  return (game.mode === 'scenario' ? /^k-/.test(game.scnPlay ?? '') : r.kind === 'whiff' || r.kind === 'strike') ? 'grin' : null;
 }
 
 // 판의 첫 공이나 투수 손이 바뀐 공의 와인드업 동안 투수 머리 위에 던지는 손을 적는다
@@ -593,6 +606,7 @@ function drawDefense(time, runners, idlePitcher) {
     list.push({ z: spot[1], draw: () => {
       const k = actorSkeleton(play, f, t), base = project(spot[0], 0, spot[1]);
       if (base) ellipseAt(base, 0.32 * base.s, 0.07 * base.s, 'rgba(0,0,0,0.25)');
+      k.face = facesNow()[f.pos]; k.mood = faceMood(r, play, f.pos, t);
       drawBatterFigure(k, (name) => pal[name], 0);
     } });
   }
@@ -601,6 +615,7 @@ function drawDefense(time, runners, idlePitcher) {
     list.push({ z: spot[1], draw: () => {
       const k = actorSkeleton(play, CATCHER_F, t), base = project(spot[0], 0, spot[1]);
       if (base) ellipseAt(base, 0.32 * base.s, 0.07 * base.s, 'rgba(0,0,0,0.25)');
+      k.face = facesNow()[CATCHER_F.pos]; k.mood = faceMood(r, play, CATCHER_F.pos, t);
       drawBatterFigure(k, (name) => pal[name], 0);
     } });
   }
@@ -1935,6 +1950,61 @@ const rgbOf = (hex) => { const n = parseInt(hex.slice(1), 16); return `${(n >> 1
 const FIG_SHADE = 'rgba(8,12,30,0.27)', FIG_LINE = 'rgba(10,12,22,0.62)', FIG_HAIR = '#211a16';
 const n2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
 const dot2 = (a, b) => a.x * b.x + a.y * b.y;
+// 투수·수비수 얼굴(2026-11-16 사용자 '눈코입이 생겼으면, 다 다르게'). 부품은 판의 시드로(sim/faces.js facesFor), 표정은 장면으로(faceMood) 정한다.
+// 크기마다 그리는 것(얼굴 폭 0.148m가 몇 px인지): eyes 아래는 없음, mouth 아래는 눈과 덤(수염·눈 밑 칠·선글라스), full 아래는 입까지, 그 위는 눈썹·코까지.
+// 옆을 볼수록 챙 쪽으로 옮기고 좁힌다. 점은 지름 1px, 선은 굵기 1px 아래로 줄이지 않는다(번짐 없음). capHead가 그늘 위, 모자 밑에 그린다
+const FACE_PX = { eyes: 3, mouth: 5, full: 9 };
+const FACE_INK = '#211a16', FACE_LIP = '#6e2a1f', FACE_OPEN = '#4a1812', FACE_NOSE = 'rgba(110,52,26,0.5)', FACE_SHADES = '#14161c';
+const BEARD_A = Math.asin((0.074 - 0.005) / 0.098);   // 턱수염: 얼굴 타원(가운데 +0.005m, 세로 반지름 0.098m)의 +0.074m 아래 조각
+const MOUTH_LINE = { flat: [-0.017, 0.062, 0, 0.062, 0.017, 0.062], smile: [-0.02, 0.058, 0, 0.072, 0.02, 0.058], smirk: [-0.016, 0.064, 0.008, 0.068, 0.022, 0.054], sad: [-0.02, 0.07, 0, 0.052, 0.02, 0.07] };   // 시작·조절점·끝(m)
+const EYE_DOT = { dot: [0.0105, 0.0105, 0.5], wide: [0.015, 0.0085, 0.75], sleepy: [0.014, 0.009, 0.65], stare: [0.013, 0.013, 0.65] };   // 가로·세로 반지름(m), 가장 작은 가로 반지름(px)
+const BROW_TILT = { flat: [0, 0], up: [0.004, -0.005], sad: [-0.005, 0.003] };   // 안쪽·바깥쪽 끝을 내리는 만큼(m)
+function drawFace(h, s, b, front, face, mood) {
+  const fw = 0.148 * s;
+  if (fw < FACE_PX.eyes || front < 0.2) return;
+  const full = fw >= FACE_PX.full, sq = Math.min(1, front), turn = b ? clamp((b.x - h.x) / (0.12 * s), -1, 1) : 0, cx = h.x + turn * 0.055 * s;
+  const X = (o) => cx + o * s * sq, Y = (o) => h.y + o * s, ex = Math.max(0.03 * s * sq, 1), ey = Y(0.006);   // 두 눈은 1px 넘게 띄운다(작은 얼굴에서 붙지 않게)
+  const blobs = (list, color) => {   // [x, y, 가로, 세로 반지름, 아래 반만] 여럿을 한 번에 칠한다
+    ctx.fillStyle = color; ctx.beginPath();
+    for (const [x, y, rx, ry, half] of list) { const a = Math.max(0.5, rx); ctx.moveTo(x + a, y); ctx.ellipse(x, y, a, Math.max(0.5, ry), 0, 0, half ? Math.PI : Math.PI * 2); ctx.closePath(); }
+    ctx.fill();
+  };
+  const strokes = (list, color, w) => {   // [x0, y0, 조절점 x, y, x1, y1] 굽은 선 여럿
+    ctx.strokeStyle = color; ctx.lineWidth = Math.max(1, w * s); ctx.beginPath();
+    for (const [x0, y0, qx, qy, x1, y1] of list) { ctx.moveTo(x0, y0); ctx.quadraticCurveTo(qx, qy, x1, y1); }
+    ctx.stroke();
+  };
+  const cap = ctx.lineCap;
+  ctx.lineCap = 'round';
+  if (face.extra === 'beard') { ctx.fillStyle = 'rgba(33,26,22,0.88)'; ctx.beginPath(); ctx.ellipse(h.x, h.y + 0.005 * s, 0.074 * s, 0.098 * s, 0, BEARD_A, Math.PI - BEARD_A); ctx.closePath(); ctx.fill(); }
+  if (face.extra === 'eyeBlack') blobs([-1, 1].map((e) => [cx + e * ex, ey + Math.max(0.017 * s, 1.2), 0.015 * s * sq, 0.0045 * s]), '#121212');
+  const big = mood === 'wow' ? 1.3 : 1, eye = mood === 'wow' && face.eye === 'sleepy' ? 'dot' : face.eye;   // 놀라면 눈이 커지고 졸린 눈도 뜬다
+  if (face.shades) {
+    if (full) { blobs([-1, 1].map((e) => [cx + e * ex, ey, 0.021 * s * sq, 0.0135 * s]), FACE_SHADES); strokes([[cx - ex, ey - 0.004 * s, cx, ey - 0.006 * s, cx + ex, ey - 0.004 * s]], FACE_SHADES, 0.004); }
+    else blobs([[cx, ey, ex + 0.016 * s * sq, 0.011 * s]], FACE_SHADES);   // 작으면 두 알이 이어진 검은 띠
+  } else if (eye === 'stare' && full && 0.016 * s * sq >= 1.2) {   // 부릅뜬 눈: 흰자가 보일 만큼 크면 흰자와 눈동자
+    blobs([-1, 1].map((e) => [cx + e * ex, ey, 0.016 * s * sq * big, 0.014 * s * big]), '#f6f2ea');
+    blobs([-1, 1].map((e) => [cx + e * ex + turn * 0.004 * s, ey, 0.0075 * s * big, 0.0075 * s * big]), FACE_INK);
+  } else {
+    const [rx, ry, min] = EYE_DOT[eye], half = eye === 'sleepy' && full;   // 졸린 눈은 위가 평평한 반달(작으면 가로 막대)
+    blobs([-1, 1].map((e) => [cx + e * ex, ey + (half ? 0.002 * s : 0), Math.max(rx * s * sq * big, min), ry * s * big, half]), FACE_INK);
+  }
+  if (full) {
+    const brow = mood === 'sad' ? 'sad' : face.brow, by = Y(mood === 'wow' ? -0.017 : -0.011);   // 아쉬우면 눈썹 안쪽이 올라가고(눈썹 없는 얼굴도), 놀라면 눈썹이 뜬다
+    if (brow !== 'none') { const [inner, outer] = BROW_TILT[brow]; strokes([-1, 1].map((e) => [X(e * 0.013), by + inner * s, X(e * 0.029), by + (inner + outer) / 2 * s, X(e * 0.045), by + outer * s]), FACE_INK, 0.006); }
+    if (face.nose === 'dot') blobs([[X(0.002), Y(0.036), 0.0065 * s * sq, 0.0055 * s]], FACE_NOSE);
+    else if (face.nose === 'line') strokes([[X(0.003), Y(0.02), X(-0.006), Y(0.04), X(0.006), Y(0.041)]], FACE_NOSE, 0.005);
+  }
+  if (face.extra === 'mustache') blobs([-1, 1].map((e) => [X(e * 0.014), Y(0.049), 0.017 * s * sq, 0.0085 * s]), FACE_INK);
+  if (fw >= FACE_PX.mouth) {
+    const m = mood ?? face.mouth;
+    if (m === 'wow') blobs([[X(0), Y(0.066), 0.011 * s * sq, 0.015 * s]], FACE_OPEN);   // 놀람: 크게 벌린 o
+    else if (m === 'grin') blobs([[X(0), Y(0.057), 0.022 * s * sq, 0.014 * s, true]], FACE_OPEN);   // 웃음: 벌린 입(아래 반달)
+    else if (m === 'o') blobs([[X(0), Y(0.063), 0.008 * s * sq, 0.009 * s]], FACE_LIP);
+    else { const L = MOUTH_LINE[m]; strokes([[X(L[0]), Y(L[1]), X(L[2]), Y(L[3]), X(L[4]), Y(L[5])]], FACE_LIP, 0.006); }
+  }
+  ctx.lineCap = cap;
+}
 function drawBatterFigure(k, col, dy = 0) {
   if (camMoved() && k.world && k.chest[2] - cam.z < 1.5) return;   // 따라가는 카메라 곁을 지나는 사람은 그리지 않는다(뒤로 넘어간 점이 버려져 모양이 깨진다)
   const P = (p) => { const q = k.world ? project(p[0], p[1], p[2]) : batterPoint(p); return q ? { x: q.x, y: q.y + dy, s: q.s } : null; };
@@ -2402,6 +2472,7 @@ function drawBatterFigure(k, col, dy = 0) {
         ctx.beginPath(); ctx.ellipse(h.x + (b ? (b.x - h.x) * 0.3 : 0), h.y - 0.04 * s, 0.07 * s, 0.024 * s, 0, 0, Math.PI); ctx.fill();
       }
     }
+    if (k.face) drawFace(h, s, b, front, k.face, k.mood);
     ctx.fillStyle = col('helmet'); ctx.beginPath(); ctx.ellipse(h.x, h.y - 0.035 * s, 0.082 * s, 0.072 * s, 0, Math.PI, 0); ctx.closePath(); ctx.fill();
     ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
     if (front >= 0) brim();
@@ -7010,4 +7081,5 @@ warmUp();
 
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, judgeSwing, judgeTake, makeSequence, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
-  update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction, paused: false };
+  update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction,
+  FACE_PX, facesNow, pitcherMood, drawBatterFigure, defenseColors, paused: false };

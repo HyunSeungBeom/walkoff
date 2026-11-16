@@ -4820,3 +4820,83 @@ test.describe('편의 기능(2026-11-12): 소리 끄기·다른 앱 다녀오면
     expect(errors).toEqual([]);
   });
 });
+
+test.describe('투수·수비수 얼굴(2026-11-16)', () => {
+  test('투수 얼굴에는 눈이 보이고(PC·폰), 얼굴 폭이 3px 아래인 외야수는 그리지 않는다. 같은 시드로 다시 시작하면 같은 얼굴이다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    const r = await page.evaluate(() => {
+      const w = walkoff, x = document.querySelector('canvas').getContext('2d'), dpr = w.view.dpr, T = 5;
+      w.paused = true; w.game.t = 0;
+      // 머리 가운데(h)의 눈 띠(챙 아래부터 코 위까지, 얼굴 가장자리 안쪽)에서 피부(#dcae88, 합 530)보다 확 어두운 화소(눈 #211a16, 합 81)를 센다
+      const dark = (head) => {
+        w.render(T);
+        const h = w.project(...head), s = h.s, x0 = Math.floor((h.x - 0.045 * s) * dpr), y0 = Math.floor((h.y - 0.012 * s) * dpr);
+        const d = x.getImageData(x0, y0, Math.max(1, Math.ceil(0.09 * s * dpr)), Math.max(1, Math.ceil(0.042 * s * dpr))).data;
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] < 400) n++;
+        return { n, fw: Math.round(0.148 * s * 10) / 10 };
+      };
+      const pitcher = w.pitcherSkeleton(0, !!w.game.seq[w.game.i].lefty, T).head, cf = w.actorSkeleton(null, w.DEFENSE.find((f) => f.pos === '중견수'), 0).head;
+      const on = { p: dark(pitcher), cf: dark(cf) }, px = { ...w.FACE_PX };
+      w.FACE_PX.eyes = Infinity;   // 얼굴을 안 그린 그림(전과 같다)
+      const off = { p: dark(pitcher), cf: dark(cf) };
+      Object.assign(w.FACE_PX, px);
+      return { on, off, face: w.facesNow()['투수'] };
+    });
+    expect(r.on.p.fw).toBeGreaterThan(5);
+    expect(r.off.p.n).toBe(0);
+    expect(r.on.p.n).toBeGreaterThanOrEqual(2);
+    expect(r.on.cf.fw).toBeLessThan(3);
+    expect(r.on.cf.n).toBe(r.off.cf.n);
+    expect(await page.evaluate(() => { walkoff.startGame('challenge'); return walkoff.facesNow()['투수']; })).toEqual(r.face);
+    expect(errors).toEqual([]);
+  });
+
+  test('투수 표정: 10구에서 루킹 스트라이크·헛스윙이면 웃고 다음 공에는 기본, 홈런을 맞으면 놀란다. 끝내기 상황은 삼진일 때만 웃고 다시 보기 중에는 기본이다', async ({ page, isMobile }) => {
+    test.skip(isMobile, '표정 계산은 화면 크기와 상관없어서 PC에서만 본다');
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    const mood = () => page.evaluate(() => [walkoff.game.outcome?.kind ?? null, walkoff.pitcherMood()]);
+    const next = async () => {
+      await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+      await page.keyboard.press('Space');
+      await page.waitForFunction(() => walkoff.game.state === 'windup');
+    };
+    await page.waitForFunction(() => walkoff.game.state === 'result', null, { timeout: 15_000 });   // 시드 42 첫 공은 스트라이크(지켜봄)
+    expect(await mood()).toEqual(['strike', 'grin']);
+    await next();
+    expect(await page.evaluate(() => walkoff.pitcherMood())).toBe(null);
+    await pressAt(page, -420);
+    await page.waitForFunction(() => walkoff.game.state === 'result');
+    expect(await mood()).toEqual(['whiff', 'grin']);
+    let hr = false;
+    for (let k = 0; k < 8 && !hr; k++) {   // 홈런이 나는 타이밍(가운데)이 있는 공까지 지켜보고 넘긴다
+      await next();
+      const dt = await page.evaluate(() => {
+        const p = walkoff.game.seq[walkoff.game.i], ok = [];
+        for (let dt = -50; dt <= 50; dt++) if (walkoff.judgeSwing(p, dt, walkoff.settings.bats).kind === 'hr') ok.push(dt);
+        return ok.length >= 5 ? ok[ok.length >> 1] : null;
+      });
+      if (dt == null) continue;
+      await pressAt(page, dt);
+      await page.waitForFunction(() => walkoff.game.state === 'result');
+      expect(await mood()).toEqual(['hr', 'wow']);
+      hr = true;
+    }
+    expect(hr).toBe(true);
+    const scn = await page.evaluate(() => {
+      const g = walkoff.game;
+      walkoff.paused = true;
+      const at = (o) => { Object.assign(g, { mode: 'scenario', state: 'result', replay: null }, o); return walkoff.pitcherMood(); };
+      return [
+        at({ outcome: { kind: 'whiff' }, scnPlay: '' }), at({ outcome: { kind: 'whiff' }, scnPlay: 'k-swinging' }),
+        at({ outcome: { kind: 'strike', took: true }, scnPlay: 'k-looking' }), at({ outcome: { kind: 'strike', took: true }, scnPlay: '' }),
+        at({ outcome: { kind: 'whiff' }, scnPlay: 'k-swinging', replay: 0 }),
+      ];
+    });
+    expect(scn).toEqual([null, 'grin', 'grin', null, null]);
+    expect(errors).toEqual([]);
+  });
+});
