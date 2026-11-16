@@ -8,9 +8,9 @@ import { DUEL_KEEP, duelCode, duelEntry, duelLog, parseDuel } from '../../js/gam
 
 // 시드 42 공 순서로 나올 수 있는 전광판: 존 밖으로 멀리 빠진 공은 골라낸 볼(Y), 나머지는 앞에서부터 홈런·단타·아웃 순서로 기회 10번
 const seq = makeSequence(42, pitcherHand(42) === 'L');
-function lightsFor(pattern) {
+function lightsFor(pattern, s = seq) {
   let out = '', k = 0;
-  for (const p of seq) {
+  for (const p of s) {
     if (k === 10) break;
     if (zoneMiss(p) > REACH_M) { out += 'Y'; continue; }
     out += pattern[k % pattern.length]; k++;
@@ -31,13 +31,26 @@ test('도전장 주소: 만든 값을 그대로 읽고, 닉네임은 base64url�
   assert.ok(RANGE && RANGE.max > RANGE.min, '시험 전광판은 정타 보너스만큼 점수가 열린다');
   const code = duelCode(BASE);
   assert.match(code, /^a\.[0-9a-z]+\.[0-9a-z]+\.[SDTHYR]+\.hanwha\.L\.[A-Za-z0-9_-]+\.1$/);   // 끝은 번째(영문·숫자)
-  assert.deepEqual(parseDuel(code), BASE);
+  assert.deepEqual(parseDuel(code), { ...BASE, style: 'classic' });   // 판 글자 a는 정통파
   for (const d of [{ ...BASE, score: RANGE.max }, { ...BASE, team: null, bats: 'R', n: 12, nick: 'a.b c' }, { ...BASE, seed: 2147483647, lights: 'RRRRRRRRRR', score: 0 }]) {
     const c = duelCode(d);
     assert.equal(c.split('.').length, 8);
-    assert.deepEqual(parseDuel(c), d);
+    assert.deepEqual(parseDuel(c), { ...d, style: 'classic' });
   }
   assert.equal(duelCode({ ...BASE, team: null }).split('.')[4], '-');
+});
+
+test('이번 주 투수 판은 판 글자 b 뒤에 투수 유형을 싣고 그 유형의 공 순서로 검사한다. 정통파 판은 예전처럼 a다', () => {
+  assert.equal(duelCode({ ...BASE, style: 'classic' }), duelCode(BASE));
+  const seed = 60, styled = (style) => makeSequence(seed, pitcherHand(seed) === 'L', style);   // 시드 60은 유형마다 전광판이 달라 정통파 공으로 보면 틀린다
+  for (const style of ['power', 'finesse', 'forkball']) {
+    const lights = lightsFor('HSR', styled(style)), d = { ...BASE, seed, lights, score: scoreRange(lights, styled(style)).max, style }, code = duelCode(d);
+    assert.match(code, new RegExp(`^b\\.${style}\\.[0-9a-z]+\\.`));
+    assert.equal(code.split('.').length, 9);
+    assert.deepEqual(parseDuel(code), d);
+    assert.equal(parseDuel(['a', ...code.split('.').slice(2)].join('.')), null, `${style} 전광판을 정통파 공으로 보면 틀린다`);
+    for (const bad of ['toString', 'Power', '', 'classic2']) assert.equal(parseDuel(swap(code, 1, bad)), null, bad);
+  }
 });
 
 test('도전장 주소: 판 글자·칸 수·시드·불·점수·팀·타석·번째·닉네임 가운데 하나라도 틀리면 받지 않는다', () => {

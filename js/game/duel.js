@@ -2,12 +2,12 @@
 // 받은 쪽은 그 값을 믿지 않고 검사한다. 서명은 하지 않는다(랭킹이 없고, 그 공 순서와 전광판 불로 낼 수 있는 점수인지만 본다).
 // 꼴: 판 글자.시드.점수.불.팀.타석.닉네임.번째. 시드·점수·번째는 36진수, 팀이 없으면 '-', 닉네임은 UTF-8 base64url(마침표가 안 나온다).
 // 끝이 번째(영문·숫자)라서 메신저가 주소 끝의 '-'·'_'를 링크에서 떼어 내지 않는다
-// 판 글자 'a'는 지금의 공 만들기(core makeSequence·pitcherHand)다. 공 만드는 법이 바뀌면(이번 주 투수 등) 글자를 바꿔 옛 주소와 가른다
+// 판 글자 'a'는 정통파 공 순서(core makeSequence·pitcherHand, 투수 유형이 생기기 전과 같은 공)다. 'b'는 판 글자 뒤에 투수 유형 id(core PITCHER_STYLES)를
+// 한 칸 더 싣는다(이번 주 투수, 2026-11-16). 정통파 판은 지금도 a로 써서 옛 주소와 같다. 공 만드는 법이 또 바뀌면 글자를 바꿔 옛 주소와 가른다
 import { TEAM_IDS } from '../core/catalog.js';
-import { makeSequence, pitcherHand } from '../core/pitches.js';
+import { isStyle, makeSequence, pitcherHand } from '../core/pitches.js';
 import { scoreRange } from '../core/score.js';
 
-export const DUEL_VERSION = 'a';
 export const DUEL_KEEP = 30;          // 이 브라우저가 기억하는 도전장 공 순서 수(최근 것부터)
 const SEED_MAX = 2147483647;           // 서버 시드(1 ~ 2^31-1, worker/src/seeds.js)와 기기 시드(시각 % 2147483647)
 const LIGHTS = /^[SDTHYR]{1,40}$/;     // core가 쓰는 불(공 40개). 안타 종류를 모르는 예전 G는 받지 않는다
@@ -29,20 +29,24 @@ export function cleanNick(nick) {
   return s && [...s].length <= NICK_MAX && !/[\u0000-\u001f\u007f]/.test(s) ? s : null;
 }
 
-// d: { seed, score, lights, team(id나 null), bats('L'·'R'), n(그 공으로 몇 번째 친 판인지), nick }
-export const duelCode = (d) => [DUEL_VERSION, d.seed.toString(36), d.score.toString(36), d.lights, d.team ?? '-', d.bats, toB64(d.nick), d.n.toString(36)].join('.');
+// d: { seed, score, lights, team(id나 null), bats('L'·'R'), n(그 공으로 몇 번째 친 판인지), nick, style(투수 유형 id, 없으면 정통파) }
+export function duelCode(d) {
+  const style = isStyle(d.style) ? d.style : 'classic';
+  return [...(style === 'classic' ? ['a'] : ['b', style]), d.seed.toString(36), d.score.toString(36), d.lights, d.team ?? '-', d.bats, toB64(d.nick), d.n.toString(36)].join('.');
+}
 
 // 주소의 ?vs= 값을 검사해 d로 돌려준다. 하나라도 틀리면 null(그때 게임은 도전장 없이 연다)
 export function parseDuel(code) {
   const f = String(code ?? '').split('.');
-  if (f.length !== 8 || f[0] !== DUEL_VERSION) return null;
-  const [, s36, score36, lights, team, bats, nick64, n36] = f;
+  const style = f[0] === 'a' && f.length === 8 ? 'classic' : f[0] === 'b' && f.length === 9 && isStyle(f[1]) ? f[1] : null;
+  if (!style) return null;
+  const [s36, score36, lights, team, bats, nick64, n36] = f.slice(-7);
   const seed = int36(s36), score = int36(score36), n = int36(n36), nick = cleanNick(fromB64(nick64));
   if (!(seed >= 1 && seed <= SEED_MAX) || !(score >= 0) || !(n >= 1 && n <= 999) || !nick) return null;
   if (!LIGHTS.test(lights) || !(team === '-' || TEAM_IDS.includes(team)) || !(bats === 'L' || bats === 'R')) return null;
-  const range = scoreRange(lights, makeSequence(seed, pitcherHand(seed) === 'L'));   // 그 공 순서로 나올 수 있는 전광판이고, 그 전광판으로 낼 수 있는 점수인지
+  const range = scoreRange(lights, makeSequence(seed, pitcherHand(seed) === 'L', style));   // 그 투수 유형의 공 순서로 나올 수 있는 전광판이고, 그 전광판으로 낼 수 있는 점수인지
   if (!range || score < range.min || score > range.max) return null;
-  return { seed, score, lights, team: team === '-' ? null : team, bats, n, nick };
+  return { seed, score, lights, team: team === '-' ? null : team, bats, n, nick, style };
 }
 
 // 이 브라우저가 도전장 공 순서로 친 기록 [{ seed, tries, first }](최근 것부터 DUEL_KEEP개). tries는 그 공으로 판을 시작한 수(보낸 사람이 처음 친 판도 1),

@@ -3260,7 +3260,7 @@ test.describe('친구 도전장', () => {
   test('도전장 주소로 열면 보낸 사람 판이 보이고 탭 한 번에 같은 공·같은 타석으로 친다. 랭킹·기록 없이 첫 판만 승부이고, 다시 치면 N번째 도전이다', async ({ page }) => {
     const errors = await open(page, await duelQuery());
     expect(await page.evaluate(() => ({ state: walkoff.game.state, duel: walkoff.game.duel, bats: walkoff.settings.bats, saved: localStorage.getItem('walkoff.bats') })))
-      .toEqual({ state: 'title', duel: SENDER, bats: 'L', saved: null });   // 보낸 사람 타석을 고르지만 저장하지는 않는다
+      .toEqual({ state: 'title', duel: { ...SENDER, style: 'classic' }, bats: 'L', saved: null });   // 보낸 사람 타석을 고르지만 저장하지는 않는다
     const title = await drawnTexts(page);
     expect(title).toEqual(expect.arrayContaining(['명은님의 도전장 · 300점', '같은 공으로 넘겨 보세요 · 랭킹 없음']));
     expect(title.some((t) => /(탭해서|클릭으로) 도전$/.test(t))).toBe(true);
@@ -3327,7 +3327,7 @@ test.describe('친구 도전장', () => {
     expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 (우타)', '🔴'.repeat(10), '테스트님 0점 · 홈런 0', '같은 공 40개로 이 점수를 넘겨 보세요']);
     let link = new URL(lines.at(-1));
     expect(`${link.origin}${link.pathname}`).toBe('https://hyunseungbeom.github.io/walkoff/');
-    expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 1, nick: '테스트' });
+    expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 1, nick: '테스트', style: 'classic' });
     expect(await page.evaluate(() => walkoff.store.get('duels', null))).toEqual([{ seed: 42, tries: 1, first: 0 }]);   // 보낸 사람도 그 공을 한 번 쳤다
     // 친구(민성)가 같은 공으로 6,800점을 쳐서 되갚은 주소를 보낸 사람이 연다
     await page.goto(`${PAGE}?vs=${duelCode({ seed: 42, score: 6800, lights: 'HSRHSRHSRH', team: 'lg', bats: 'R', n: 1, nick: '민성' })}`);
@@ -3342,7 +3342,7 @@ test.describe('친구 도전장', () => {
     lines = (await page.evaluate(() => window.__shared)).split('\n');
     expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 되갚기 (우타)', '🔴'.repeat(10), '테스트님 0점(2번째 도전) · 홈런 0', '민성님 6,800점에 6,800점 모자라요', '같은 공 40개로 다시 넘겨 보세요']);
     link = new URL(lines.at(-1));
-    expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 2, nick: '테스트' });
+    expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 2, nick: '테스트', style: 'classic' });
     expect(sentScores(errors)).toEqual([]);
     expect(errors).toEqual([]);
   });
@@ -5174,6 +5174,28 @@ test.describe('이번 주 투수(2026-11-16)', () => {
     await page.evaluate(() => walkoff.startGame('challenge'));
     await page.waitForFunction(() => walkoff.game.state === 'windup');
     expect([await page.evaluate(() => walkoff.game.style), await seqIs(page, 7, 'classic')]).toEqual(['classic', true]);
+    expect(errors).toEqual([]);
+  });
+
+  test('도전장 주소에 실린 유형으로 받은 사람도 친다(도전장으로 연 시작 화면에는 이번 주 투수 줄이 없다). 되갚기 주소도 그 유형이다', async ({ page }) => {
+    await page.addInitScript(() => {   // PC는 클립보드, 모바일은 공유 창으로 나간 글을 남긴다(친구 도전장 테스트와 같다)
+      window.__shared = null;
+      navigator.share = async (data) => { window.__shared = data.text; };
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__shared = t; } } });
+    });
+    const errors = await open(page, await duelQuery({ style: 'power' }));
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    expect(await page.evaluate(() => walkoff.game.duel?.style)).toBe('power');
+    const texts = await drawnTexts(page);
+    expect([texts.includes('명은님의 도전장 · 300점'), texts.some((t) => t.includes('투수 ·'))]).toEqual([true, false]);
+    await startTap(page);
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect([await page.evaluate(() => walkoff.game.style), await seqIs(page, 42, 'power')]).toEqual(['power', true]);
+    expect((await boardWords(page))[0]).toMatch(/^\S+ 강속구형 · [좌우]완$/);
+    await endTry(page);
+    await tap(page, '되갚기');
+    await page.waitForFunction(() => window.__shared != null);
+    expect((await page.evaluate(() => window.__shared)).split('\n').at(-1)).toMatch(/\?vs=b\.power\.16\./);
     expect(errors).toEqual([]);
   });
 

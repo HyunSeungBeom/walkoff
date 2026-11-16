@@ -3701,7 +3701,7 @@ function dareOf() {
   if (!cleanNick(settings.nick)) { settings.nick = defaultNick(); store.set('nick', settings.nick); }   // 닉네임을 정하기 전이면 지금 정해 둔다(보낼 때마다 바뀌지 않게)
   if (!vs && !duelEntry(duelLogged(), game.seed)) store.set(DUELS_KEY, duelLog(duelLogged(), game.seed, { start: true, score: s.score }));
   const n = Math.min(999, vs ? game.duelTry : duelEntry(duelLogged(), game.seed)?.tries ?? 1);
-  const code = duelCode({ seed: game.seed, score: s.score, lights: s.lights, team: settings.team, bats: s.bats, n, nick: settings.nick });
+  const code = duelCode({ seed: game.seed, score: s.score, lights: s.lights, team: settings.team, bats: s.bats, n, nick: settings.nick, style: game.style });
   return { url: `${SHARE_URL}?vs=${code}`, nick: settings.nick, n, vs };
 }
 // 주소의 도전장을 연다(열 때 한 번). 잘못된 주소면 도전장 없이 시작 화면을 열고 알린다
