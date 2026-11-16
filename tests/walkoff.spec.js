@@ -4013,7 +4013,9 @@ test.describe('상점 물건 13개(2026-11-12)', () => {
       const freeze = () => { const now = realNow.call(performance); w.paused = true; performance.now = () => now; return now; };
       let now = freeze();
       w.openShop('shop'); w.render(now / 1000);   // 상점 단추(종류 탭)는 그릴 때 생긴다
-      const H = Math.floor(w.ui.buttons.find((b) => b.label === '배트').r.y * w.view.dpr) - 4;
+      // 상점은 미리 보기 상자 안만 센다(상자 아래 끝은 종류 탭 위 PC 14·폰 10px, drawShop). 상자와 탭 사이 띠에는 뒤 배경 타자가 같은 옷을 입고
+      // 기다리며 까딱이다 고개를 내밀어, 멈춘 시각에 따라 0.2~2.7%로 출렁였다(2026-11-16 CI에서 0.62%로 실패, 고치기 전 코드도 같다)
+      const H = Math.floor((w.ui.buttons.find((b) => b.label === '배트').r.y - (w.view.mobile ? 10 : 14)) * w.view.dpr) - 2;
       leak('상점', (id) => { Object.assign(w.game.shop, { tab: 'uniform', sel: id, demo: now }); w.render(now / 1000); return x2d.getImageData(0, 0, W, H).data; });
       performance.now = realNow; w.paused = false;
       w.goTitle(); w.startGame('challenge');
@@ -4023,7 +4025,7 @@ test.describe('상점 물건 13개(2026-11-12)', () => {
       w.wallet.look.uniform = 'uniform-team'; performance.now = realNow; w.paused = false;
       return out;
     }, ids);
-    // 타석은 지금 0~0.04%이고, 무늬를 몸 밖으로 25~50% 밀면 0.6~1%가 된다. 상점 미리 보기는 크게 그려 윤곽선 가장자리가 흔들려서 금장(이미 파는 것)도 0.3~0.5%다
+    // 타석은 지금 0~0.04%이고, 무늬를 몸 밖으로 25~50% 밀면 0.6~1%가 된다. 상점 미리 보기 상자 안은 지금 0~0.24%다(전에 잰 0.3~0.5%는 대부분 뒤 배경 타자였다)
     for (const [where, most] of [['상점', 0.006], ['타석', 0.002]]) for (const id of ids) {
       const r = res[`${where} ${id}`];
       expect(r.all, `${where} ${id} 무늬가 그려진다`).toBeGreaterThan(1000);
