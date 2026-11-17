@@ -5087,6 +5087,31 @@ test.describe('투수·수비수 얼굴(2026-11-16)', () => {
     expect(scn).toEqual([null, 'grin', 'grin', null, null]);
     expect(errors).toEqual([]);
   });
+
+  test('투수 얼굴은 판의 투수 유형 얼굴이다(2026-11-17): 시작 화면·메뉴는 이번 주 유형, ?seed= 판·끝내기 상황은 정통파, ?pitcher=는 그 유형, 링크 미리보기는 정통파', async ({ page, isMobile }) => {
+    test.skip(isMobile, '얼굴을 고르는 일은 화면 크기와 상관없어서 PC에서만 본다');
+    await page.clock.setFixedTime(new Date('2026-11-24T12:00:00+09:00'));   // 강속구형 주
+    const errors = await open(page, '?seed=42');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    const pitcher = () => page.evaluate(() => walkoff.facesNow()['투수']);
+    expect(await pitcher()).toEqual({ eye: 'dot', brow: 'up', nose: 'dot', mouth: 'smirk', extra: 'eyeBlack', shades: false });
+    await page.evaluate(() => walkoff.openMenu());
+    expect((await pitcher()).extra).toBe('eyeBlack');
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.startGame('challenge'); });
+    expect([await page.evaluate(() => walkoff.game.style), (await pitcher()).extra]).toEqual(['classic', 'none']);
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.startGame('scenario'); });
+    expect((await pitcher()).extra).toBe('none');
+    await page.evaluate(() => walkoff.goTitle());
+    expect((await pitcher()).extra).toBe('eyeBlack');
+    await page.goto(PAGE + '?seed=42&pitcher=forkball');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    expect([await page.evaluate(() => walkoff.game.style), (await pitcher()).extra]).toEqual(['forkball', 'beard']);
+    await page.goto(PAGE + '?og=1');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    expect((await pitcher()).extra).toBe('none');
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe("끝 화면 '한 판 더' 줄(2026-11-16)", () => {
@@ -5210,7 +5235,7 @@ test.describe('이번 주 투수(2026-11-16)', () => {
     });
     const errors = await open(page, await duelQuery({ style: 'power' }));
     await page.waitForFunction(() => walkoff.game.state === 'title');
-    expect(await page.evaluate(() => walkoff.game.duel?.style)).toBe('power');
+    expect(await page.evaluate(() => [walkoff.game.duel?.style, walkoff.facesNow()['투수'].extra])).toEqual(['power', 'eyeBlack']);   // 시작 화면 투수도 보낸 사람의 유형 얼굴
     const texts = await drawnTexts(page);
     expect([texts.includes('명은님의 도전장 · 300점'), texts.some((t) => t.includes('투수 ·'))]).toEqual([true, false]);
     await startTap(page);

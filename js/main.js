@@ -573,9 +573,14 @@ function drawPitcher(t, holdingBall, lefty, idle = null) {
   k.face = facesNow()[PITCHER_F.pos]; k.mood = pitcherMood();
   drawBatterFigure(k, (name) => pal[name], 0);
 }
-// 판의 얼굴(sim/faces.js facesFor). 시드가 바뀔 때만 다시 고른다(시작 화면은 시드 0)
+// 판의 얼굴(sim/faces.js facesFor). 시드나 투수 유형이 바뀔 때만 다시 고른다(시작 화면은 시드 0). 투수 얼굴은 판의 유형이고, 판 밖(시작 화면·메뉴 등)에서는
+// 시작 화면이 알리는 투수다: 도전장이면 보낸 사람의 유형, 아니면 이번 주 투수('이번 주 투수' 줄). 링크 미리보기 그림은 주마다 바뀌지 않게 정통파
 let faceCache = null;
-const facesNow = () => (faceCache?.seed === game.seed ? faceCache : (faceCache = { seed: game.seed, faces: facesFor(game.seed) })).faces;
+const faceStyle = () => (['windup', 'pitch', 'result', 'over'].includes(game.state) ? game.style : game.duel ? game.duel.style ?? 'classic' : OG_SHOT ? 'classic' : styleOn(today()));
+const facesNow = () => {
+  const style = faceStyle();
+  return (faceCache?.seed === game.seed && faceCache.style === style ? faceCache : (faceCache = { seed: game.seed, style, faces: facesFor(game.seed, style) })).faces;
+};
 // 투구 그림의 투수 표정: 친 공이면 수비 장면과 같고(faceMood), 삼진을 잡으면 웃는다(끝내기 상황은 k-looking·k-swinging, 10구·연습은
 // 헛스윙과 루킹 스트라이크). 다시 보기 중에는 기본
 function pitcherMood() {
