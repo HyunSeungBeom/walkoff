@@ -5267,3 +5267,63 @@ test.describe('이번 주 투수(2026-11-16)', () => {
     expect(errors).toEqual([]);
   });
 });
+
+// 여러 기기 점검에서 나온 고장 고침(2026-11-18 사용자, 작업 글 ~/.claude/plans/walkoff-devices.md, 보고 walkoff-devices-report.md)
+test.describe('여러 기기(2026-11-18): 뗄 때 공유', () => {
+  // 공유 창은 브라우저가 '사람이 누름'(user activation)으로 친 때만 뜨는데 터치는 뗄 때만 그렇게 친다. 플레이라이트는 page.evaluate마다 '사람이 누름'을 붙여서
+  // 거절을 흉내 낼 수 없으므로, 공유를 어느 손 입력 안에서 불렀는지(window.event)로 본다
+  const stubShare = (page) => page.addInitScript(() => {
+    window.__shared = [];
+    navigator.share = async (data) => { window.__shared.push({ in: window.event?.type ?? null, files: data.files?.length ?? 0 }); };
+    navigator.canShare = () => true;
+  });
+  // 진짜 터치(크롬 개발 도구 신호): 단추 가운데를 누르고 dy만큼 끈 뒤 뗀다. 누르고 있는 동안 공유를 몇 번 불렀는지 돌려준다
+  const touchButton = async (page, label, dy = 0) => {
+    const cdp = await page.context().newCDPSession(page);
+    const r = await page.evaluate((l) => walkoff.ui.buttons.find((b) => b.label === l).r, label), x = r.x + r.w / 2, y = r.y + r.h / 2;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await page.waitForTimeout(300);
+    const during = await page.evaluate(() => window.__shared.length);
+    if (dy) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + dy }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(300);
+    await cdp.detach();
+    return during;
+  };
+  test('터치로 결과 공유하기·되갚기를 누르면 누를 때가 아니라 뗄 때 공유 창을 부르고, 끌어서 단추 밖에서 떼면 안 부른다', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '터치 기기(PC는 마우스라 누를 때 복사한다)');
+    await stubShare(page);
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await endTry(page, { full: true });
+    await page.waitForFunction(() => !!walkoff.game.shareCard?.file);   // 카드 그림은 끝 화면이 뜰 때 미리 만든다
+    expect(await touchButton(page, '결과 공유하기', -80)).toBe(0);
+    expect(await page.evaluate(() => window.__shared)).toEqual([]);
+    expect(await touchButton(page, '결과 공유하기')).toBe(0);
+    expect(await page.evaluate(() => window.__shared)).toEqual([{ in: 'pointerup', files: 1 }]);
+    await page.goto(`${PAGE}${await duelQuery()}`);   // 받은 도전장을 치고 되갚는다
+    await page.waitForFunction(() => !!window.walkoff);
+    await startTap(page);
+    await endTry(page, { score: 500 });
+    await page.waitForFunction(() => !!walkoff.game.shareCard?.file);
+    expect(await touchButton(page, '되갚기')).toBe(0);
+    expect(await page.evaluate(() => window.__shared)).toEqual([{ in: 'pointerup', files: 1 }]);
+    expect(errors).toEqual([]);
+  });
+
+  test('아이패드처럼 폭이 넓은 터치 기기(810×1010)는 PC 배치여도 공유 창으로 보낸다(전에는 복사했다)', async ({ browser, isMobile }) => {
+    test.skip(!isMobile, '터치 기기 흉내는 mo에서 한 번만');
+    const context = await browser.newContext({ viewport: { width: 810, height: 1010 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    await stubShare(page);
+    const errors = await open(page, '?seed=42');
+    expect(await page.evaluate(() => ({ mobile: walkoff.view.mobile, fine: matchMedia('(pointer: fine)').matches }))).toEqual({ mobile: false, fine: false });
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await endTry(page, { full: true });
+    await page.waitForFunction(() => !!walkoff.game.shareCard?.file);
+    await touchButton(page, '결과 공유하기');
+    expect(await page.evaluate(() => window.__shared)).toEqual([{ in: 'pointerup', files: 1 }]);
+    expect(errors).toEqual([]);
+    await context.close();
+  });
+});

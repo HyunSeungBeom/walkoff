@@ -3517,7 +3517,9 @@ function addButton(r, label, style, onTap) {
     ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(r.x + r.w / 2 - tw / 2, r.y + r.h / 2 + 10, tw, 1);
   } else if (style === 'none') {   // 그리지 않고 누르는 자리만(랭킹 줄)
   } else button(r, label, style);
-  ui.buttons.push({ r, onTap, label });
+  const b = { r, onTap, label };   // 모은 단추를 돌려준다(공유 단추에 gesture 표시를 달 때)
+  ui.buttons.push(b);
+  return b;
 }
 
 // 가로 totalW를 n칸으로 고르게 나눈 버튼 자리
@@ -3774,12 +3776,12 @@ function drawShareCard(s, mode) {
 }
 
 // 끝 화면이 뜰 때 카드 그림을 미리 만들어 둔다. 아이폰은 누른 그 순간에 공유를 불러야 해서 누른 뒤에 만들면 늦다.
-// 그림 공유를 쓰는 곳(모바일 공유 창)에서만 만든다
+// 그림 공유를 쓰는 곳(폰·태블릿의 공유 창, touchFirst)에서만 만든다
 // 서버 답으로 '새 최고 기록'이 바뀌어 다시 그릴 때(settleBest)는 새 그림이 다 될 때까지 같은 판의 앞 그림을 쓴다
 function prepareShareCard() {
   const old = game.shareCard?.summary === game.summary ? game.shareCard.file : null;
   game.shareCard = null;
-  if (!view.mobile || !canShareFiles() || !game.summary || !['challenge', 'scenario'].includes(game.mode)) return;
+  if (!touchFirst() || !canShareFiles() || !game.summary || !['challenge', 'scenario'].includes(game.mode)) return;
   const card = { file: old, summary: game.summary };
   game.shareCard = card;
   try {
@@ -3787,13 +3789,14 @@ function prepareShareCard() {
   } catch { /* 그림을 못 만들면 글만 보낸다 */ }
 }
 
-// 모바일은 공유 창을 띄우고(그림 공유가 되면 카드 그림과 글을 함께), 안 되면 클립보드에 복사한다
+// 폰·태블릿은 공유 창을 띄우고(그림 공유가 되면 카드 그림과 글을 함께), 안 되면 클립보드에 복사한다. 아이패드는 폭이 넓어 PC 배치지만 공유 창을 쓴다
+// (2026-11-18 여러 기기 점검). 터치로 누르면 뗄 때 불린다(drawRetryShareButtons의 gesture, linkAt): 공유 창은 브라우저가 '사람이 누름'으로 친 때만 뜬다
 async function shareResult() {
   if (game.sharing) return;   // 공유 창이 떠 있는 동안 또 누르면 무시한다(안드로이드 크롬은 InvalidStateError를 낸다)
   const dare = game.mode === 'challenge' && !game.aim ? dareOf() : null;   // 10구는 도전장으로 보낸다
   if (dare) track('start', 'invite');   // 도전장을 보낸 수(통계, 판 수에는 안 든다)
   const text = shareText(game.summary, game.mode, dare);
-  if (canShareSheet() && view.mobile) {   // 공유 창을 보냈거나 닫았으면 끝, 공유 창이 안 되면 복사한다
+  if (canShareSheet() && touchFirst()) {   // 공유 창을 보냈거나 닫았으면 끝, 공유 창이 안 되면 복사한다
     game.sharing = true;
     try { if (await shareSheet(text, game.shareCard?.file)) return; } finally { game.sharing = false; }
   }
@@ -3869,9 +3872,10 @@ function drawScenarioOver() {
 
 // 10구 도전·끝내기 상황 끝 화면: [결과 공유하기 | 다시 하기] 아래에 처음으로. 스페이스바가 다시 하기라서 그쪽을 강조한다.
 // 도전장 판은 [되갚기(같은 공, 내 점수로 보내기) | 다시 하기] 아래에 도전장을 나가 랭킹 판을 치는 '10구 도전 하기'
+// 공유 단추는 터치·펜이면 뗄 때 누른다(gesture, linkAt)
 function drawRetryShareButtons(y, bw, retry, duel = false) {
   const cx = view.w / 2, [a, b] = rowRects(cx, y, bw, 48, 2);
-  addButton(a, duel ? '되갚기' : '결과 공유하기', 'secondary', shareResult);
+  addButton(a, duel ? '되갚기' : '결과 공유하기', 'secondary', shareResult).gesture = true;
   addButton(b, '다시 하기', 'primary', retry);
   if (duel) addButton({ x: cx - 80, y: y + 58, w: 160, h: 36 }, '10구 도전 하기', 'link', () => { leaveDuel(); startDefault(); });
   else addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
@@ -6118,7 +6122,8 @@ function openOutside(url) {
   if (!w) { location.href = url; return; }
   try { w.opener = null; } catch { /* 벌써 다른 사이트로 넘어갔으면 못 끊는다 */ }
 }
-const linkAt = (x, y) => ui.buttons.find((b) => b.href && inRect(b.r, x, y));
+// 터치·펜이면 뗄 때 실행하는 단추: 바깥 링크(href)와 공유 단추(gesture, 2026-11-18 여러 기기 점검: 끝 화면을 5초 넘게 보고 누르면 공유 창 대신 복사로 넘어갔다)
+const linkAt = (x, y) => ui.buttons.find((b) => (b.href || b.gesture) && inRect(b.r, x, y));
 let giftsAt = 0;   // 메뉴를 열 때 받은 선물을 다시 본 때(performance.now). 처음은 syncAccount가 본다
 function openMenu() {
   game.state = 'menu'; menu.scroll = 0;
@@ -6665,6 +6670,9 @@ function drawAimBat(at, alpha = 1) {
 }
 // 조준 판: 투구 중에는 배트 커서(PC는 마우스 자리, 폰은 누르고 있을 때만), 결과·다시 보기에서는 겨눈 배트와 공이 지난 자리를 점선으로 잇는다
 const finePointer = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
+// 폰 배치이거나 손가락이 먼저인 기기(아이패드처럼 폭이 넓은 터치 기기 포함)는 결과를 공유 창으로 보낸다(2026-11-18 여러 기기 점검:
+// 폭 640 이상은 PC 배치라 아이패드는 공유 창 대신 복사했다)
+const touchFirst = () => view.mobile || !finePointer;
 function drawAimLayer(p) {
   if (camMoved() || !p) return;
   if (game.state === 'windup' || game.state === 'pitch') { if (aimPointer.touch || finePointer) drawAimBat(aimCursor()); return; }
@@ -6982,7 +6990,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
   }
 }
 
-let linkPress = null;   // 바깥 링크를 누른 손가락(pointerId)
+let linkPress = null;   // 바깥 링크·공유 단추를 누른 손가락(pointerId)
 const dragList = () => ({ menu, ranking: rankList, titles: titleList, shop: shopList, gift: giftList })[game.state] ?? null;   // 끌어 넘기는 화면(넘치면 뗄 때 누른다)
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
@@ -6997,7 +7005,7 @@ canvas.addEventListener('pointerdown', (e) => {
     if (!aimPointer.touch) { aimPointer.touch = { id: e.pointerId, x: e.clientX, y: e.clientY }; try { canvas.setPointerCapture(e.pointerId); } catch { /* 이미 뗀 손가락 */ } }
     return;
   }
-  // 바깥 링크(의견 보내기)는 터치·펜이면 뗄 때 연다. 브라우저는 터치를 뗄 때만 사람이 누른 것으로 쳐서 누를 때 연 새 탭은 막는다
+  // 바깥 링크(의견 보내기)와 공유 단추는 터치·펜이면 뗄 때 연다. 브라우저는 터치를 뗄 때만 사람이 누른 것으로 쳐서 누를 때 연 새 탭·공유 창은 막는다
   if (e.pointerType !== 'mouse' && game.state !== 'pitch' && game.state !== 'windup' && linkAt(e.clientX, e.clientY)) { linkPress = e.pointerId; return; }
   primaryAction(e.timeStamp, e.clientX, e.clientY, e.pointerType || 'mouse');
 });
@@ -7015,10 +7023,11 @@ addEventListener('pointerup', (e) => {
   const d = dragList()?.drag;
   menu.drag = rankList.drag = titleList.drag = shopList.drag = giftList.drag = null;
   if (d && !d.moved) primaryAction(d.t, d.x, d.y);
-  if (linkPress != null && e.pointerId === linkPress) {   // 링크 위에서 뗐을 때만 연다
+  if (linkPress != null && e.pointerId === linkPress) {   // 링크·공유 단추 위에서 뗐을 때만 연다
     linkPress = null;
     const b = linkAt(e.clientX, e.clientY);
-    if (b) openOutside(b.href);
+    if (b?.href) openOutside(b.href);
+    else if (b) { Sound.init(); b.onTap(); }   // 공유 단추(gesture)
   }
   const t = aimPointer.touch;
   if (t && e.pointerId === t.id) {   // 조준 판(폰): 떼는 순간 친다. 와인드업 중이거나 지켜본 공 판정이 났으면 아무 일도 없다
