@@ -2,6 +2,7 @@
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const ROOT = path.join(__dirname, '..');
 const PAGE = `http://127.0.0.1:${process.env.WALKOFF_PORT || 4173}/index.html`;   // playwright.config.js의 webServer(scripts/serve.js)
@@ -101,5 +102,44 @@ test.describe('버전 표시', { tag: '@min' }, () => {
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     expect(await page.evaluate(() => walkoff.game.state)).toBe('windup');
     expect(errors).toEqual([]);
+  });
+});
+
+test.describe('주소 옮기기(2026-11-17)', () => {
+  test.skip(({ isMobile }) => isMobile, '파일은 화면 크기와 상관없어서 PC에서만 본다');
+
+  test('게임과 서버가 같은 두 주소를 쓰고, 주소 옮기기 모듈(infra/move.js)이 게임보다 먼저 돈다', async () => {
+    const { OLD_SITE, NEW_SITE } = await import(pathToFileURL(path.join(ROOT, 'js', 'infra', 'site.js')).href);
+    const { SITES } = await import(pathToFileURL(path.join(ROOT, 'worker', 'src', 'auth.js')).href);
+    expect(SITES).toEqual([OLD_SITE, NEW_SITE]);   // 서버가 로그인 뒤 돌려보낼 주소
+    expect(OLD_SITE).toBe(SITE);   // 레포의 미리보기 태그는 옛 주소이고, 새 주소에 올릴 때 CI가 바꾼다
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8'), main = fs.readFileSync(path.join(ROOT, 'js', 'main.js'), 'utf8');
+    const move = html.indexOf('<script type="module" src="js/infra/move.js"></script>');
+    expect(move).toBeGreaterThan(0);
+    expect(move).toBeLessThan(html.indexOf('<link rel="modulepreload"'));   // 게임 모듈보다 먼저 받기 시작한다(옛 주소에서 빨리 떠난다)
+    expect(main.match(/^import .+ from '(\.\/[^']+)';/m)?.[1]).toBe('./infra/move.js');   // main.js도 맨 처음 가져온다(다른 모듈이 저장소를 읽기 전에)
+  });
+
+  test('CI가 새 주소(Cloudflare Pages)에도 올린다: 미리보기 태그만 새 주소로 바꾸고, 비밀값이 없으면 건너뛰고, 옛 주소를 먼저 올린다. 토큰은 따로 잡의 올리는 단계에만 준다', () => {
+    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    expect(ci).toContain(`import('./js/infra/site.js')`);   // 주소는 게임과 같은 곳에서 읽는다
+    expect(ci).toContain('cp -r _site _cf');   // 테스트를 거친 같은 파일(앞 판 모듈 폴더 포함)
+    expect(ci).toContain('sed -i "s|content=\\"${OLD}|content=\\"${NEW}|g" _cf/index.html');
+    expect(ci).toContain('grep -q "<meta property=\\"og:url\\" content=\\"${NEW}\\">" _cf/index.html');
+    expect(ci).toContain('worker/node_modules/.bin/wrangler pages deploy _cf --project-name walkoff --branch main');
+    expect(ci).toMatch(/if \[ -z "\$CLOUDFLARE_API_TOKEN" \] \|\| \[ -z "\$CLOUDFLARE_ACCOUNT_ID" \]; then [^\n]*exit 0; fi/);
+    expect(ci).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');   // 토큰은 레포 비밀값으로만
+    // 2026-11-18 보안 검토: 새 주소는 옛 주소를 올린 뒤 따로 잡에서 올리고, 그 잡에는 옛 주소 배포 권한(id-token)이 없다
+    const cf = ci.slice(ci.indexOf('\n  deploy-cf:'));
+    expect(cf).toContain('\n    needs: deploy\n');
+    expect(cf).not.toContain('id-token');
+    // 비밀값은 올리는 단계 하나에만 주고, 그 단계는 설치하지 않는다(wrangler는 앞 단계에서 비밀값 없이 받는다)
+    expect(ci.match(/secrets\.CLOUDFLARE_\w+/g)).toEqual(['secrets.CLOUDFLARE_API_TOKEN', 'secrets.CLOUDFLARE_ACCOUNT_ID']);
+    const at = cf.indexOf('secrets.CLOUDFLARE_API_TOKEN'), end = cf.indexOf('\n      - ', at);
+    const step = cf.slice(cf.lastIndexOf('\n      - ', at), end < 0 ? undefined : end);
+    expect(step).toContain('wrangler pages deploy _cf');
+    expect(step).not.toMatch(/\bnpm\b|\bnpx\b/);
+    expect(cf.indexOf('npm ci --prefix worker')).toBeGreaterThan(0);
+    expect(cf.indexOf('npm ci --prefix worker')).toBeLessThan(at);
   });
 });

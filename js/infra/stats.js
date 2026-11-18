@@ -2,16 +2,17 @@
 // 모드, 시작·끝, 터치 기기인지만 보내고 랭킹 ID·닉네임·카카오 계정과는 잇지 않는다. 실제 사이트에서 사람이 친 판만 센다:
 // 자동 브라우저(테스트, navigator.webdriver)와 이 컴퓨터에서 연 게임은 빼고, ?api=로 서버를 바꿔 열면 그 서버로 보낸다.
 // 결과는 worker 폴더에서 npm run stats
-// (2026-11-04 코드 나누기 3단계에서 main.js에서 옮김)
+// (2026-11-04 코드 나누기 3단계에서 main.js에서 옮김. 2026-11-17부터 옛 주소·새 주소(infra/site.js) 모두에서 센다)
 // 모아 보내기(2026-11-04): 판 시작·끝마다 보내던 신호가 서버 하루 요청의 65%, DB 쓰기의 60%라 무료 한도(요청·쓰기 하루 10만)에 먼저 걸려서,
 // 날짜별로 모드마다 센 묶음 { device, mobile, day, counts: { 모드: { starts, ends } } }을 화면을 떠날 때·20개가 쌓일 때·날짜가 바뀔 때 보낸다.
 // 묶음은 저장소에도 적어 두어, 창을 갑자기 닫아 못 보낸 것은 다음에 열 때 보낸다(서버는 이틀 전 것까지 받는다)
 // 스윙 결과 수(2026-11-05 조준 타격 실험): 묶음에 swings: { '모드|입력': { swings, contacts, hits, perfect, near, edge, miss } }를 더한다.
 // 모드는 'challenge'(지금 조작의 기준선)·'aim', 입력은 'mouse'·'touch'·'key'. 합계뿐이라 사람이나 기기를 알아볼 값은 없다
 import { RANKING_API } from './api.js';
+import { siteOf } from './site.js';
 import { store } from './store.js';
 
-const STATS_ON = !navigator.webdriver && (location.hostname === 'hyunseungbeom.github.io' || new URLSearchParams(location.search).has('api'));
+const STATS_ON = !navigator.webdriver && (siteOf(location.href) != null || new URLSearchParams(location.search).has('api'));
 const FLUSH_EVENTS = 20, QUEUE_KEY = 'statsQueue';
 const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);   // 서버(worker/src/rules.js kstDay)와 같은 한국 시간 날짜
 let queue = null;   // { day, counts, swings?, n }. 저장소를 못 쓰는 브라우저(사생활 보호 모드)도 이 판 동안은 모아 보낸다

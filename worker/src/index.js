@@ -37,7 +37,7 @@ async function limited(request, env, path, key = request.headers.get('cf-connect
   return !success;
 }
 const tooMany = () => new Response(JSON.stringify({ ok: false, error: 'rate_limited' }), { status: 429, headers: { ...HEADERS, 'retry-after': '60' } });
-const SITE = 'https://hyunseungbeom.github.io/walkoff/';
+const SITE = 'https://hyunseungbeom.github.io/walkoff/';   // 로그인 시간이 지났을 때 '게임으로 돌아가기'. 옛 주소는 넘기기를 켜면 새 주소로 보내 준다(auth.js SITES)
 
 // 합계 방식이던 예전 게임(fa4649a까지)은 사람 점수를 total로 읽는다. 열어 둔 탭까지 다 바뀔 때까지 같은 값을 total로도 보낸다
 const withTotal = (p) => (p ? { ...p, total: p.best } : null);

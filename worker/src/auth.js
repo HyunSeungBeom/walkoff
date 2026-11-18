@@ -41,13 +41,18 @@ export async function sessionPlayer(env, request, nowMs) {
   return m ? (await verify(env.SESSION_SECRET, m[1], 's', nowMs))?.p ?? null : null;
 }
 
-// 로그인 뒤 돌아갈 게임 주소. 배포 주소와 이 컴퓨터에서 띄운 주소만 받는다
+// 게임 주소: 옛 주소(github.io)와 새 주소(walkoff.kr, 2026-11-17). 옛 주소는 열면 새 주소로 넘겨주는 페이지로 남아서 둘 다 받는다.
+// 게임의 js/infra/site.js(OLD_SITE·NEW_SITE)와 같은 값이어야 한다(tests/meta.spec.js가 본다)
+export const SITES = ['https://hyunseungbeom.github.io/walkoff/', 'https://walkoff.kr/'];
+
+// 로그인 뒤 돌아갈 게임 주소. 배포 주소(SITES)의 게임 첫 화면(그 경로나 index.html, 물음표 뒤는 그대로)과 이 컴퓨터에서 띄운 주소만 받는다.
+// 같은 출처의 다른 경로는 받지 않는다: 나중에 그 도메인에 다른 곳으로 보내는 주소가 생기면 # 조각(#login= 표)이 따라간다(2026-11-18 보안 검토)
 export function allowedReturn(raw) {
   let u;
   try { u = new URL(raw); } catch { return null; }
   if (u.username || u.password || u.hash) return null;
   const local = u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
-  const site = u.protocol === 'https:' && u.host === 'hyunseungbeom.github.io' && u.pathname.startsWith('/walkoff/');
+  const site = SITES.some((s) => { const b = new URL(s); return u.origin === b.origin && [b.pathname, `${b.pathname}index.html`].includes(u.pathname); });
   return local || site ? u.href : null;
 }
 

@@ -66,7 +66,7 @@ test('npm run stats 표: 최근 7일만, 날짜마다 한 줄', async () => {
   await env.DB.prepare("INSERT INTO play_stats (day, mode, starts, ends) VALUES (?, 'daily', 5, 5)").bind(old).run();
   assert.deepEqual(env.DB.rows(STATS_SQL), [{
     날짜: today, 기기: 2, '터치 기기': 1, '시작한 판': 3, '끝낸 판': 1,
-    '10구 도전': 1, '끝내기 상황': 1, 연습: 0, '조준 실험': 0, '도전장 판': 0, '도전장 끝': 0, '도전장 보냄': 0,
+    '10구 도전': 1, '끝내기 상황': 1, 연습: 0, '조준 실험': 0, '도전장 판': 0, '도전장 끝': 0, '도전장 보냄': 0, '옛 주소에서 옮김': 0,
   }]);
 });
 
@@ -77,8 +77,17 @@ test('npm run stats 표: 도전장 판의 시작·끝과 보낸 수를 따로 �
   assert.equal((await send(env, ev({ mode: 'duel', type: 'end' }))).status, 204);   // 한 건씩 보내는 꼴도 받는다
   assert.deepEqual(env.DB.rows(STATS_SQL), [{
     날짜: today, 기기: 1, '터치 기기': 1, '시작한 판': 8, '끝낸 판': 4,
-    '10구 도전': 5, '끝내기 상황': 0, 연습: 0, '조준 실험': 0, '도전장 판': 3, '도전장 끝': 3, '도전장 보냄': 4,
+    '10구 도전': 5, '끝내기 상황': 0, 연습: 0, '조준 실험': 0, '도전장 판': 3, '도전장 끝': 3, '도전장 보냄': 4, '옛 주소에서 옮김': 0,
   }]);
+});
+
+// 주소 옮기기(2026-11-17, js/infra/move.js): 옛 주소의 기록을 새 주소로 가져온 기기(move)는 starts에만 세고 판 합계에서 뺀다
+test('npm run stats 표: 옛 주소에서 기록을 가져온 기기 수를 따로 보이고, 판 합계에는 넣지 않는다', async () => {
+  const env = { DB: memoryD1() }, today = kstDay(Date.now());
+  assert.equal((await send(env, { device: 'd-device-0001', mobile: true, day: today, counts: { move: { starts: 1, ends: 0 }, challenge: { starts: 2, ends: 1 } } })).status, 204);
+  assert.equal((await send(env, { device: 'd-device-0002', mobile: false, day: today, counts: { move: { starts: 1, ends: 0 } } })).status, 204);
+  const [row] = env.DB.rows(STATS_SQL);
+  assert.deepEqual([row['기기'], row['시작한 판'], row['끝낸 판'], row['10구 도전'], row['옛 주소에서 옮김']], [2, 2, 1, 2, 2]);
 });
 
 // 게임이 모아 보내는 묶음(2026-11-04, js/infra/stats.js): { device, mobile, day, counts: { 모드: { starts, ends } } }

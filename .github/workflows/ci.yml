@@ -1,5 +1,7 @@
-# main에 push하면 테스트를 돌리고, 통과했을 때만 GitHub Pages에 배포한다.
+# main에 push하면 테스트를 돌리고, 통과했을 때만 GitHub Pages(옛 주소)와 Cloudflare Pages(새 주소 walkoff.kr, 2026-11-17)에 배포한다.
 # 배포 단계가 동작하려면 저장소 설정에서 Pages의 Source가 "GitHub Actions"여야 한다.
+# Cloudflare Pages는 레포 비밀값 CLOUDFLARE_API_TOKEN(계정 권한 Cloudflare Pages 편집)·CLOUDFLARE_ACCOUNT_ID와 프로젝트 walkoff가 있어야 하고, 없으면 건너뛴다.
+# 테스트를 거치지 않고 올라가는 Cloudflare Pages의 Git 연결 빌드는 쓰지 않는다
 name: test-and-deploy
 
 on:
@@ -73,9 +75,51 @@ jobs:
           grep -q "src=\"js-${GITHUB_SHA::7}/main.js\"" _site/index.html
           for f in $(grep -o 'modulepreload" href="[^"]*"' _site/index.html | cut -d'"' -f3); do test -f "_site/$f"; done   # 미리 받는 모듈이 모두 올라갔다
           node scripts/keep-prev.js https://hyunseungbeom.github.io/walkoff/ _site   # 지금 배포된 판의 모듈 폴더도 남긴다(10분 캐시된 옛 index.html이 찾는다)
+      - name: 새 주소에 올릴 판(같은 파일에 미리보기 태그만 새 주소로, 주소는 js/infra/site.js)
+        run: |
+          read -r OLD NEW <<< "$(node -e "import('./js/infra/site.js').then((s) => console.log(s.OLD_SITE, s.NEW_SITE))")"
+          cp -r _site _cf
+          sed -i "s|content=\"${OLD}|content=\"${NEW}|g" _cf/index.html
+          grep -q "<meta property=\"og:url\" content=\"${NEW}\">" _cf/index.html
+          grep -q "<meta property=\"og:image\" content=\"${NEW}og.png\">" _cf/index.html
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cf-site
+          path: _cf
+          retention-days: 1
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  # 새 주소(Cloudflare Pages)는 따로 잡에서 올린다(2026-11-18 보안 검토): 옛 주소 배포 권한(id-token)이 없고, 토큰은 올리는 단계에만 준다.
+  # 옛 주소 다음에 올린다(Cloudflare가 막혀도 옛 주소는 배포된다). 새 주소는 index.html을 매번 다시 확인해서(max-age=0) 10분 캐시 문제는 작지만 앞 판 폴더는 같이 간다
+  deploy-cf:
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: cloudflare-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci --prefix worker   # wrangler(worker/package.json에 고정한 판). 설치 스크립트가 토큰을 못 보게 비밀값 없는 단계에서 받는다
+      - uses: actions/download-artifact@v8
+        with:
+          name: cf-site
+          path: _cf
+      - name: 새 주소(Cloudflare Pages)에 올리기. 비밀값을 넣기 전에는 건너뛴다
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then echo "::notice::Cloudflare 비밀값이 없어 새 주소 배포를 건너뛴다"; exit 0; fi
+          worker/node_modules/.bin/wrangler pages deploy _cf --project-name walkoff --branch main --commit-hash "$GITHUB_SHA" --commit-message "${GITHUB_SHA::7}" --commit-dirty=true

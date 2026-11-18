@@ -1,5 +1,8 @@
 // walkoff 게임: 화면, 수비·주루 그림, 진행, 입력, 랭킹·상점. 판정 규칙은 js/core/, 장면 계산(수비 일정·주루·뼈대)은 js/sim/, 화면 글은 js/view/text.js, 판 상태는 js/game/state.js,
 // 바깥 연결(저장소·랭킹 서버·로그인·시드·소리·공유·통계·진동)은 js/infra/에서 가져온다(2026-11-03 코드 나누기 2단계, 2026-11-04 3단계, 2026-11-06 4단계. 나머지도 차례로 나눈다)
+// 주소 옮기기(infra/move.js)는 맨 먼저 가져온다: 옛 주소면 기록을 넘기고 새 주소로 가며 여기서 멈추고, 새 주소면 받은 기록을 다른 모듈이 저장소를 읽기 전에 넣는다
+import { movedIn } from './infra/move.js';
+import { shareSite } from './infra/site.js';
 import { clamp, DEG, easeOut, lerp, mulberry32, pickWeighted, polar } from './core/math.js';
 import { BALL_R, BASE1, BASE2, BASE3, FAIR_SPRAY, fenceDist, INFIELDERS, MOUND, OUTFIELDERS, RELEASE, ZONE } from './core/field.js';
 import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, REACH_M, STYLE_START, styleOn, zoneMiss } from './core/pitches.js';
@@ -3634,7 +3637,7 @@ function drawCalib() {
 // ===== 하루 기록 =====
 // 오늘의 10구(날짜마다 같은 공, 하루 첫 판만 기록)는 2026-10-30 사용자 결정으로 없앴다. 사람들은 그냥 마음껏 치고 싶어 했다.
 // 서버는 예전 탭에서 오는 오늘의 10구 점수도 그날 공 순서로 검사해 받는다(worker/src/rules.js)
-const SHARE_URL = 'https://hyunseungbeom.github.io/walkoff/';
+const SHARE_URL = shareSite(location.href);   // 공유 글·도전장·카드에 적는 게임 주소: 지금 열린 주소(옛 주소면 옛 주소, infra/site.js)
 const today = (now = Date.now()) => new Date(now + 9 * 3600e3).toISOString().slice(0, 10);
 // 10구 도전을 끝까지 친 날(played.날짜)과 예전 오늘의 10구 기록(daily.날짜). 이 브라우저 기록이라 기기를 바꾸면 처음부터다
 const playedDays = () => new Set(['played.', 'daily.'].flatMap((pre) => store.keys(pre).map((k) => k.slice(pre.length))));
@@ -3766,7 +3769,7 @@ function drawShareCard(s, mode) {
   const cnt = (ch) => codes.filter((x) => x === ch).length;
   t(scn ? `타석 ${codes.length} · 안타 ${cnt('G')} · 볼넷 ${cnt('Y')} · 투구 ${s.pitches}개` : `홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`,
     810, 40, 600, 'rgba(255,255,255,0.88)');
-  t('walkoff · hyunseungbeom.github.io/walkoff', 980, 36, 600, 'rgba(255,255,255,0.6)');
+  t(SITE_LABEL, 980, 36, 600, 'rgba(255,255,255,0.6)');
   return c;
 }
 
@@ -4675,9 +4678,12 @@ function drawLoginPrompt() {
 }
 
 // 내 계정(로그인했을 때) 또는 카카오 로그인 안내(안 했을 때). 개인정보 안내도 여기 둔다
+// (2026-11-17 사용자: 선물 찾기, 이용 통계(worker/src/stats.js), 도전장 주소(game/duel.js)에 실리는 값을 더했다)
 const PRIVACY = [
   '카카오에서는 회원번호만 받아 알아볼 수 없게 저장해요.',
-  '닉네임·팀·점수와 함께 랭킹에만 써요.',
+  '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인 같은 내 기록에만 써요.',
+  '판 수·스윙 수를 세는 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
+  '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
   '랭킹 기록 지우기를 누르면 바로 모두 지워요.',
 ];
 function openAccount() { Object.assign(game, { state: 'account', account: { confirm: false } }); }
@@ -4705,7 +4711,8 @@ function drawAccount() {
     y += (m ? 24 : 28) + 60;
   }
   y += m ? 8 : 12;
-  PRIVACY.forEach((l) => { text(l, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' }); y += m ? 18 : 21; });
+  ctx.font = font(m ? 11 : 13, 500);   // 화면보다 긴 문장은 띄어쓰기 자리에서 나눈다(wrapWords는 지금 글꼴로 잰다)
+  PRIVACY.flatMap((l) => wrapWords(l, m ? view.w - 40 : 520)).forEach((l) => { text(l, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' }); y += m ? 18 : 21; });
   addButton({ x: cx - 70, y: y + 8, w: 140, h: 36 }, '닫기', 'link', goTitle);
 }
 
@@ -7265,6 +7272,7 @@ initNews();
 resize();
 loginReturned();
 openDuelLink();   // 처음 온 사람도 팀 고르기 없이 시작 화면부터(팀은 첫 판 끝 화면에서 고른다, 2026-11-16)
+if (movedIn) track('start', 'move');   // 옛 주소에서 기록을 가져온 기기 수(통계, 판 수에는 안 든다)
 requestAnimationFrame(frame);
 syncAccount();
 prefetchSeed();   // 첫 판을 바로 시작할 수 있게 계정 확인과 함께 받는다

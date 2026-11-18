@@ -2200,6 +2200,31 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  // 개인정보 안내(2026-11-17 사용자: 선물 찾기·이용 통계·도전장 주소를 더해 다섯 문장). 폰 11px에서 통계 문장은 400px가 넘어 띄어쓰기 자리에서 나눠 그린다
+  test('내 계정: 개인정보 안내는 좁은 폰(360)에서도 긴 문장을 나눠 화면 안에 다 보이고, 닫기 단추와 겹치지 않는다', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    const errors = await open(page, '?seed=42', { login: true });
+    await page.waitForFunction(() => walkoff.settings.playerId === 'p-account-0001');
+    await page.evaluate(() => walkoff.openAccount());
+    const { rows, close, w } = await page.evaluate(() => {
+      const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, out = [];
+      proto.fillText = function (s, x, y, ...rest) { out.push({ s: String(s), x, y, w: this.measureText(String(s)).width, font: this.font, color: this.fillStyle }); return fill.call(this, s, x, y, ...rest); };
+      try { walkoff.render(performance.now() / 1000); } finally { proto.fillText = fill; }
+      return { rows: out.filter((o) => o.color === 'rgba(255, 255, 255, 0.55)' && o.font.includes('11px')), close: walkoff.ui.buttons.find((b) => b.label === '닫기').r, w: walkoff.view.w };
+    });
+    expect(rows.map((r) => r.s).join(' ')).toBe([
+      '카카오에서는 회원번호만 받아 알아볼 수 없게 저장해요.',
+      '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인 같은 내 기록에만 써요.',
+      '판 수·스윙 수를 세는 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
+      '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
+      '랭킹 기록 지우기를 누르면 바로 모두 지워요.',
+    ].join(' '));
+    expect(rows.length).toBeGreaterThan(5);   // 통계 문장은 두 줄
+    for (const r of rows) expect([r.s, Math.round(r.x - r.w / 2) >= 8 && Math.round(r.x + r.w / 2) <= w - 8]).toEqual([r.s, true]);
+    expect(rows.at(-1).y + 8).toBeLessThan(close.y);
+    expect(errors).toEqual([]);
+  });
+
   test('메뉴에서 팀·닉네임을 바꾸고 엔터로 저장한다. 로그인했으면 계정에도 적는다', async ({ page }) => {
     const errors = await open(page, '?seed=42', { login: true });
     await tap(page, '메뉴');

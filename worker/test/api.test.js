@@ -124,6 +124,24 @@ test('로그인 실패: 취소, 카카오 오류, 망가진 확인 표', async (
   assert.deepEqual((await login('c4')).hash, { login_error: 'server', n: N });
 });
 
+// 새 주소(2026-11-17 주소 옮기기): walkoff.kr에서 시작한 로그인은 walkoff.kr로 돌아간다. 옛 주소도 그대로 받는다(옛 주소는 새 주소로 넘겨준다).
+// 두 주소 모두 게임 첫 화면만 받는다(2026-11-18 보안 검토): 같은 도메인의 다른 경로가 다른 곳으로 보내면 #login= 표가 따라간다
+test('새 주소 walkoff.kr도 돌아갈 주소로 받고, 로그인하면 그 주소로 돌아간다. 비슷하게 생긴 주소와 첫 화면이 아닌 경로는 거절한다', async () => {
+  const NEW = 'https://walkoff.kr/';
+  for (const back of [NEW, `${NEW}?vs=abc`, `${NEW}index.html?seed=42`, `${NEW}x/../?vs=abc`, SITE, `${SITE}index.html?vs=abc`]) assert.equal(allowedReturn(back), new URL(back).href, back);
+  for (const back of ['http://walkoff.kr/', 'https://www.walkoff.kr/', 'https://walkoff.kr.evil.example/', 'https://evil.example/?r=https://walkoff.kr/', 'https://walkoff.kr:8443/', `${NEW}#login=x`, 'https://user@walkoff.kr/',
+    `${NEW}og.png`, `${NEW}cdn-cgi/trace`, `${NEW}js-abc1234/main.js`, `${NEW}index.html/`, `${NEW}go?to=https://evil.example/`, `${NEW}walkoff/`, `${SITE}og.png`, `${SITE}js-abc1234/`, 'https://hyunseungbeom.github.io/']) {
+    assert.equal(allowedReturn(back), null, back);
+    assert.equal((await start({ return: back })).status, 400, back);
+  }
+  const kakao = new URL((await start({ return: `${NEW}?vs=abc` })).headers.get('location'));
+  const cb = await call('GET', `/auth/kakao/callback?${new URLSearchParams({ code: 'c1', state: kakao.searchParams.get('state') })}`);
+  const back = new URL(cb.headers.get('location')), hash = new URLSearchParams(back.hash.slice(1));
+  assert.equal(`${back.origin}${back.pathname}${back.search}`, `${NEW}?vs=abc`);
+  assert.equal(hash.get('n'), N);
+  assert.ok(await verify(env.SESSION_SECRET, hash.get('login'), 's', Date.now()));   // 새 주소에서 쓸 로그인 표
+});
+
 test('점수는 로그인해야 받고, 사람 ID는 로그인 표에서 꺼낸다. 그날 가장 높은 판만 남는다', async () => {
   assert.equal((await call('POST', '/scores', { body: score(NO_TICKET, { playerId: 'someone-else' }) })).status, 401);
   assert.equal((await call('POST', '/scores', { body: score(NO_TICKET), token: 'forged.token' })).status, 401);
