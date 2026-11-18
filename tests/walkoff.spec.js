@@ -5450,3 +5450,118 @@ test.describe('여러 기기(2026-11-18): 뗄 때 공유·낮은 화면·가로 
     expect(errors).toEqual([]);
   });
 });
+
+test.describe('느린 폰 자동 품질(2026-11-17)', () => {
+  // 지금 단계와 그리기 배율(기기 배율과 단계 상한 중 작은 것), 이 기기에 적힌 값
+  const quality = (page) => page.evaluate(() => ({ level: walkoff.quality.level, auto: walkoff.quality.auto, dpr: walkoff.view.dpr, cw: document.querySelector('canvas').width, w: walkoff.view.w,
+    device: window.devicePixelRatio, stored: JSON.parse(localStorage.getItem('walkoff.quality')), rounds: walkoff.quality.rounds, today: walkoff.today() }));
+  // 기기 흉내: 단계마다 장면 간격(gap)·일한 시간(work, ms). 모아 둔 장면은 버리고 새로 잰다
+  const pretend = (page, gaps, work = 3) => page.evaluate(([gaps, work]) => { Object.assign(walkoff.quality, { fake: (l) => ({ gap: gaps[l], work }), gaps: [], works: [], spent: 0 }); }, [gaps, work]);
+  const levelIs = (page, level) => expect.poll(() => page.evaluate(() => walkoff.quality.level), { timeout: 30_000 }).toBe(level);
+  const roundsAtLeast = (page, n) => expect.poll(() => page.evaluate(() => walkoff.quality.rounds), { timeout: 30_000 }).toBeGreaterThanOrEqual(n);
+  const reopen = async (page) => { await page.reload(); await page.waitForFunction(() => !!window.walkoff); };
+  // 단계가 바뀐 차례(잠깐 바꿔 봤다 되돌린 것까지). 연 뒤에 한 번 건다
+  const watchLevels = (page) => page.evaluate(() => {
+    const seen = (window.__levels = [walkoff.quality.level]);
+    const tick = () => { if (walkoff.quality.level !== seen.at(-1)) seen.push(walkoff.quality.level); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  });
+  const levelsAre = (page, levels) => expect.poll(() => page.evaluate(() => window.__levels), { timeout: 30_000 }).toEqual(levels);
+
+  test('자동 브라우저는 맨 위 단계로 고정이고 적힌 단계도 안 따른다. ?quality=0~2는 그 단계로 고정하고 재지도 적지도 않는다. ?fps=1에 단계가 보인다', async ({ page }) => {
+    await page.addInitScript(() => { if (!localStorage.getItem('walkoff.quality')) localStorage.setItem('walkoff.quality', '{"level":0}'); });   // 전에 낮춘 기기
+    const errors = await open(page, '?seed=42&fps=1');
+    let s = await quality(page);
+    expect(s).toMatchObject({ level: 2, auto: false, dpr: Math.min(s.device, 2), stored: { level: 0 } });
+    expect(s.cw).toBe(Math.round(s.w * s.dpr));
+    await expect.poll(() => page.evaluate(() => document.body.innerText)).toContain('품질 2/2 고정');
+    for (const [q, cap] of [[1, 1.5], [0, 1], [2, 2]]) {
+      await page.goto(`${PAGE}?seed=42&quality=${q}`);
+      await page.waitForFunction(() => !!window.walkoff);
+      s = await quality(page);
+      expect(s).toMatchObject({ level: q, auto: false, dpr: Math.min(s.device, cap), stored: { level: 0 } });
+      expect(s.cw).toBe(Math.round(s.w * s.dpr));
+    }
+    await page.waitForTimeout(2000);
+    expect(await quality(page)).toMatchObject({ level: 2, rounds: 0, stored: { level: 0 } });
+    expect(errors).toEqual([]);
+  });
+
+  test('느린 기기 흉내: 치기 전 장면을 모아 한 단계씩 낮추고 이 기기에 적는다. 공이 날아오는 중이나 맞은 뒤에는 재지도 바꾸지도 않고, 투수가 움직이기 전에 바꾼다', async ({ page }) => {
+    const errors = await open(page, '?seed=42&quality=auto');
+    expect(await quality(page)).toMatchObject({ level: 2, auto: true, stored: null });
+    await pretend(page, [16.7, 16.7, 45]);   // 2단계에서 초당 22장면, 낮추면 60장면
+    await levelIs(page, 1);
+    let s = await quality(page);
+    expect(s).toMatchObject({ stored: { level: 1 }, dpr: Math.min(s.device, 1.5) });
+    expect(s.cw).toBe(Math.round(s.w * s.dpr));
+    await roundsAtLeast(page, s.rounds + 1);
+    expect(await page.evaluate(() => walkoff.quality.level), '낮춰서 빨라지면 그 단계').toBe(1);
+    // 10구를 치는 동안 1단계도 느려진다(폰이 뜨거워졌다): 장면마다(게임이 그린 뒤) 상태·와인드업 시계·모은 장면 수·단계를 적고, 결과가 나오면 다음 공
+    const log = await page.evaluate(() => new Promise((done) => {
+      const w = walkoff, g = w.game, out = [];
+      Object.assign(w.quality, { fake: (l) => ({ gap: l === 0 ? 16.7 : 45, work: 3 }), gaps: [], works: [], spent: 0 });
+      w.startGame('challenge');
+      const tick = () => {
+        out.push({ st: g.state, t: g.t, n: w.quality.gaps.length, level: w.quality.level });
+        if (g.state === 'result' && g.resultT > g.revealAt + 0.3) w.tap();
+        if (out.length >= 3000 || w.quality.level === 0) done(out); else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }));
+    expect(log.at(-1).level).toBe(0);
+    for (let i = 1; i < log.length; i++) {
+      const [a, b] = [log[i - 1], log[i]];
+      if (b.st !== 'title' && b.st !== 'windup') expect(b.n, `${b.st}에서는 모으지 않는다`).toBeLessThanOrEqual(a.n);
+      if (b.level !== a.level) expect(b.st === 'title' || (b.st === 'windup' && b.t < 0.05), `바꾼 장면 ${JSON.stringify(b)}`).toBe(true);
+    }
+    expect(log.some((x) => x.st === 'pitch') && log.some((x) => x.st === 'result'), '공을 하나 넘게 보냈다').toBe(true);
+    s = await quality(page);
+    expect(s).toMatchObject({ stored: { level: 0 }, dpr: Math.min(s.device, 1) });
+    expect(errors).toEqual([]);
+  });
+
+  test('낮춰도 그대로인 기기(아이폰 저전력 모드의 초당 30장면 고정): 되돌리고 그날은 다시 낮추지 않는다', async ({ page }) => {
+    const errors = await open(page, '?seed=42&quality=auto');
+    await watchLevels(page);
+    await pretend(page, [33.4, 33.4, 33.4], 2);
+    await levelsAre(page, [2, 1, 2]);
+    let s = await quality(page);
+    expect(s.stored).toEqual({ level: 2, noDown: s.today });
+    await roundsAtLeast(page, s.rounds + 2);
+    expect(await page.evaluate(() => window.__levels)).toEqual([2, 1, 2]);
+    await reopen(page);
+    await watchLevels(page);
+    await pretend(page, [33.4, 33.4, 33.4], 2);
+    await roundsAtLeast(page, 2);
+    s = await quality(page);
+    expect(s).toMatchObject({ level: 2, stored: { level: 2, noDown: s.today }, dpr: Math.min(s.device, 2) });
+    expect(await page.evaluate(() => window.__levels)).toEqual([2]);
+    expect(errors).toEqual([]);
+  });
+
+  test('다시 열면 적힌 단계로 시작해 다시 재고, 빨라졌으면 열 때마다 한 단계만 올린다. 올렸더니 느리면 되돌리고 그날은 다시 올리지 않는다', async ({ page }) => {
+    await page.addInitScript(() => { if (!localStorage.getItem('walkoff.quality')) localStorage.setItem('walkoff.quality', '{"level":0}'); });
+    const errors = await open(page, '?seed=42&quality=auto');
+    let s = await quality(page);
+    expect(s).toMatchObject({ level: 0, auto: true, dpr: Math.min(s.device, 1) });
+    await pretend(page, [16.7, 16.7, 16.7], 2);   // 이제 빠르다(다른 앱을 닫았거나 폰이 식었다)
+    await levelIs(page, 1);
+    await roundsAtLeast(page, 3);
+    expect(await quality(page)).toMatchObject({ level: 1, stored: { level: 1 } });   // 열고 처음 정할 때만 올린다
+    await reopen(page);
+    expect(await quality(page)).toMatchObject({ level: 1, rounds: 0 });
+    await watchLevels(page);
+    await pretend(page, [16.7, 16.7, 45], 2);   // 2단계는 아직 버겁다
+    await levelsAre(page, [1, 2, 1]);
+    s = await quality(page);
+    expect(s.stored).toEqual({ level: 1, noUp: s.today });
+    await reopen(page);
+    await watchLevels(page);
+    await pretend(page, [16.7, 16.7, 45], 2);
+    await roundsAtLeast(page, 2);
+    expect(await quality(page)).toMatchObject({ level: 1 });
+    expect(await page.evaluate(() => window.__levels)).toEqual([1]);
+    expect(errors).toEqual([]);
+  });
+});

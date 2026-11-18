@@ -23,6 +23,7 @@ import { actorSkeleton, actorState, CATCHER_F, DEFENSE, FIELDERS, fieldersAt, fi
 import { baseRunnersAt, DUGOUT, runnerAt, scenarioRuns as scenarioRunsIn, walkoffTime as walkoffTimeIn } from './sim/runner.js';
 import { faceMood, facesFor } from './sim/faces.js';
 import { addTiming, labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, STYLE_NAMES, STYLE_TIPS, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
+import { nextQuality, QUALITY, QUALITY_MIN_FRAMES, QUALITY_TOP, QUALITY_WINDOW_MS, qualityStart, qualityStats } from './view/quality.js';
 import { game, settings } from './game/state.js';
 import { cleanNick, duelCode, duelEntry, duelLog, parseDuel } from './game/duel.js';
 import { api, auth, fetchRanking, loggedIn, postScenario, postScore, RANKING_API } from './infra/api.js';
@@ -60,7 +61,7 @@ const camMoved = () => camOffset() > 0.3;
 const FONT = "-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif";
 const font = (size, weight = 700) => `${weight} ${Math.round(size)}px ${FONT}`;
 function resize() {
-  view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  view.dpr = Math.min(window.devicePixelRatio || 1, quality.q.dpr);   // 그리기 배율은 품질 단계(맨 위 2배)까지
   view.w = window.innerWidth; view.h = window.innerHeight;
   canvas.width = Math.round(view.w * view.dpr); canvas.height = Math.round(view.h * view.dpr);
   view.mobile = view.w < 640;
@@ -488,7 +489,8 @@ function drawScoreboard() {
         if (k <= 0) return;
         const pop = 1 + 0.35 * Math.sin(k * Math.PI) * (1 - k);
         ctx.save(); ctx.translate(x0 + i * step, cy + Math.sin(u * 6 + n) * R.h * 0.02); ctx.scale(pop, pop);
-        ctx.shadowColor = alt; ctx.shadowBlur = size * 0.4; ctx.fillStyle = hr && !blink ? alt : '#ffffff'; ctx.fillText(ch, 0, 0); ctx.restore();
+        if (quality.q.glow) { ctx.shadowColor = alt; ctx.shadowBlur = size * 0.4; }
+        ctx.fillStyle = hr && !blink ? alt : '#ffffff'; ctx.fillText(ch, 0, 0); ctx.restore();
       });
     });
     ctx.restore();
@@ -3084,7 +3086,7 @@ const LIGHT_BY_CODE = { S: LIGHT.hit, D: LIGHT.hit, T: LIGHT.hit, G: LIGHT.hit, 
 
 function drawLight(x, y, radius, color) {
   ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = radius * 1.8;
+  ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = quality.q.glow ? radius * 1.8 : 0;
   ctx.fill();
   ctx.shadowBlur = 0;
 }
@@ -3101,7 +3103,7 @@ function drawMark(x, y, radius, code) {
   const R = radius * STAR_K;
   ctx.save();
   starPath(ctx, x, y, R);
-  ctx.fillStyle = LIGHT.hit; ctx.shadowColor = LIGHT.hit; ctx.shadowBlur = R * 0.9; ctx.fill();
+  ctx.fillStyle = LIGHT.hit; ctx.shadowColor = LIGHT.hit; ctx.shadowBlur = quality.q.glow ? R * 0.9 : 0; ctx.fill();
   ctx.shadowBlur = 0; ctx.lineJoin = 'round'; ctx.lineWidth = R * 0.16; ctx.strokeStyle = LIGHT.hit; ctx.stroke();
   ctx.restore();
 }
@@ -3116,7 +3118,7 @@ function roundRect(x, y, w, h, r) {
 
 function text(str, x, y, { size = 16, weight = 700, color = '#fff', align = 'center', shadow = false } = {}) {
   ctx.font = font(size, weight); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'middle';
-  if (shadow) { ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 10; }
+  if (shadow && quality.q.glow) { ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 10; }
   ctx.fillText(str, x, y);
   ctx.shadowBlur = 0;
 }
@@ -3360,7 +3362,7 @@ function ledNote(str, cy) {
   roundRect(view.w / 2 - w / 2, cy - h / 2, w, h, 6); ctx.fillStyle = '#12060a'; ctx.fill();
   ctx.strokeStyle = 'rgba(255,70,60,0.75)'; ctx.lineWidth = 1.5; ctx.stroke();
   for (const e of [-1, 1]) { ctx.fillStyle = `rgba(255,70,60,${blink})`; ctx.beginPath(); ctx.arc(view.w / 2 + e * (w / 2 - 12), cy, 3, 0, Math.PI * 2); ctx.fill(); }
-  ctx.shadowColor = '#ff5a3c'; ctx.shadowBlur = 8;
+  if (quality.q.glow) { ctx.shadowColor = '#ff5a3c'; ctx.shadowBlur = 8; }
   text(str, view.w / 2, cy + 1, { size, weight: 800, color: `rgba(255,214,120,${0.85 + 0.15 * blink})` });
   ctx.restore();
 }
@@ -6196,7 +6198,7 @@ function menuButtonRect() {
 }
 function drawMenuButton(b, unread) {
   const cy = b.y + b.h / 2;
-  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 2;
+  ctx.save(); if (quality.q.glow) { ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 2; }
   roundRect(b.x, b.y, b.w, b.h, b.h / 2); ctx.fillStyle = 'rgba(6,14,28,0.85)'; ctx.fill(); ctx.restore();
   roundRect(b.x, b.y, b.w, b.h, b.h / 2); ctx.strokeStyle = 'rgba(242,201,76,0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = '#f2c94c';
@@ -6209,7 +6211,7 @@ function drawMenuBubble(b) {
   const m = view.mobile, size = m ? 13 : 14, str = '끝내기 상황·연습·랭킹은 여기 있어요';
   ctx.font = font(size, 700);
   const w = ctx.measureText(str).width + 26, h = size + 18, x = view.w - (m ? 8 : 12) - w, y = b.y + b.h + (m ? 10 : 12), ax = clamp(b.x + b.w / 2, x + 16, x + w - 16);
-  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 4;
+  ctx.save(); if (quality.q.glow) { ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 4; }
   roundRect(x, y, w, h, 10); ctx.fillStyle = '#ffffff'; ctx.fill(); ctx.restore();
   ctx.beginPath(); ctx.moveTo(ax - 7, y + 0.5); ctx.lineTo(ax, y - 7); ctx.lineTo(ax + 7, y + 0.5); ctx.closePath(); ctx.fill();
   text(str, x + w / 2, y + h / 2 + 0.5, { size, weight: 700, color: '#141414' });
@@ -7240,12 +7242,17 @@ function frame(now) {
   const dt = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000)), gap = now - lastFrame;
   lastFrame = now;
   if (!window.walkoff?.paused) {   // 영상 찍기 도구는 멈춰 두고 walkoff.update·render를 직접 부른다
-    const t0 = fpsMeter && performance.now();
+    if (quality.want != null && qualityMayChange()) setQuality(quality.want);   // 새 단계는 그리기 전에 바꾼다(그린 뒤에 캔버스 크기를 바꾸면 빈 장면이 한 번 보인다)
+    const t0 = fpsMeter || quality.auto ? performance.now() : null;
     settleAway();
     if (!game.away && pitching() && sideways()) game.away = { ready: null };   // 가로로 돌리면 공을 멈춘다(세로로 돌아오면 '멈췄어요')
     if (!game.away) update(dt);   // 다른 앱에 다녀와 멈춘 공은 시간이 가지 않는다
     render(now / 1000);
-    fpsMeter?.frame(now, gap, performance.now() - t0);
+    if (t0 != null) {
+      const work = performance.now() - t0;
+      fpsMeter?.frame(now, gap, work);
+      if (quality.auto) sampleQuality(work, gap);
+    }
   }
   requestAnimationFrame(frame);
 }
@@ -7279,9 +7286,46 @@ function makeFpsMeter() {
       const w = rows.map((r) => r[2]).sort((a, b) => a - b), g = rows.map((r) => r[1]).sort((a, b) => a - b), mid = q(g, 0.5);
       el.textContent = `그리기 가운데 ${ms(q(w, 0.5))} · 95% ${ms(q(w, 0.95))}\n최대 ${ms(w[w.length - 1])}ms · 16.7 넘음 ${w.filter((x) => x > 16.7).length}\n`
         + `간격 ${ms(mid)}ms · 끊김 ${g.filter((x) => x > mid * 1.5).length}/${g.length}\n`
-        + `맞는 순간 처음 ${hitText(hits.first)}\n최근 ${hitText(hits.last)} · 최대 ${hitText(hits.worst)}`;   // 맞는 순간: 스윙 처리+첫 장면(ms)
+        + `맞는 순간 처음 ${hitText(hits.first)}\n최근 ${hitText(hits.last)} · 최대 ${hitText(hits.worst)}\n`   // 맞는 순간: 스윙 처리+첫 장면(ms)
+        + `품질 ${quality.level}/${QUALITY_TOP} ${quality.auto ? '자동' : '고정'} · 배율 ${view.dpr}`
+        + (quality.last ? `\n잰 간격 ${ms(quality.last.gapMid)} · 95% ${ms(quality.last.gap95)} · 일 95% ${ms(quality.last.work95)}` : '');   // 마지막으로 정할 때 모은 치기 전 장면
     },
   };
+}
+
+// ===== 그리기 품질(2026-11-17 느린 폰 자동 품질, 작업 글 ~/.claude/plans/walkoff-quality.md) =====
+// 단계(view/quality.js QUALITY)는 그리기만 바꾼다. 치기 전 장면(시작 화면·와인드업)의 장면 간격과 일한 시간을 3초쯤 모아 nextQuality로 정하고,
+// 바뀌면 이 기기에 적어 두었다가(walkoff.quality) 다음에 열 때 그 단계로 시작해 다시 잰다. 공이 날아오는 중이나 맞은 뒤에는 재지도 바꾸지도 않는다
+// (화면이 갑자기 바뀌지 않게). 정한 단계는 시작 화면이나 와인드업에서 투수가 움직이기 전(game.t < 0, 0.5초)에 바꾼다.
+// 연 직후 1.5초와 장면이 바뀐 직후 몇 장면은 그림을 새로 굽는 장면(관중·전광판)과 처음 도는 코드가 끼어서 건너뛴다.
+// 주소 ?quality=0~2는 그 단계로 고정(재지도 적지도 않는다). 자동 브라우저(테스트·골든 기록, navigator.webdriver)는 맨 위 단계로 고정하고
+// ?quality=auto면 잰다. fake는 테스트가 기기 흉내를 낼 때 쓴다: 단계를 받아 그 단계의 { gap, work }(ms)를 돌려주면 잰 값 대신 쓴다
+const QUALITY_BOOT_MS = 1500, QUALITY_SETTLE = 10;   // 건너뛰기: 연 직후(치기 전 장면 시간), 장면·단계·화면 크기가 바뀐 직후(장면 수)
+const quality = makeQuality();
+function makeQuality() {
+  const arg = new URLSearchParams(location.search).get('quality'), fixed = /^\d$/.test(arg ?? '') ? Math.min(Number(arg), QUALITY_TOP) : null;
+  const auto = fixed == null && (arg === 'auto' || !navigator.webdriver);
+  const s = auto ? qualityStart(store.get('quality', null), today()) : { ...qualityStart(null, ''), level: fixed ?? QUALITY_TOP };
+  return { ...s, q: QUALITY[s.level], auto, gaps: [], works: [], spent: 0, rounds: 0, skip: QUALITY_SETTLE, boot: QUALITY_BOOT_MS, state: null, last: null, want: null, fake: null };
+}
+const qualityMayChange = () => !game.away && (game.state === 'title' || (game.state === 'windup' && game.t < 0));
+function sampleQuality(work, gap) {
+  const st = game.state;
+  if ((st !== 'title' && st !== 'windup') || game.away || quality.want != null) { quality.state = null; return; }   // 바꿀 단계를 기다리는 동안은 재지 않는다
+  if (st !== quality.state || gap > 250) { quality.state = st; quality.skip = Math.max(quality.skip, QUALITY_SETTLE); }   // 다른 앱에 다녀온 첫 장면도
+  if (quality.skip > 0) { quality.skip--; return; }
+  if (quality.boot > 0) { quality.boot -= gap; return; }
+  const f = quality.fake?.(quality.level);
+  quality.gaps.push(f ? f.gap : gap); quality.works.push(f ? f.work : work); quality.spent += f ? f.gap : gap;
+  if (quality.spent < QUALITY_WINDOW_MS || quality.gaps.length < QUALITY_MIN_FRAMES) return;
+  const m = qualityStats(quality.gaps, quality.works), { level, failed, ...next } = nextQuality(quality, m);
+  Object.assign(quality, next, { gaps: [], works: [], spent: 0, last: m, rounds: quality.rounds + 1 });
+  if (level !== quality.level) quality.want = level;   // 되돌린 것(failed)도 단계가 바뀌어 그때 적는다
+}
+function setQuality(level) {
+  Object.assign(quality, { level, q: QUALITY[level], want: null, skip: QUALITY_SETTLE });
+  if (quality.auto) store.set('quality', { level, ...(quality.noDown ? { noDown: today() } : {}), ...(quality.noUp ? { noUp: today() } : {}) });
+  resize();
 }
 
 // ===== 처음 맞히는 공 미리 데우기(2026-11-16 성능 묶음) =====
@@ -7339,4 +7383,4 @@ warmUp();
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, boardLayout, leaveDuel, judgeSwing, judgeTake, makeSequence, styleOn, weekPitcherLines, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction,
-  FACE_PX, facesNow, pitcherMood, drawBatterFigure, defenseColors, paused: false };
+  FACE_PX, facesNow, pitcherMood, drawBatterFigure, defenseColors, quality, paused: false };
