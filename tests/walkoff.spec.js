@@ -5381,11 +5381,15 @@ test.describe('여러 기기(2026-11-18): 뗄 때 공유·낮은 화면·가로 
     test.skip(!isMobile, '폰 배치');
     await page.setViewportSize({ width: 320, height: 460 });
     const errors = await open(page, '?seed=42', { team: null });
-    const linkUnder = (label) => page.evaluate((l) => { const r = walkoff.ui.buttons.find((b) => b.label === l).r; return r.y + r.h / 2 + 10; }, label);   // 링크 밑줄
+    // 링크 밑줄. 끝 화면으로 넘어간 직후에는 다음 그림 전이라 단추 목록이 앞 화면 것이어서, 그 단추가 그려질 때까지 기다린다(2026-11-18 CI에서 걸림)
+    const linkUnder = async (label) => {
+      await page.waitForFunction((l) => walkoff.ui.buttons.some((b) => b.label === l), label);
+      return page.evaluate((l) => { const r = walkoff.ui.buttons.find((b) => b.label === l).r; return r.y + r.h / 2 + 10; }, label);
+    };
     await startTap(page);
     await endTry(page);
-    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
     expect(await linkUnder('처음으로')).toBeLessThanOrEqual(460 - 40 - 6);   // 아래 주소(가운데가 화면 아래 40px, 12px 글자) 위
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
     await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '나중에 로그인하기'));
     expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });   // 전에는 '나중에 로그인하기'가 화면 밖(509~545)이었다
@@ -5399,8 +5403,8 @@ test.describe('여러 기기(2026-11-18): 뗄 때 공유·낮은 화면·가로 
     await page.waitForFunction(() => !!window.walkoff);
     await startTap(page);
     await endTry(page, { score: 500 });
-    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
     expect(await linkUnder('10구 도전 하기')).toBeLessThanOrEqual(460 - 40 - 6);
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
     expect(errors).toEqual([]);
   });
 
