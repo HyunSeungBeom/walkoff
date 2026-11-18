@@ -3665,7 +3665,8 @@ const scenarioEndText = (end) => (end === 'win' ? '끝내기 승리!' : end === 
 const emojiLine = (codes) => codes.split('').map((c) => SHARE_EMOJI[c]).join('');
 
 // 공유 글. 첫 줄에 모드를 적고, 마지막 줄은 늘 게임 주소다. 10구 끝 화면 공유는 도전장(dare, dareOf)이라 그 공을 칠 수 있는 주소가 마지막 줄이고,
-// 도전장 판의 되갚기는 받은 도전장 점수와 견준 줄을 더한다(2026-11-16)
+// 도전장 판의 되갚기는 받은 도전장 점수와 견준 줄을 더한다(2026-11-16). 도전장 글에는 공마다 결과(이모지 줄)를 싣지 않는다: 같은 공 40개를 받는 사람이
+// 몇 번째 공이 볼이고 몇 번째가 칠 만한지 미리 알게 된다(2026-11-18 사용자). 받은 사람의 게임 안 도전장 줄(drawDuelCard·drawDuelStrip)은 그대로
 function shareText(s, mode = 'challenge', dare = null) {
   const bats = s.bats === 'L' ? '좌타' : '우타';
   if (mode === 'scenario') {
@@ -3682,7 +3683,6 @@ function shareText(s, mode = 'challenge', dare = null) {
   const vs = dare.vs;
   return [
     `walkoff 10구 도전장${vs ? ' 되갚기' : ''} (${bats})`,
-    emojiLine(s.lights),
     `${dare.nick}님 ${line}`,
     vs && duelGap(s.score, vs),
     vs ? '같은 공 40개로 다시 넘겨 보세요' : '같은 공 40개로 이 점수를 넘겨 보세요',
@@ -3757,8 +3757,9 @@ function drawShareCard(s, mode) {
     t(s.score.toLocaleString(), 465, 200, 900, '#f2c94c');
     t(`${s.newBest ? '새 최고 기록!' : rankOf(s.score)}${streak >= 2 ? ` · ${streak}일 연속` : ''}`, 605, 52, 700, '#fff');
   }
+  // 10구 카드는 도전장 글과 같이 가서 공마다 불을 그리지 않는다(shareText와 같은 까닭, 2026-11-18 사용자). 아래 셈 줄을 그 자리로 올린다
   const codes = (scn ? s.pa : s.lights).split(''), gap = Math.min(72, 900 / Math.max(1, codes.length - 1));
-  codes.forEach((ch, i) => {
+  if (scn) codes.forEach((ch, i) => {
     const x = 540 + (i - (codes.length - 1) / 2) * gap, r = Math.min(24, gap * 0.36);
     if (ch === 'H') {   // 홈런은 초록 별(끝 화면과 같은 모양)
       starPath(g, x, 715, r * STAR_K);
@@ -3770,7 +3771,7 @@ function drawShareCard(s, mode) {
   });
   const cnt = (ch) => codes.filter((x) => x === ch).length;
   t(scn ? `타석 ${codes.length} · 안타 ${cnt('G')} · 볼넷 ${cnt('Y')} · 투구 ${s.pitches}개` : `홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`,
-    810, 40, 600, 'rgba(255,255,255,0.88)');
+    scn ? 810 : 740, 40, 600, 'rgba(255,255,255,0.88)');
   t(SITE_LABEL, 980, 36, 600, 'rgba(255,255,255,0.6)');
   return c;
 }
@@ -3872,13 +3873,13 @@ function drawScenarioOver() {
 
 // 10구 도전·끝내기 상황 끝 화면: [결과 공유하기 | 다시 하기] 아래에 처음으로. 스페이스바가 다시 하기라서 그쪽을 강조한다.
 // 도전장 판은 [되갚기(같은 공, 내 점수로 보내기) | 다시 하기] 아래에 도전장을 나가 랭킹 판을 치는 '10구 도전 하기'
-// 공유 단추는 터치·펜이면 뗄 때 누른다(gesture, linkAt)
-function drawRetryShareButtons(y, bw, retry, duel = false) {
+// 공유 단추는 터치·펜이면 뗄 때 누른다(gesture, linkAt). k: 낮은 화면에서 줄인 줄 간격 배율(drawGameOver)
+function drawRetryShareButtons(y, bw, retry, duel = false, k = 1) {
   const cx = view.w / 2, [a, b] = rowRects(cx, y, bw, 48, 2);
   addButton(a, duel ? '되갚기' : '결과 공유하기', 'secondary', shareResult).gesture = true;
   addButton(b, '다시 하기', 'primary', retry);
-  if (duel) addButton({ x: cx - 80, y: y + 58, w: 160, h: 36 }, '10구 도전 하기', 'link', () => { leaveDuel(); startDefault(); });
-  else addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
+  if (duel) addButton({ x: cx - 80, y: y + 48 + 10 * k, w: 160, h: 36 }, '10구 도전 하기', 'link', () => { leaveDuel(); startDefault(); });
+  else addButton({ x: cx - 70, y: y + 48 + 10 * k, w: 140, h: 36 }, '처음으로', 'link', goTitle);
 }
 
 // 끝 화면을 캡처해서 보내도 주소가 함께 가도록 아래쪽에 새긴다
@@ -4121,45 +4122,55 @@ function drawTeamChip(r, t, on) {
   const d = r.h * 0.5, x = r.x + 12 + d / 2, y = r.y + r.h / 2;
   ctx.beginPath(); ctx.arc(x, y, d / 2, 0, Math.PI * 2);   // 유니폼 견본: 상의 색에 소매 색 테두리
   ctx.fillStyle = t.main; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = t.accent; ctx.stroke();
-  text(t.name, x + d / 2 + 10, y + 1, { size: view.mobile ? 13 : 15, align: 'left' });
+  text(t.name, x + d / 2 + 10, y + 1, { size: view.mobile ? 13 : r.w >= 150 ? 15 : 14, align: 'left' });   // 5칸을 화면 폭에 맞춰 좁힌 아이패드 세로(810)는 한 단계 작게
 }
 
 function drawOnboard() {
   dim(0.62);
-  const m = view.mobile, cx = view.w / 2, ob = game.onboard, first = ob.next !== 'menu';
-  let y = view.h * (m ? 0.08 : 0.12);
+  const m = view.mobile, cx = view.w / 2, ob = game.onboard, first = ob.next !== 'menu', guest = first && !loggedIn();
+  // 팀 단추: 폰은 2칸, PC 배치는 5칸 두 줄(900px). 900보다 좁은 PC 배치(아이패드 세로 810)는 5칸을 화면 폭에 맞추고, 800보다 좁으면(폴드 안쪽 화면 690)
+  // 폰처럼 2칸이다(2026-11-18 여러 기기 점검: 아이패드 세로에서 양 끝 팀이 45px씩 잘렸다)
+  const cols = m || view.w < 800 ? 2 : 5, gap = m ? 8 : 10, w = m ? view.w - 32 : cols === 2 ? Math.min(view.w - 64, 600) : Math.min(900, view.w - 32);
+  const cw = (w - gap * (cols - 1)) / cols, rows = Math.ceil(TEAMS.length / cols);
+  // 낮은 화면(아이폰 SE 1세대 사파리 320×460)은 맨 아래 단추까지 화면에 들어가게 팀 단추를 폰 34·PC 44px까지 낮추고, 그래도 넘치면 줄 간격을 0.7배까지 줄인다
+  // (같은 점검: '나중에 로그인하기'가 화면 밖이었다). 글자·입력 칸·단추 높이는 그대로. air: 줄일 수 있는 간격의 합, room: 입력 칸·단추·링크를 뺀 높이
+  const air = view.h * (m ? 0.08 : 0.12) + (m ? 28 + 24 + 10 + 24 + 12 + 16 : 36 + 34 + 16 + 32 + 18 + 24) + rows * gap + (ob.next === 'menu' ? (m ? 18 : 22) : 0) + (guest ? (m ? 16 : 20) + 10 : 10);
+  const room = view.h - 8 - air - 44 - 48 - 36;
+  let ch = m ? 40 : 52;
+  if (rows * ch > room) ch = Math.max(m ? 34 : 44, room / rows);
+  const k = clamp((room - rows * ch + air) / air, 0.7, 1);
+  let y = view.h * (m ? 0.08 : 0.12) * k;
   text(first ? '내 팀을 고르세요' : '팀·닉네임 바꾸기', cx, y, { size: m ? 22 : 28, weight: 800 });
-  y += m ? 28 : 36;
+  y += (m ? 28 : 36) * k;
   text('팀 색으로 유니폼이 바뀌고, 주간 랭킹에서 팀끼리 겨뤄요', cx, y, { size: m ? 12 : 15, weight: 500, color: 'rgba(255,255,255,0.75)' });
-  y += m ? 24 : 34;
-  const cols = m ? 2 : 5, gap = m ? 8 : 10, w = m ? view.w - 32 : 900, cw = (w - gap * (cols - 1)) / cols, ch = m ? 40 : 52;
+  y += (m ? 24 : 34) * k;
   TEAMS.forEach((t, i) => {
-    const r = { x: cx - w / 2 + (i % cols) * (cw + gap), y: y + Math.floor(i / cols) * (ch + gap), w: cw, h: ch };
+    const r = { x: cx - w / 2 + (i % cols) * (cw + gap), y: y + Math.floor(i / cols) * (ch + gap * k), w: cw, h: ch };
     drawTeamChip(r, t, ob.team === t.id);
     ui.buttons.push({ r, label: t.name, onTap: () => { ob.team = t.id; } });
   });
-  y += Math.ceil(TEAMS.length / cols) * (ch + gap) + (m ? 10 : 16);
+  y += rows * (ch + gap * k) + (m ? 10 : 16) * k;
   if (ob.next === 'menu') {   // 메뉴에서 팀을 바꿀 때만(처음 온 사람은 기록이 없다)
     text(TEAM_NOTE, cx, y, { size: m ? 11 : 12, weight: 600, color: 'rgba(242,201,76,0.85)' });
-    y += m ? 18 : 22;
+    y += (m ? 18 : 22) * k;
   }
   text(UNOFFICIAL, cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });   // 구단 이름은 상표라서 공식 게임이 아니라고 밝힌다
-  y += m ? 24 : 32;
+  y += (m ? 24 : 32) * k;
   text('닉네임 · 랭킹에 보여요(10자까지)', cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
-  y += m ? 12 : 18;
+  y += (m ? 12 : 18) * k;
   const iw = m ? view.w - 64 : 300;
   Object.assign(nickInput.style, { display: 'block', left: `${cx - iw / 2}px`, top: `${y}px`, width: `${iw}px`, height: '44px' });
-  y += 44 + (m ? 16 : 24);
+  y += 44 + (m ? 16 : 24) * k;
   const bw = m ? view.w - 64 : 300;
-  if (first && !loggedIn()) {
+  if (guest) {
     addButton({ x: 8, y: 8, w: 76, h: 36 }, '‹ 뒤로', 'link', closeOnboard);   // 끝 화면으로(아래는 작은 폰에서 자리가 없다)
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 시작', 'kakao', () => confirmOnboard('kakao'));
-    y += 48 + (m ? 16 : 20);
+    y += 48 + (m ? 16 : 20) * k;
     text('카카오에서는 회원번호만 받아요 · 랭킹에만 써요', cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });
-    addButton({ x: cx - 100, y: y + 10, w: 200, h: 36 }, '나중에 로그인하기', 'link', () => confirmOnboard('local'));
+    addButton({ x: cx - 100, y: y + 10 * k, w: 200, h: 36 }, '나중에 로그인하기', 'link', () => confirmOnboard('local'));
   } else {
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, first ? '이 팀으로 하기' : '저장', 'primary', () => confirmOnboard('local'));
-    addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, first ? '뒤로' : '취소', 'link', closeOnboard);
+    addButton({ x: cx - 70, y: y + 48 + 10 * k, w: 140, h: 36 }, first ? '뒤로' : '취소', 'link', closeOnboard);
   }
 }
 
@@ -5957,9 +5968,9 @@ function drawTitle(time) {
     lines.forEach((l, i) => text(l, cx, cy + (m ? 28 : 36) + i * (m ? 24 : 30), { size: m ? 13 : 17, weight: 500, color: 'rgba(255,255,255,0.85)' }));
   }
   drawBatsToggle(cy + (m ? 112 : 134));
-  if (!m) text('← → 키로도 바꿀 수 있어요', cx, cy + 168, { size: 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  if (!touchFirst()) text('← → 키로도 바꿀 수 있어요', cx, cy + 168, { size: 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
   ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
-  pill(`${m ? '탭해서' : '스페이스바 · 빈 곳 클릭으로'} ${duel ? '도전' : '시작'}`, cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
+  pill(`${touchFirst() ? '탭해서' : '스페이스바 · 빈 곳 클릭으로'} ${duel ? '도전' : '시작'}`, cx, cy + (m ? 164 : 214), { size: m ? 16 : 18, bg: '#f2c94c', color: '#1b1405' });
   ctx.globalAlpha = 1;
   if (duel) {   // 도전장을 나가 랭킹 판으로(연속 기록 줄 자리). 도전장 공은 보낸 사람이 친 주의 투수라서 이번 주 투수 줄은 넣지 않는다
     const label = '10구 도전 하기';
@@ -6005,6 +6016,10 @@ function drawDuelCard(d, cx, y) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 줄을 더하면 끝 글자를 올려 읽은 사람에게도 NEW를 다시 띄운다), label은 화면 머리
+  { id: '2026-11-18a', label: '11/18', items: [
+    "폰에서 '결과 공유하기'를 누르면 이제 늘 공유 창이 떠요. 도전장 글과 카드 그림에서는 공마다 결과를 뺐어요.",
+    '작은 폰과 아이패드에서도 단추가 화면 안에 다 들어와요. 폰을 가로로 돌리면 세로로 돌려 달라고 알려 드리고, 던지던 공은 그 자리에서 기다려요.',
+  ] },
   { id: '2026-11-17b', label: '11/17', items: [
     '11월 23일부터 10구 상대 투수가 월요일마다 바뀌어요. 그 주에는 모두 같은 투수를 상대해서 랭킹은 공정하고, 첫 주는 158km까지 던지는 강속구형이니 배트를 미리 데워 두세요.',
     '10구가 끝나면 다음 순위나 칭호까지 얼마 남았는지 알려 드려요. 한 판만 더 치면 될 것 같은 느낌, 맞아요.',
@@ -6448,12 +6463,17 @@ function drawGameOver() {
     if (tm && over() > 0 && banner) tm = null;
     y -= clamp(over(), 0, lift());
   }
+  // 그래도 넘치는 낮은 화면(아이폰 SE 1세대 사파리 320×460)은 줄 사이를 0.75배까지 줄여 '처음으로'를 아래 주소(drawSiteMark) 위에 넣는다(2026-11-18 여러 기기
+  // 점검: 단추가 아래 주소와 겹치고 '처음으로'가 화면 밖이었다). 글자·단추 크기는 그대로다. need: 머리 줄부터 화면 아래까지, tail: '처음으로' 가운데부터 아래까지,
+  // 86: 좌타·우타(38)와 공유·다시 하기(48) 높이
+  const need = game.aim ? (m ? 466 : 529) : (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + (tm ? tmStep : 0) + (goal != null ? goalStep : 0), tail = 28 + (m ? 54 : 49);
+  const k = y + need - view.h > 1 ? clamp((view.h - y - tail - 86) / (need - tail - 86), 0.75, 1) : 1;
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
   const head = duel ? `${duel.nick}님의 도전장 · ${game.duelTry >= 2 ? `${game.duelTry}번째 도전` : `${duel.score.toLocaleString()}점`}` : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`;
   text(game.aim ? '조준 타격(실험)' : head, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
-  y += m ? 54 : 70;
+  y += (m ? 54 : 70) * k;
   text(s.score.toLocaleString(), cx, y, { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });
-  y += m ? 50 : 64;
+  y += (m ? 50 : 64) * k;
   // 조준 판은 이 기기 조준 최고 기록(walkoff.aimBest). 10구는 로그인했으면 계정 역대 최고, 서버 답을 기다리면 '확인 중'(startBest)
   const best = game.mode === 'challenge', kind = game.aim ? '조준 최고 기록' : '최고 기록';
   const bestText = game.newBest ? `새 ${kind}!` : game.best != null ? `${kind} ${game.best.toLocaleString()}점` : game.bestWait ? `${kind} 확인 중…` : rankOf(s.score);
@@ -6462,41 +6482,41 @@ function drawGameOver() {
   const duelLine = duel && (game.duelTry >= 2 ? duelGap(s.score, duel) : diff > 0 ? `이겼어요! ${diff.toLocaleString()}점 더 쳤어요` : diff < 0 ? `졌어요 · ${(-diff).toLocaleString()}점 모자라요` : '비겼어요 · 같은 점수예요');
   text(duel ? duelLine : (best ? bestText : rankOf(s.score)) + coinNote(), cx, y,
     { size: m ? 18 : 22, color: won || (!duel && best && game.newBest) ? '#f2c94c' : '#fff' });
-  y += m ? 40 : 50;
+  y += (m ? 40 : 50) * k;
   const lights = s.lights.split(''), lg = Math.min(m ? 30 : 36, (m ? view.w - 70 : 520) / Math.max(1, lights.length - 1));
   lights.forEach((c, i) => drawMark(cx + (i - (lights.length - 1) / 2) * lg, y, Math.min(m ? 10 : 12, lg * 0.36), c));
-  y += m ? 36 : 44;
+  y += (m ? 36 : 44) * k;
   text(`홈런 ${s.hr} · 안타 ${s.hits} · 볼 ${s.balls}${s.far ? ` · 가장 멀리 ${s.far}m` : ''}`, cx, y, { size: m ? 14 : 17, weight: 600, color: 'rgba(255,255,255,0.85)' });
   if (tm) {   // 타이밍 습관 한 줄. 최근 판들이 한쪽으로 치우쳤으면 줄을 눌러 타이밍 보정으로 간다
-    y += tmStep;
+    y += tmStep * k;
     const line = timingText(tm.ms), lw = Math.min(view.w - 32, 420);
     if (tm.calib) addButton({ x: cx - lw / 2, y: y - 13, w: lw, h: 26 }, `${line} · 타이밍 보정 해 보기 ›`, 'link', startCalib);
     else text(line, cx, y, { size: 14, weight: 600, color: 'rgba(255,255,255,0.6)' });
   }
-  y += m ? 38 : 48;
+  y += (m ? 38 : 48) * k;
   const bw = m ? view.w - 48 : 340;
   if (game.aim) {   // 실험판 안내와 의견 보내기 링크(패들렛, 새 탭)
     text('실험판이라 랭킹·코인·연속 기록에는 안 올라가요', cx, y, { size: m ? 13 : 15, weight: 600, color: 'rgba(255,255,255,0.6)' });
-    y += m ? 24 : 28;
+    y += (m ? 24 : 28) * k;
     const label = '조준 타격 어땠나요? 의견 보내기';
     ui.buttons.push({ r: drawOutLink(label, cx, y, m ? 14 : 16), label, href: FEEDBACK_URL });
-    y += m ? 28 : 34;
+    y += (m ? 28 : 34) * k;
   } else if (rankRow) {   // 이번 주 최고 기록 한 줄. 누르면 랭킹 화면(로그인 안 했으면 카카오 로그인). 팀이 없으면 팀 고르기(랭킹·팀 랭킹에 팀이 있어야 해서 로그인 안내보다 먼저)
     const lw = Math.min(view.w - 32, 420), r = { x: cx - lw / 2, y: y - 14, w: lw, h: 30 };
     if (!settings.team) addButton(r, '팀을 고르고 주간 랭킹에 올라가요 ›', 'link', () => openOnboard('over'));
     else addButton(r, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
-    y += m ? 30 : 36;
+    y += (m ? 30 : 36) * k;
     if (goal != null) {   // 한 판 더: '2위까지 1,200점'·'홈런왕까지 홈런 3개'
       if (goal) text(goal, cx, y - (m ? 8 : 10), { size: m ? 13 : 15, weight: 700, color: '#f2c94c' });
-      y += goalStep;
+      y += goalStep * k;
     }
   }
   drawBatsToggle(y + 19);
-  y += 38 + 18;
+  y += 38 + 18 * k;
   if (game.aim) {   // 조준 판은 공유하지 않는다
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '다시 하기', 'primary', restartGame);
-    addButton({ x: cx - 70, y: y + 58, w: 140, h: 36 }, '처음으로', 'link', goTitle);
-  } else drawRetryShareButtons(y, bw, restartGame, !!duel);
+    addButton({ x: cx - 70, y: y + 48 + 10 * k, w: 140, h: 36 }, '처음으로', 'link', goTitle);
+  } else drawRetryShareButtons(y, bw, restartGame, !!duel, k);
 }
 
 // ===== 게임 진행 =====
@@ -6670,8 +6690,8 @@ function drawAimBat(at, alpha = 1) {
 }
 // 조준 판: 투구 중에는 배트 커서(PC는 마우스 자리, 폰은 누르고 있을 때만), 결과·다시 보기에서는 겨눈 배트와 공이 지난 자리를 점선으로 잇는다
 const finePointer = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
-// 폰 배치이거나 손가락이 먼저인 기기(아이패드처럼 폭이 넓은 터치 기기 포함)는 결과를 공유 창으로 보낸다(2026-11-18 여러 기기 점검:
-// 폭 640 이상은 PC 배치라 아이패드는 공유 창 대신 복사했다)
+// 폰 배치이거나 손가락이 먼저인 기기(아이패드처럼 폭이 넓은 터치 기기 포함): 안내 글은 '탭', 결과는 공유 창으로 보낸다(2026-11-18 여러 기기 점검:
+// 폭 640 이상은 PC 배치라 아이패드에 '스페이스바 · 클릭' 안내가 나오고 공유 창 대신 복사했다)
 const touchFirst = () => view.mobile || !finePointer;
 function drawAimLayer(p) {
   if (camMoved() || !p) return;
@@ -6931,12 +6951,30 @@ function settleAway() {
 }
 // 멈춘 공 화면: 어둡게 덮고(공은 감춘다) 누르기를 기다린다. 누르면 AWAY_READY초 동안 밝아지며 '준비'.
 // 글자는 공이 날아오는 길(투수 손이 화면 높이의 29~32%) 위에 둔다. '준비' 동안 다시 보이는 공을 가리지 않게
+// ===== 가로로 돌린 폰(2026-11-18 사용자, 여러 기기 점검) =====
+// 폰을 가로로 두면 폭 640 이상이라 PC 배치가 되는데 높이가 300~390px라 끝 화면·팀 고르기·로그인 권유 단추가 화면 아래로 나갔다. 손가락이 먼저인 기기가
+// 가로이고 높이가 500px보다 낮으면 '세로로 돌려 주세요'로 덮고 누르기를 받지 않는다. 와인드업·투구 중에 돌리면 다른 앱에 다녀올 때처럼 공을 멈춘다(game.away,
+// 세로로 돌아오면 '멈췄어요'). 방향은 창 모양과 기기 방향(screen.orientation)을 같이 본다. 안드로이드 앱 안 브라우저는 키보드가 올라오면 창이 가로로
+// 납작해져서, 입력 칸에 쓰는 중에는 덮지 않는다
+function sideways() {
+  if (finePointer || view.h >= 500 || view.w <= view.h || document.activeElement?.tagName === 'INPUT') return false;
+  const o = screen.orientation?.type;
+  return o ? o.startsWith('landscape') : typeof window.orientation === 'number' ? Math.abs(window.orientation) === 90 : true;
+}
+function drawSideways() {
+  dim(0.94);
+  const cx = view.w / 2, cy = view.h / 2;
+  roundRect(cx - 13, cy - 64, 26, 44, 5); ctx.strokeStyle = '#f2c94c'; ctx.lineWidth = 2.5; ctx.stroke();   // 세로로 선 폰
+  ctx.fillStyle = '#f2c94c'; ctx.fillRect(cx - 4, cy - 27, 8, 2);
+  text('세로로 돌려 주세요', cx, cy + 6, { size: 20, weight: 800 });
+  text('세로 화면에서 칠 수 있어요', cx, cy + 34, { size: 13, weight: 600, color: 'rgba(255,255,255,0.7)' });
+}
 function drawAway() {
   const m = view.mobile, cx = view.w / 2, cy = view.h * 0.2, a = game.away;
   if (a.ready == null) {
     dim(0.78);
     text('멈췄어요', cx, cy, { size: m ? 28 : 34, weight: 900 });
-    text(m ? '탭하면 이어서' : '스페이스바 · 클릭하면 이어서', cx, cy + (m ? 38 : 46), { size: m ? 16 : 19, weight: 600, color: 'rgba(255,255,255,0.8)' });
+    text(touchFirst() ? '탭하면 이어서' : '스페이스바 · 클릭하면 이어서', cx, cy + (m ? 38 : 46), { size: m ? 16 : 19, weight: 600, color: 'rgba(255,255,255,0.8)' });
     return;
   }
   dim(0.78 * (1 - clamp((performance.now() - a.ready) / (AWAY_READY * 1000), 0, 1)));
@@ -6994,6 +7032,7 @@ let linkPress = null;   // 바깥 링크·공유 단추를 누른 손가락(poin
 const dragList = () => ({ menu, ranking: rankList, titles: titleList, shop: shopList, gift: giftList })[game.state] ?? null;   // 끌어 넘기는 화면(넘치면 뗄 때 누른다)
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
+  if (sideways()) return;   // 가로로 돌린 폰은 덮개만 보인다(누르기를 받지 않는다)
   if (awayPaused()) { resumeAway(); return; }   // 다른 앱에 다녀와 멈춘 공(조준 판 손가락도 잡기 전에)
   if (game.state === 'news') { news.drag = { y: e.clientY, s: news.scroll }; canvas.setPointerCapture?.(e.pointerId); }   // 화면 밖으로 끌어도 따라간다
   // 넘치는 메뉴·랭킹(낮은 화면)은 뗄 때 누른다. 끌어 넘기다 손가락 밑의 줄이 눌리지 않게
@@ -7084,7 +7123,16 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('resize', resize);
 
 // ===== 그리기 =====
+// 화면 하나를 그린다. 가로로 돌린 폰(sideways)은 어느 화면이든 마지막에 덮고 누르기를 받지 않는다(입력 칸도 숨긴다)
 function render(time) {
+  drawScreen(time);
+  if (!sideways()) return;
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0); ctx.globalAlpha = 1;
+  drawSideways();
+  ui.buttons = [];
+  for (const el of [nickInput, noInput, giftInput]) if (el.style.display !== 'none') el.style.display = 'none';
+}
+function drawScreen(time) {
   ui.buttons = [];
   if (game.state !== 'onboard' && nickInput.style.display !== 'none') nickInput.style.display = 'none';
   if (game.state !== 'shop' && noInput.style.display !== 'none') noInput.style.display = 'none';
@@ -7164,19 +7212,19 @@ function render(time) {
     text(finePointer ? '공이 배트에 닿을 때 치세요 · 클릭' : '공이 배트에 닿을 때 치세요 · 손 떼기', view.w / 2, view.h - L.pad - (game.i === 0 ? 48 : 20), { size: view.mobile ? 15 : 17, weight: 800, color: '#7fe3ff', shadow: true });
   }
   if (game.i === 0 && game.state !== 'result') {
-    text(game.aim ? (finePointer ? '마우스로 겨누고 클릭 · 랭킹에는 안 올라가요' : '끌어서 겨누고 떼면 스윙 · 랭킹에는 안 올라가요') : view.mobile ? '공이 존에 올 때 탭' : '공이 존에 올 때 스페이스바 · 클릭', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 15 : 17, color: 'rgba(255,255,255,0.75)', shadow: true });
+    text(game.aim ? (finePointer ? '마우스로 겨누고 클릭 · 랭킹에는 안 올라가요' : '끌어서 겨누고 떼면 스윙 · 랭킹에는 안 올라가요') : touchFirst() ? '공이 존에 올 때 탭' : '공이 존에 올 때 스페이스바 · 클릭', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 15 : 17, color: 'rgba(255,255,255,0.75)', shadow: true });
   }
   if (game.state === 'result') {
     drawResultCard();
     drawBallInfoLine();
-    if (game.skipHint && canSkip()) text(view.mobile ? '탭하면 바로 결과' : '스페이스바 · 클릭하면 바로 결과', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 14 : 16, color: 'rgba(255,255,255,0.7)', shadow: true });
+    if (game.skipHint && canSkip()) text(touchFirst() ? '탭하면 바로 결과' : '스페이스바 · 클릭하면 바로 결과', view.w / 2, view.h - L.pad - 20, { size: view.mobile ? 14 : 16, color: 'rgba(255,255,255,0.7)', shadow: true });
     if (game.resultT > game.revealAt) {
       drawPitchInfo(L.info);
       if (hasBattedBall()) drawMiniMap(L.map);
-      const m = view.mobile;
-      addButton(L.replay, m ? '다시 보기' : '다시 보기 (R)', 'dark', startReplay);
+      const keys = !touchFirst();   // 키 안내((R)·(Space))는 키보드가 먼저인 기기만(아이패드는 폭이 넓어도 손가락)
+      addButton(L.replay, keys ? '다시 보기 (R)' : '다시 보기', 'dark', startReplay);
       const last = game.mode === 'scenario' ? !!game.scn.end : game.mode !== 'practice' && challengeOver();
-      addButton(L.next, last ? '결과 보기' : m ? '다음 공' : '다음 공 (Space)', 'primary', next);
+      addButton(L.next, last ? '결과 보기' : keys ? '다음 공 (Space)' : '다음 공', 'primary', next);
       // 10구 도전은 공을 보고 마음에 안 들면 처음부터 다시 한다(2026-10-29 사용자 피드백). 판마다 공이 달라 새 판과 같고,
       // 끝내지 않은 판은 랭킹에 보내지 않는다. 마지막 기회 뒤에는 판이 이미 기록돼서(recordGame) '다시 하기'다(2026-10-30 사용자 결정)
       if (L.restart) addButton(L.restart, last ? '다시 하기' : '처음부터', 'dark', restartGame);
@@ -7194,6 +7242,7 @@ function frame(now) {
   if (!window.walkoff?.paused) {   // 영상 찍기 도구는 멈춰 두고 walkoff.update·render를 직접 부른다
     const t0 = fpsMeter && performance.now();
     settleAway();
+    if (!game.away && pitching() && sideways()) game.away = { ready: null };   // 가로로 돌리면 공을 멈춘다(세로로 돌아오면 '멈췄어요')
     if (!game.away) update(dt);   // 다른 앱에 다녀와 멈춘 공은 시간이 가지 않는다
     render(now / 1000);
     fpsMeter?.frame(now, gap, performance.now() - t0);

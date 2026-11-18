@@ -3349,7 +3349,7 @@ test.describe('친구 도전장', () => {
     await tap(page, '결과 공유하기');
     await page.waitForFunction(() => window.__shared != null);
     let lines = (await page.evaluate(() => window.__shared)).split('\n');
-    expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 (우타)', '🔴'.repeat(10), '테스트님 0점 · 홈런 0', '같은 공 40개로 이 점수를 넘겨 보세요']);
+    expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 (우타)', '테스트님 0점 · 홈런 0', '같은 공 40개로 이 점수를 넘겨 보세요']);   // 공마다 결과(이모지 줄)는 싣지 않는다(2026-11-18)
     let link = new URL(lines.at(-1));
     expect(`${link.origin}${link.pathname}`).toBe('https://hyunseungbeom.github.io/walkoff/');
     expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 1, nick: '테스트', style: 'classic' });
@@ -3365,7 +3365,7 @@ test.describe('친구 도전장', () => {
     await tap(page, '되갚기');
     await page.waitForFunction(() => window.__shared != null);
     lines = (await page.evaluate(() => window.__shared)).split('\n');
-    expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 되갚기 (우타)', '🔴'.repeat(10), '테스트님 0점(2번째 도전) · 홈런 0', '민성님 6,800점에 6,800점 모자라요', '같은 공 40개로 다시 넘겨 보세요']);
+    expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 되갚기 (우타)', '테스트님 0점(2번째 도전) · 홈런 0', '민성님 6,800점에 6,800점 모자라요', '같은 공 40개로 다시 넘겨 보세요']);
     link = new URL(lines.at(-1));
     expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 2, nick: '테스트', style: 'classic' });
     expect(sentScores(errors)).toEqual([]);
@@ -5269,7 +5269,7 @@ test.describe('이번 주 투수(2026-11-16)', () => {
 });
 
 // 여러 기기 점검에서 나온 고장 고침(2026-11-18 사용자, 작업 글 ~/.claude/plans/walkoff-devices.md, 보고 walkoff-devices-report.md)
-test.describe('여러 기기(2026-11-18): 뗄 때 공유', () => {
+test.describe('여러 기기(2026-11-18): 뗄 때 공유·낮은 화면·가로 덮개', () => {
   // 공유 창은 브라우저가 '사람이 누름'(user activation)으로 친 때만 뜨는데 터치는 뗄 때만 그렇게 친다. 플레이라이트는 page.evaluate마다 '사람이 누름'을 붙여서
   // 거절을 흉내 낼 수 없으므로, 공유를 어느 손 입력 안에서 불렀는지(window.event)로 본다
   const stubShare = (page) => page.addInitScript(() => {
@@ -5290,6 +5290,16 @@ test.describe('여러 기기(2026-11-18): 뗄 때 공유', () => {
     await cdp.detach();
     return during;
   };
+  // 지금 화면의 단추: 화면 밖으로 나간 것과 서로 겹친 쌍
+  const buttonsFit = (page) => page.evaluate(() => {
+    const v = walkoff.view, bs = walkoff.ui.buttons.map((b) => ({ label: b.label, ...b.r })), cross = [];
+    for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) {
+      const a = bs[i], b = bs[j];
+      if (Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.5 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0.5) cross.push(`${a.label} / ${b.label}`);
+    }
+    return { out: bs.filter((b) => b.x < -0.5 || b.y < -0.5 || b.x + b.w > v.w + 0.5 || b.y + b.h > v.h + 0.5).map((b) => b.label), cross };
+  });
+
   test('터치로 결과 공유하기·되갚기를 누르면 누를 때가 아니라 뗄 때 공유 창을 부르고, 끌어서 단추 밖에서 떼면 안 부른다', async ({ page, isMobile }) => {
     test.skip(!isMobile, '터치 기기(PC는 마우스라 누를 때 복사한다)');
     await stubShare(page);
@@ -5311,19 +5321,128 @@ test.describe('여러 기기(2026-11-18): 뗄 때 공유', () => {
     expect(errors).toEqual([]);
   });
 
-  test('아이패드처럼 폭이 넓은 터치 기기(810×1010)는 PC 배치여도 공유 창으로 보낸다(전에는 복사했다)', async ({ browser, isMobile }) => {
+  test('도전장 공유 글과 카드에는 공마다 결과(이모지 줄·불)를 싣지 않는다(받는 사람이 몇 번째 공이 볼인지 미리 알게 된다). 도전장이 아닌 10구 글·끝내기 상황은 그대로', async ({ page }) => {
+    const errors = await open(page);
+    const s = { score: 2350, hr: 1, hits: 3, balls: 2, far: 118, lights: 'GRYGRRYGRRRH', bats: 'R' };
+    const arcs = (x, mode) => page.evaluate(({ x, mode }) => {   // 카드에 그린 불(원) 수. 홈런 별은 원이 아니다
+      const proto = CanvasRenderingContext2D.prototype, arc = proto.arc;
+      let n = 0;
+      proto.arc = function (...a) { n++; return arc.apply(this, a); };
+      try { walkoff.drawShareCard(x, mode); } finally { proto.arc = arc; }
+      return n;
+    }, { x, mode });
+    expect(await arcs(s, 'challenge')).toBe(0);   // 전에는 11개
+    expect(await arcs({ end: 'win', away: 3, home: 4, pa: 'RGYG', pitches: 9, label: '2아웃 만루', bats: 'R' }, 'scenario')).toBe(4);
+    const dare = { url: 'https://hyunseungbeom.github.io/walkoff/?vs=x', nick: '명은', n: 1, vs: null };
+    const [withDare, plain] = await page.evaluate(({ s, dare }) => [walkoff.shareText(s, 'challenge', dare), walkoff.shareText(s, 'challenge')], { s, dare });
+    expect(withDare.split('\n')).toEqual(['walkoff 10구 도전장 (우타)', '명은님 2,350점 · 홈런 1 · 최장 118m', '같은 공 40개로 이 점수를 넘겨 보세요', dare.url]);
+    expect(plain.split('\n')[1]).toBe('🟢🔴🟡🟢🔴🔴🟡🟢🔴🔴🔴⭐');
+    expect(errors).toEqual([]);
+  });
+
+  test('아이패드처럼 폭이 넓은 터치 기기(810×1010)는 PC 배치여도 탭 안내·공유 창이고, 팀 단추 5칸이 화면 안에 든다. 폴드 안쪽 화면(690)은 2칸이다', async ({ browser, isMobile }) => {
     test.skip(!isMobile, '터치 기기 흉내는 mo에서 한 번만');
     const context = await browser.newContext({ viewport: { width: 810, height: 1010 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
     const page = await context.newPage();
     await stubShare(page);
-    const errors = await open(page, '?seed=42');
+    const errors = await open(page, '?seed=42', { team: null });
     expect(await page.evaluate(() => ({ mobile: walkoff.view.mobile, fine: matchMedia('(pointer: fine)').matches }))).toEqual({ mobile: false, fine: false });
-    await page.evaluate(() => walkoff.startGame('challenge'));
-    await endTry(page, { full: true });
+    const title = await drawnTexts(page);
+    expect(title).toContain('탭해서 시작');
+    expect(title).not.toContain('← → 키로도 바꿀 수 있어요');
+    await startTap(page);
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    expect(await drawnTexts(page)).toContain('공이 존에 올 때 탭');
+    await endTry(page);
     await page.waitForFunction(() => !!walkoff.game.shareCard?.file);
     await touchButton(page, '결과 공유하기');
-    expect(await page.evaluate(() => window.__shared)).toEqual([{ in: 'pointerup', files: 1 }]);
+    expect(await page.evaluate(() => window.__shared)).toEqual([{ in: 'pointerup', files: 1 }]);   // 전에는 공유 창 없이 복사했다
+    await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '나중에 로그인하기'));
+    const teams = () => page.evaluate(() => walkoff.ui.buttons.filter((b) => walkoff.TEAMS.some((t) => t.name === b.label)).map((b) => b.r));
+    let r = await teams();
+    expect(new Set(r.map((b) => Math.round(b.x))).size).toBe(5);
+    expect(r.every((b) => b.x >= 0 && b.x + b.w <= 810)).toBe(true);   // 전에는 양 끝이 45px씩 잘렸다
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
+    await page.setViewportSize({ width: 690, height: 800 });
+    await page.waitForFunction(() => walkoff.view.w === 690);
+    r = await teams();
+    expect(new Set(r.map((b) => Math.round(b.x))).size).toBe(2);
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
+    await page.setViewportSize({ width: 1080, height: 740 });   // 아이패드 가로: 높이 500 이상이라 가로 덮개가 안 뜬다
+    await page.waitForFunction(() => walkoff.view.h === 740);
+    expect((await drawnTexts(page)).includes('세로로 돌려 주세요')).toBe(false);
+    expect(await page.evaluate(() => walkoff.ui.buttons.length)).toBeGreaterThan(0);
     expect(errors).toEqual([]);
     await context.close();
+  });
+
+  test('낮은 폰(320×460, 아이폰 SE 1세대 사파리)에서 끝 화면·팀 고르기·도전장 끝 화면의 단추가 모두 화면 안이고, 서로·아래 주소와 안 겹친다', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '폰 배치');
+    await page.setViewportSize({ width: 320, height: 460 });
+    const errors = await open(page, '?seed=42', { team: null });
+    const linkUnder = (label) => page.evaluate((l) => { const r = walkoff.ui.buttons.find((b) => b.label === l).r; return r.y + r.h / 2 + 10; }, label);   // 링크 밑줄
+    await startTap(page);
+    await endTry(page);
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
+    expect(await linkUnder('처음으로')).toBeLessThanOrEqual(460 - 40 - 6);   // 아래 주소(가운데가 화면 아래 40px, 12px 글자) 위
+    await tap(page, '팀을 고르고 주간 랭킹에 올라가요 ›');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '나중에 로그인하기'));
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });   // 전에는 '나중에 로그인하기'가 화면 밖(509~545)이었다
+    const input = await page.locator('input[aria-label="닉네임"]').boundingBox();
+    expect(await page.evaluate((i) => walkoff.ui.buttons.filter((b) => b.r.y < i.y + i.height && b.r.y + b.r.h > i.y).map((b) => b.label), input)).toEqual([]);   // 닉네임 칸과 겹친 단추 없음
+    await tap(page, '한화 이글스');
+    await page.locator('input[aria-label="닉네임"]').fill('명은');
+    await tap(page, '나중에 로그인하기');
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, team: walkoff.settings.team }))).toEqual({ state: 'over', team: 'hanwha' });
+    await page.goto(`${PAGE}${await duelQuery()}`);
+    await page.waitForFunction(() => !!window.walkoff);
+    await startTap(page);
+    await endTry(page, { score: 500 });
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
+    expect(await linkUnder('10구 도전 하기')).toBeLessThanOrEqual(460 - 40 - 6);
+    expect(errors).toEqual([]);
+  });
+
+  test("가로로 돌린 폰은 어느 화면이든 '세로로 돌려 주세요'로 덮고 누르기를 받지 않으며, 던지는 중이면 공을 멈췄다가 세로로 돌아와 탭하면 잇는다. 글을 쓰는 중과 PC는 안 덮는다", async ({ page, isMobile }) => {
+    const errors = await open(page, '?seed=42');
+    const vp = page.viewportSize(), covered = async () => (await drawnTexts(page)).includes('세로로 돌려 주세요');
+    if (!isMobile) {   // PC는 낮고 넓은 창이어도 덮지 않는다
+      await page.setViewportSize({ width: 780, height: 304 });
+      await page.waitForFunction(() => walkoff.view.h === 304);
+      expect(await covered()).toBe(false);
+      expect(errors).toEqual([]);
+      return;
+    }
+    await page.setViewportSize({ width: vp.height, height: vp.width });   // 시작 화면에서 돌리기
+    await page.waitForFunction((h) => walkoff.view.h === h, vp.width);
+    expect(await covered()).toBe(true);
+    expect(await page.evaluate(() => walkoff.ui.buttons.length)).toBe(0);
+    await page.touchscreen.tap(30, 30);   // 덮개 위 누르기(전에는 시작했다)
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('title');
+    await page.setViewportSize(vp);
+    await page.waitForFunction((h) => walkoff.view.h === h, vp.height);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await page.setViewportSize({ width: vp.height, height: vp.width });   // 던지는 중에 돌리기
+    await page.waitForFunction((h) => walkoff.view.h === h, vp.width);
+    await expect.poll(covered).toBe(true);
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, away: !!walkoff.game.away, buttons: walkoff.ui.buttons.length }))).toEqual({ state: 'pitch', away: true, buttons: 0 });
+    await page.touchscreen.tap(200, 200);
+    expect(await page.evaluate(() => ({ swingAt: walkoff.game.swingAt, ready: walkoff.game.away?.ready ?? null }))).toEqual({ swingAt: null, ready: null });   // 스윙도 이어 가기도 아니다
+    await page.setViewportSize(vp);
+    await page.waitForFunction((h) => walkoff.view.h === h, vp.height);
+    await expect.poll(async () => (await drawnTexts(page)).includes('멈췄어요')).toBe(true);
+    await page.touchscreen.tap(200, 500);
+    await page.waitForFunction(() => walkoff.game.state === 'result', null, { timeout: 15_000 });   // 멈춘 자리에서 이어 던진 공이 결과까지 간다
+    // 글을 쓰는 중: 안드로이드 앱 안 브라우저는 키보드가 올라오면 창이 가로로 납작해진다(기기는 세로)
+    await page.evaluate(() => walkoff.openOnboard('menu'));
+    const nick = page.locator('input[aria-label="닉네임"]');
+    await nick.focus();
+    await page.setViewportSize({ width: vp.width, height: 378 });
+    await page.waitForFunction(() => walkoff.view.h === 378);
+    expect(await covered()).toBe(false);
+    await expect(nick).toBeVisible();
+    expect(errors).toEqual([]);
   });
 });
