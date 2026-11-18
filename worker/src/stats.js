@@ -10,6 +10,9 @@ export const SWING_MODES = ['challenge', 'aim'], SWING_INPUTS = ['mouse', 'touch
 const SWING_KEYS = ['swings', 'contacts', 'hits', 'perfect', 'near', 'edge', 'miss'];
 export const EVENT_CAP = 3000;   // 한 기기가 하루에 보내는 신호는 이만큼까지만 센다(새로고침 반복이나 장난으로 숫자가 부풀지 않게)
 export const BATCH_MAX = 500;    // 묶음 하나에 받는 신호 수. 게임은 20개가 쌓이면 보낸다(js/infra/stats.js)
+// 묶음 하나에 받는 모드·스윙 칸 수의 합(2026-11-18 사용자, 홍보 전 서버 지키기). 칸마다 DB에 한 줄을 써서, 모드·스윙 칸을 다 채운 묶음은
+// 새 기기 줄(2줄)과 함께 한 번에 15줄이었다(로그인 없이 IP 하나로 1시간이면 하루 쓰기 한도). 이제 많아야 9줄이고, 정상 묶음은 2~4칸이다
+export const BATCH_KEYS = 7;
 export const LATE_DAYS = 2;      // 화면을 갑자기 닫아 못 보낸 묶음은 다음에 열 때 보낸다. 그날부터 이틀 지난 것까지 받는다
 
 // 신호를 검사해 { device, mobile, day, counts: [[모드, 시작, 끝], ...], swings: [[모드, 입력, ...SWING_KEYS], ...], n }으로 바꾼다. today는 서버의 한국 시간 날짜.
@@ -46,6 +49,7 @@ export function validateEvent(b, today) {
       if (sw > 0) swings.push([mode, input, ...v]);
     }
   }
+  if (counts.length + swings.length > BATCH_KEYS) return { ok: false, error: 'bad_counts' };
   const n = counts.reduce((s, [, a, z]) => s + a + z, 0) + swings.reduce((s, x) => s + x[2], 0);
   if (n < 1 || n > BATCH_MAX) return { ok: false, error: 'bad_counts' };
   // 날짜는 게임이 모은 날(기기 시계). 서버 날짜보다 뒤면 오늘로, 이틀보다 앞이면 받지 않는다

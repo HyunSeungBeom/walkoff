@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS seed_tokens (
   used_at INTEGER                                -- 점수를 받은 시각(ms). 아직 안 썼으면 NULL
 );
 CREATE INDEX IF NOT EXISTS seed_tokens_player ON seed_tokens (player_id, issued_at);
+-- 2026-11-18부터 표는 서버 서명으로 내주고 DB에 적지 않는다(src/seeds.js). seed_tokens는 그 전에 받은 표를 사흘 동안 받으려고 둔다
+
+-- 쓴 시드 표(2026-11-18, src/seeds.js 서명한 표). 점수·끝내기 코인과 함께 온 표만 한 줄 적어 같은 표를 두 번 못 쓰게 한다.
+-- 사람 ID는 적지 않는다. 기한(사흘)이 지난 줄은 새로 적을 때 지운다. 이미 있던 DB에는 migrations/0011_used_seeds.sql로 더했다
+CREATE TABLE IF NOT EXISTS used_seeds (
+  id TEXT PRIMARY KEY,                           -- 표를 내준 시각(ms, 13자리) + '.' + 표마다 다른 글자. 시각이 앞이라 기한 지난 줄을 기본 키 범위로 지운다
+  used_at INTEGER NOT NULL                       -- 쓴 시각(ms)
+) WITHOUT ROWID;                                 -- 줄 하나에 쓰기 1줄(따로 두는 색인이 없다)
 
 -- 주마다 사람별 요약(2026-11-04, src/board.js). daily_scores로 언제든 다시 만들 수 있다. 이미 있던 DB에는 migrations/0005_weekly_boards.sql로 더했다
 CREATE TABLE IF NOT EXISTS weekly_boards (

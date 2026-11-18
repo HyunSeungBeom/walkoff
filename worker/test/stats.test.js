@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { kstDay, addDays } from '../src/rules.js';
-import { BATCH_MAX, EVENT_CAP, LATE_DAYS, STATS_SQL, SWING_SQL } from '../src/stats.js';
+import { BATCH_MAX, BATCH_KEYS, EVENT_CAP, LATE_DAYS, STATS_SQL, SWING_SQL } from '../src/stats.js';
 import { memoryD1 } from './d1.js';
 
 // 게임이 sendBeacon으로 보내는 것처럼 text/plain 본문으로 보낸다
@@ -177,4 +177,17 @@ test(`스윙 묶음: 그날 ${EVENT_CAP}번을 넘긴 기기의 스윙은 세지
   await env.DB.prepare('UPDATE play_devices SET events = ?').bind(EVENT_CAP).run();
   assert.equal((await send(env, batch({ swings: { 'aim|mouse': sw() } }))).status, 204);
   assert.deepEqual(env.DB.rows('SELECT swings FROM swing_stats'), [{ swings: 10 }]);
+});
+
+test(`이용 통계 묶음: 모드·스윙 칸이 합쳐 ${BATCH_KEYS}칸을 넘으면 받지 않는다(칸마다 DB에 한 줄을 써서 묶음 하나가 쓰는 줄을 묶는다)`, async () => {
+  const env = { DB: memoryD1() };
+  const counts = Object.fromEntries(['challenge', 'scenario', 'practice', 'aim', 'duel'].map((m) => [m, { starts: 1, ends: 0 }]));   // 모드 5칸
+  const swings = { 'challenge|touch': sw(), 'aim|touch': sw() };   // 스윙 2칸, 합 7칸(정상 묶음은 2~4칸)
+  assert.equal((await send(env, batch({ counts, swings }))).status, 204);
+  for (const over of [{ counts, swings: { ...swings, 'challenge|mouse': sw() } }, { counts: { ...counts, invite: { starts: 1, ends: 0 } }, swings: { ...swings, 'challenge|key': sw() } }]) {
+    const r = await send(env, batch(over));   // 합 8칸, 9칸
+    assert.deepEqual([r.status, (await r.json()).error], [400, 'bad_counts']);
+  }
+  assert.equal(env.DB.rows('SELECT 1 FROM play_stats').length, 5);   // 받은 묶음 하나만 셌다
+  assert.equal(env.DB.rows('SELECT 1 FROM swing_stats').length, 2);
 });

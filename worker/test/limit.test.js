@@ -55,3 +55,19 @@ test('횟수 제한: 선물 받는 사람 찾기(/players)는 로그인한 계�
   assert.equal((await worker.fetch(new Request('https://api.test/players?nick=골든'), env)).status, 401);   // 로그인 없이는 세기 전에 막는다
   assert.equal(env.PLAYERS_LIMIT.keys.size, 2);
 });
+
+test('횟수 제한: 시드 표(/seeds)는 로그인한 계정마다 세고, 넘으면 429 too_many_seeds(2026-11-18 서명한 표, 한 시간 300장 상한을 옮김)', async () => {
+  const env = { DB: memoryD1(), SESSION_SECRET: 'test-session-secret', SEEDS_LIMIT: fakeLimiter(2) };
+  for (const pid of ['p-device-0001', 'p-device-0002']) await env.DB.prepare('INSERT INTO accounts (kakao_key, player_id, nick, tag) VALUES (?, ?, ?, ?)').bind(`k-${pid}`, pid, '골든', pid.endsWith('1') ? 1 : 2).run();
+  const seeds = async (pid) => {
+    const r = await worker.fetch(new Request('https://api.test/seeds', { method: 'POST', headers: { 'cf-connecting-ip': '1.1.1.1', authorization: `Bearer ${await newSession(env, pid, Date.now())}` } }), env);
+    return [r.status, (await r.json()).error ?? 'ok'];
+  };
+  const a = [];
+  for (let i = 0; i < 3; i++) a.push(await seeds('p-device-0001'));
+  assert.deepEqual(a, [[200, 'ok'], [200, 'ok'], [429, 'too_many_seeds']]);
+  assert.deepEqual(await seeds('p-device-0002'), [200, 'ok']);   // 같은 IP의 다른 계정은 따로
+  assert.deepEqual([...env.SEEDS_LIMIT.keys.keys()], ['p-device-0001', 'p-device-0002']);
+  assert.equal((await worker.fetch(new Request('https://api.test/seeds', { method: 'POST' }), env)).status, 401);   // 로그인 없이는 세기 전에 막는다
+  assert.equal(env.SEEDS_LIMIT.keys.size, 2);
+});

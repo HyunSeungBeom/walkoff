@@ -6,7 +6,7 @@ import { kstDay, weekStart, addDays, validateSubmission, validateProfile, rankSu
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
 import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
 import { validateEvent, recordEvent } from './stats.js';
-import { issueSeed, findSeed, useSeed } from './seeds.js';
+import { issueSeed, findSeed, useSeed, dropOldSeeds } from './seeds.js';
 import { checkScenario } from './scenario.js';
 import { readBoard, saveDaily, updateBoard, renameInBoards, removeFromBoards } from './board.js';
 import { grantTitles, titlesIn, countsIn, gameCounts, titleOf, pickedTitle, shownTitle, withTitle } from './titles.js';
@@ -18,14 +18,18 @@ const HEADERS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
   'access-control-allow-headers': 'content-type, authorization',
+  // 브라우저가 로그인한 요청 전에 미리 묻는 요청(OPTIONS)의 답을 2시간 들고 있게 한다(크롬 상한). 없으면 5초라 로그인한 요청마다
+  // OPTIONS가 하나 더 와서 하루 요청 한도를 두 배로 썼다(2026-11-18 홍보 전 서버 지키기)
+  'access-control-max-age': '7200',
   'cache-control': 'no-store',
 };
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: HEADERS });
 
-// 로그인 없이 받는 경로의 횟수 제한(wrangler.toml [[ratelimits]], 무료). IP마다 센다. 바인딩이 없으면(테스트·wrangler dev) 세지 않는다.
+// 로그인 없이 받는 경로의 횟수 제한(wrangler.toml [[ratelimits]], 무료). IP마다 센다. 바인딩이 없으면(서버 테스트) 세지 않는다(wrangler dev는 흉내 내서 센다).
 // 넘으면 429: 게임은 통계를 sendBeacon으로 보내 답을 안 보고, 랭킹 화면은 '잠시 뒤 다시'를 띄운다.
-// 선물 받는 사람 찾기(/players, 2026-11-10)는 로그인한 사람만 쓰고 계정마다 센다(key)
-const LIMITERS = { '/events': 'EVENTS_LIMIT', '/rankings': 'RANKINGS_LIMIT', '/players': 'PLAYERS_LIMIT' };
+// 선물 받는 사람 찾기(/players, 2026-11-10)와 시드 표(/seeds, 2026-11-18 서명한 표)는 로그인한 사람만 쓰고 계정마다 센다(key).
+// Cloudflare 위치마다 따로 세서, 무료 플랜에서 한국 요청이 미국 두 곳(LAX·SJC)으로 나뉘면 실제로는 정한 수의 두 배쯤에서 걸린다(2026-11-18 실서버 129번 중 127번째부터 429)
+const LIMITERS = { '/events': 'EVENTS_LIMIT', '/rankings': 'RANKINGS_LIMIT', '/players': 'PLAYERS_LIMIT', '/seeds': 'SEEDS_LIMIT' };
 async function limited(request, env, path, key = request.headers.get('cf-connecting-ip') ?? 'unknown') {
   const limiter = env[LIMITERS[path]];
   if (!limiter) return false;
@@ -114,7 +118,12 @@ async function loginCallback(url, env, now) {
     console.error(e);
     return backTo(st.r, { login_error: 'kakao', n: st.n });
   }
-  const playerId = await findOrCreateAccount(env.DB, await accountKey(env.ID_SALT, kakaoId), st.pid);
+  // DB가 막힌 날(무료 한도)에도 카카오 동의를 마친 사람이 날 JSON 페이지에 남지 않고 게임으로 돌아가 '로그인하지 못했어요'를 보게 한다(2026-11-18)
+  let playerId;
+  try { playerId = await findOrCreateAccount(env.DB, await accountKey(env.ID_SALT, kakaoId), st.pid); } catch (e) {
+    console.error(e);
+    return backTo(st.r, { login_error: 'server', n: st.n });
+  }
   return backTo(st.r, { login: await newSession(env, playerId, now), n: st.n });
 }
 
@@ -164,13 +173,13 @@ export default {
       // 10구 도전 한 판의 시드와 일회용 표(seeds.js), 그 표로 상대할 이번 주 투수 유형(style). 게임은 기다리지 않고 시작하려고 다음 판 표를 미리 받아 둔다
       if (url.pathname === '/seeds' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
-        const issued = await issueSeed(env.DB, acct.player_id, now);
-        return json(issued.ok ? { ...issued, style: styleAt(now) } : issued, issued.ok ? 200 : 429);
+        if (await limited(request, env, '/seeds', acct.player_id)) return json({ ok: false, error: 'too_many_seeds' }, 429);
+        return json({ ...(await issueSeed(env.SESSION_SECRET, acct.player_id, now)), style: styleAt(now) });
       }
       if (url.pathname === '/scores' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
         const body = await request.json().catch(() => null);
-        const ticket = body?.mode === 'challenge' ? await findSeed(env.DB, body.token) : null;
+        const ticket = body?.mode === 'challenge' ? await findSeed(env.DB, env.SESSION_SECRET, body.token) : null;
         const checked = validateSubmission(body, now, acct.player_id, ticket);
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const s = checked.value;
@@ -182,6 +191,7 @@ export default {
           updateBoard(env.DB, s.week, s.playerId),
           env.DB.prepare('UPDATE accounts SET nick = ?, team = ?, games = games + 1 WHERE player_id = ?').bind(s.nick, s.team, s.playerId),
           ...(ticket ? [useSeed(env.DB, ticket, now)] : []),
+          ...(ticket?.signed ? [dropOldSeeds(env.DB, now)] : []),
         ]);
         const earned = await giveCoins(env.DB, s.playerId, coinsFor(s.score), now);
         // 칭호 수는 그날 최고 기록이 아닌 판도 쌓는다(그 판에서 해낸 일이라서). newTitles는 이 판으로 처음 받은 것, titles는 받은 칭호 모두, counts는 쌓은 수
@@ -193,11 +203,11 @@ export default {
       // 표를 먼저 쓴 것으로 적고 적은 요청만 코인을 준다(같은 표로 동시에 와도 한 번). 랭킹에는 올리지 않는다
       if (url.pathname === '/scenario' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
-        const body = await request.json().catch(() => null), ticket = await findSeed(env.DB, body?.token);
+        const body = await request.json().catch(() => null), ticket = await findSeed(env.DB, env.SESSION_SECRET, body?.token);
         const checked = checkScenario(body, now, acct.player_id, ticket);
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const { end, points, bonus, coins } = checked.value;
-        const used = await useSeed(env.DB, ticket, now).run();
+        const [used] = await env.DB.batch([useSeed(env.DB, ticket, now), ...(ticket.signed ? [dropOldSeeds(env.DB, now)] : [])]);
         if (!used.meta.changes) return json({ ok: false, error: 'seed_used' }, 400);
         const earned = await giveCoins(env.DB, acct.player_id, coins, now);
         const after = await accountById(env.DB, acct.player_id);
