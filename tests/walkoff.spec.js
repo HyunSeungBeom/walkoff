@@ -582,7 +582,7 @@ test.describe('한 판 끝까지', () => {
     const sent = sentScores(errors)[0], today = await page.evaluate(() => walkoff.today()), [t] = errors.calls.tickets;
     // 불은 안타 종류(S 단타·D 2루타·T 3루타·H 홈런)를 담아 보낸다(2026-11-05 칭호 서버부터)
     // 공마다 타이밍(moves)과 타석도 보내서 서버가 판을 다시 돌린다(2026-11-19)
-    const game = await page.evaluate(() => ({ score: walkoff.game.score, lights: walkoff.game.summary.lights, moves: walkoff.game.moves }));
+    const game = await page.evaluate(() => JSON.parse(JSON.stringify({ score: walkoff.game.score, lights: walkoff.game.summary.lights, moves: walkoff.game.moves })));   // 보낸 본문(JSON)과 견준다. 타이밍 -0은 JSON에서 0이 된다(2026-11-19 CI)
     expect(game.lights).toMatch(/^[SDTHYR]+$/);
     expect(game.moves.length).toBe(game.lights.length);
     expect(sent.auth).toBe(`Bearer ${SESSION}`);
@@ -2348,6 +2348,28 @@ test.describe('화면', () => {
     expect(await page.evaluate(() => [document.documentElement.scrollWidth <= innerWidth, getComputedStyle(document.querySelector('td')).display, document.querySelector('a.back').getAttribute('href')]))
       .toEqual([true, isMobile ? 'block' : 'table-cell', './']);
     expect(requests).toEqual([POLICY]);
+    expect(errors).toEqual([]);
+  });
+
+  // 글꼴이 넓은 기기(2026-11-19 CI 리눅스 글꼴에서 320×460 팀 고르기의 '나중에 로그인하기'와 처리방침 링크의 누르는 자리가 겹쳤다). 글 폭을 1.25배로 재게 해 흉내 낸다
+  test('개인정보 처리방침 링크: 글꼴이 넓은 기기에서도 320 폭 팀 고르기·내 계정에서 옆 단추와 누르는 자리가 안 겹치고 화면 안에 든다', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '폰 배치');
+    await page.setViewportSize({ width: 320, height: 460 });
+    const errors = await open(page, '?seed=42', { team: null });
+    await page.evaluate(() => {
+      const measure = CanvasRenderingContext2D.prototype.measureText;
+      CanvasRenderingContext2D.prototype.measureText = function (s) { return new Proxy(measure.call(this, s), { get: (m, k) => (k === 'width' ? m.width * 1.25 : Reflect.get(m, k)) }); };
+    });
+    for (const [show, other] of [[() => walkoff.openOnboard('over'), '나중에 로그인하기'], [() => walkoff.openAccount(), '닫기']]) {
+      await page.evaluate(show);
+      await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '개인정보 처리방침'));
+      const { link, near, w, h } = await page.evaluate((o) => {
+        walkoff.render(performance.now() / 1000);
+        const at = (l) => walkoff.ui.buttons.find((b) => b.label === l).r;
+        return { link: at('개인정보 처리방침'), near: at(o), w: walkoff.view.w, h: walkoff.view.h };
+      }, other);
+      expect([other, link.x >= 0, link.x + link.w <= w, link.y + link.h <= h, link.x >= near.x + near.w || link.x + link.w <= near.x]).toEqual([other, true, true, true, true]);
+    }
     expect(errors).toEqual([]);
   });
 

@@ -4149,8 +4149,15 @@ const UNOFFICIAL = 'KBO·각 구단과 관계없는 비공식 팬 게임이에�
 const PRIVACY_URL = 'privacy.html';
 const KAKAO_NOTE = '카카오에서는 회원번호만 받아요 · 내 기록을 잇는 데만 써요';
 const AGE_NOTE = ['만 14세 이상만 로그인할 수 있어요.', '14세 미만은 로그인 없이 칠 수 있어요(랭킹 없음)'];
-// 처리방침 링크(바깥 화살표, 터치는 손을 뗄 때 연다: linkAt). cx·cy는 글 가운데
-const privacyLink = (cx, cy, size) => ui.buttons.push({ r: drawOutLink('개인정보 처리방침', cx, cy, size), label: '개인정보 처리방침', href: PRIVACY_URL });
+// 처리방침 링크(바깥 화살표, 터치는 손을 뗄 때 연다: linkAt)를 칸(cell) 가운데에 둔다. 칸보다 넓으면 글을 11px까지 줄이고, 누르는 자리도 칸 밖으로
+// 넘기지 않는다(글꼴이 넓은 기기에서 옆 단추와 누르는 자리가 겹쳤다, 2026-11-19 CI 리눅스 글꼴. drawOutLink 폭은 글 + 5 + 화살표 size + 2)
+const POLICY_LABEL = '개인정보 처리방침';
+function privacyLink(cell, size) {
+  ctx.font = font(size, 700);
+  while (size > 11 && ctx.measureText(POLICY_LABEL).width + 7 + size > cell.w - 8) ctx.font = font(--size, 700);
+  const r = drawOutLink(POLICY_LABEL, cell.x + cell.w / 2, cell.y + cell.h / 2, size), x = Math.max(r.x, cell.x);
+  ui.buttons.push({ r: { x, y: r.y, w: Math.min(r.x + r.w, cell.x + cell.w) - x, h: r.h }, label: POLICY_LABEL, href: PRIVACY_URL });
+}
 // 랭킹 기록은 친 날의 팀으로 남는다. 팀을 바꿨는데 랭킹의 팀이 그대로라는 제보가 있어 알린다(2026-10-30)
 const TEAM_NOTE = '이미 친 기록은 그날 팀으로 남아요 · 새 팀은 다음 판부터';
 function drawTeamChip(r, t, on) {
@@ -4211,7 +4218,7 @@ function drawOnboard() {
     text(AGE_NOTE[0], cx, y, sub);
     const [later, policy] = rowRects(cx, y + 10 * k, Math.min(bw, 300), 36, 2);   // '나중에 로그인하기'와 처리방침 링크를 한 줄에(낮은 폰에 줄이 남지 않는다)
     addButton(later, '나중에 로그인하기', 'link', () => confirmOnboard('local'));
-    privacyLink(policy.x + policy.w / 2, policy.y + policy.h / 2, m ? 13 : 14);
+    privacyLink(policy, m ? 13 : 14);
   } else {
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, first ? '이 팀으로 하기' : '저장', 'primary', () => confirmOnboard('local'));
     addButton({ x: cx - 70, y: y + 48 + 10 * k, w: 140, h: 36 }, first ? '뒤로' : '취소', 'link', closeOnboard);
@@ -4750,7 +4757,7 @@ function drawLoginPrompt() {
   y += 2 * (m ? 16 : 18);
   addButton({ x: cx - 80, y: y + 10, w: 160, h: 36 }, '나중에 하기', 'link', () => { skipLogin(); startDefault(); });
   text('로그인하기 전에 친 판은 랭킹에 안 올라가요', cx, y + 64, sub);
-  privacyLink(cx, y + 98, m ? 13 : 14);
+  privacyLink({ x: cx - bw / 2, y: y + 83, w: bw, h: 30 }, m ? 13 : 14);
 }
 
 // 내 계정(로그인했을 때) 또는 카카오 로그인 안내(안 했을 때). 개인정보 안내도 여기 둔다
@@ -4769,11 +4776,13 @@ function drawAccount() {
   const m = view.mobile, cx = view.w / 2, bw = m ? view.w - 64 : 320, ac = game.account, t = teamById(settings.team);
   const lines = (loggedIn() ? ['카카오로 로그인돼 있어요', t ? `${t.name} · ${settings.nick}` : ''] : ['로그인하면 이번 주 랭킹에 올라가고,', '다른 폰이나 브라우저에서도 이어서 해요']).filter(Boolean);
   ctx.font = font(m ? 11 : 13, 500);   // 화면보다 긴 문장은 띄어쓰기 자리에서 나눈다(wrapWords는 지금 글꼴로 잰다)
-  const notes = [...(loggedIn() ? [] : AGE_NOTE), ...PRIVACY].flatMap((l) => wrapWords(l, m ? view.w - 40 : 520)), lh = m ? 18 : 21;
+  const notes = [...(loggedIn() ? [] : AGE_NOTE), ...PRIVACY].flatMap((l) => wrapWords(l, m ? view.w - 40 : 520));
   const block = !loggedIn() ? 60 : !ac.confirm ? 120 : (m ? 24 : 28) + 60;
-  // 제목 가운데부터 맨 아래 줄(처리방침·닫기) 끝까지. 낮은 폰(아이폰 SE 1세대 사파리 320×460)은 제목을 올려 닫기까지 화면에 넣는다
-  const tall = (m ? 36 : 44) + lines.length * (m ? 22 : 26) + (m ? 12 : 16) + block + (m ? 8 : 12) + notes.length * lh + 44;
-  let y = Math.max(m ? 26 : 32, Math.min(view.h * (m ? 0.16 : 0.2), view.h - 8 - tall));
+  // 제목 가운데부터 맨 아래 줄(처리방침·닫기) 끝까지. 낮은 폰(아이폰 SE 1세대 사파리 320×460)은 제목을 올려 닫기까지 화면에 넣고, 그래도 모자라면
+  // (글꼴이 넓어 안내가 더 여러 줄로 나뉜 기기) 안내 줄 간격을 14px까지 좁힌다
+  const fixed = (m ? 36 : 44) + lines.length * (m ? 22 : 26) + (m ? 12 : 16) + block + (m ? 8 : 12) + 44, top = m ? 26 : 32;
+  const lh = clamp((view.h - 8 - top - fixed) / Math.max(1, notes.length), m ? 14 : 17, m ? 18 : 21), tall = fixed + notes.length * lh;
+  let y = Math.max(top, Math.min(view.h * (m ? 0.16 : 0.2), view.h - 8 - tall));
   text(loggedIn() ? '내 계정' : '카카오 로그인', cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 36 : 44;
   lines.forEach((l) => { text(l, cx, y, { size: m ? 14 : 16, weight: 600, color: 'rgba(255,255,255,0.85)' }); y += m ? 22 : 26; });
@@ -4795,7 +4804,7 @@ function drawAccount() {
   y += m ? 8 : 12;
   notes.forEach((l) => { text(l, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' }); y += lh; });
   const [policy, close] = rowRects(cx, y + 8, Math.min(bw, 300), 36, 2);   // 처리방침 링크와 닫기를 한 줄에
-  privacyLink(policy.x + policy.w / 2, policy.y + policy.h / 2, m ? 13 : 14);
+  privacyLink(policy, m ? 13 : 14);
   addButton(close, '닫기', 'link', goTitle);
 }
 
