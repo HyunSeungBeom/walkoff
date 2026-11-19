@@ -1590,6 +1590,7 @@ test.describe('화면', () => {
     await page.evaluate(() => walkoff.openShop('shop'));
     for (const [slot, label] of await page.evaluate(() => walkoff.SHOP_SLOTS)) {
       await tap(page, label);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));   // 새 탭을 그린 장면을 본다(헬멧·장갑·신발은 흰색·금색처럼 이름이 같은 물건이 있어 아래 기다림만으로는 앞 탭 장면을 볼 수 있다)
       const names = await page.evaluate((slot) => walkoff.SHOP_ITEMS.filter((i) => i.slot === slot).map((i) => i.name), slot);
       await expect.poll(() => page.evaluate((names) => walkoff.ui.buttons.filter((b) => names.includes(b.label)).length, names)).toBeGreaterThan(0);
       const scrolls = await page.evaluate(() => walkoff.shopList.max > 0);
