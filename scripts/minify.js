@@ -7,8 +7,10 @@ const fs = require('fs');
 const path = require('path');
 const { transformSync } = require('esbuild');
 
-const minify = (src) => transformSync(src, { loader: 'js', format: 'esm', target: 'es2021', minify: true, legalComments: 'none', charset: 'utf8' }).code;
-module.exports = { minify };
+// 설정은 오류 자리 찾기(scripts/where.js)도 같이 쓴다(같은 설정에 소스맵만 더해 다시 줄인다)
+const OPTIONS = { loader: 'js', format: 'esm', target: 'es2021', minify: true, legalComments: 'none', charset: 'utf8' };
+const minify = (src) => transformSync(src, OPTIONS).code;
+module.exports = { minify, OPTIONS };
 
 if (require.main === module) {
   const [dir] = process.argv.slice(2);

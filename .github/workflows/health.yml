@@ -1,0 +1,36 @@
+# 상태 알림(2026-11-18 사용자 '운영 준비'): 15분마다 게임 주소와 랭킹 서버를 열어 본다(scripts/health.js). 하나라도 죽었으면 잡이 실패해 GitHub가 메일을 보낸다.
+# 정해진 시각 실행은 기본 브랜치(main)에서만 돌고, 부하가 많으면 늦거나 빠질 수 있다. 매시 정각이 가장 붐벼서 7·22·37·52분에 돈다(GitHub 공식 문서).
+# 메일은 cron 줄을 마지막으로 고친 사람에게 간다. 그 사람의 알림 설정(Settings → Notifications → System → Actions)이 이메일이어야 한다.
+# 공개 레포에 60일 동안 활동(push 등)이 없으면 GitHub가 이 일정을 끈다. 그때는 Actions 탭에서 다시 켠다
+name: health
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      extra_url:
+        description: '같이 열어 볼 주소(실패 메일 시험용, https만). 비우면 평소대로'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: health
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: 게임 주소와 랭킹 서버 보기
+        env:
+          EXTRA_URL: ${{ inputs.extra_url }}   # 손으로 돌릴 때만 값이 있다. 명령 줄에 바로 넣지 않고 환경 변수로 넘긴다
+        run: node scripts/health.js

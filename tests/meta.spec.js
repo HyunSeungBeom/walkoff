@@ -83,6 +83,18 @@ test.describe('배포 파일', () => {
     expect(importsOf(fs.readFileSync(path.join(ROOT, 'js', 'main.js'), 'utf8')).length).toBeGreaterThan(5);
     expect(minBytes / srcBytes, '절반쯤으로 준다').toBeLessThan(0.6);
   });
+
+  // 오류 자리(2026-11-18 운영 준비): 폰에서 난 오류는 줄인 파일의 줄·칸으로 오니(npm run stats 셋째 표), 같은 설정으로 다시 줄여 소스의 줄을 찾는다
+  test('오류 자리 찾기(scripts/where.js): 줄인 파일의 줄·칸(1부터)을 소스의 그 코드 줄로 되돌린다', () => {
+    const { minify } = require('../scripts/minify.js'), { whereIn } = require('../scripts/where.js');
+    for (const [f, token] of [['infra/stats.js', 'errorsSeen'], ['infra/stats.js', 'matchAll('], ['main.js', 'openAccount'], ['main.js', '이용 통계는 무작위 번호로만']]) {
+      const src = fs.readFileSync(path.join(ROOT, 'js', f), 'utf8'), min = minify(src), at = min.indexOf(token);
+      expect(at, `줄인 ${f}에 ${token}`).toBeGreaterThan(0);
+      const before = min.slice(0, at), line = before.split('\n').length, col = at - before.lastIndexOf('\n');   // 브라우저처럼 1부터 센다
+      const back = whereIn(src, line, col), text = src.split('\n')[back.line - 1];
+      expect([text.includes(token), /^\s*\/\//.test(text)], `${f}:${back.line} ${text}`).toEqual([true, false]);
+    }
+  });
 });
 
 test.describe('버전 표시', { tag: '@min' }, () => {
@@ -120,6 +132,14 @@ test.describe('주소 옮기기(2026-11-17)', () => {
     expect(main.match(/^import .+ from '(\.\/[^']+)';/m)?.[1]).toBe('./infra/move.js');   // main.js도 맨 처음 가져온다(다른 모듈이 저장소를 읽기 전에)
   });
 
+  // 오류 세기(2026-11-18 운영 준비): 게임 모듈이 아예 못 떠도(문법 오류·파일 못 받음) 오류를 세려고 통계 모듈을 따로 먼저 띄운다
+  test('이용 통계·오류 세기 모듈(infra/stats.js)은 move.js 다음, 게임(main.js)보다 먼저 따로 돈다', () => {
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8'), tag = (f) => html.indexOf(`<script type="module" src="js/${f}"></script>`);
+    expect(tag('infra/move.js')).toBeGreaterThan(0);
+    expect(tag('infra/stats.js')).toBeGreaterThan(tag('infra/move.js'));   // 옛 주소에서 옮겨 온 기록을 넣은 뒤에 저장소를 읽는다
+    expect(tag('infra/stats.js')).toBeLessThan(tag('main.js'));
+  });
+
   test('CI가 새 주소(Cloudflare Pages)에도 올린다: 미리보기 태그만 새 주소로 바꾸고, 비밀값이 없으면 건너뛰고, 옛 주소를 먼저 올린다. 토큰은 따로 잡의 올리는 단계에만 준다', () => {
     const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain(`import('./js/infra/site.js')`);   // 주소는 게임과 같은 곳에서 읽는다
@@ -141,5 +161,50 @@ test.describe('주소 옮기기(2026-11-17)', () => {
     expect(step).not.toMatch(/\bnpm\b|\bnpx\b/);
     expect(cf.indexOf('npm ci --prefix worker')).toBeGreaterThan(0);
     expect(cf.indexOf('npm ci --prefix worker')).toBeLessThan(at);
+  });
+});
+
+// 상태 알림(2026-11-18 운영 준비, .github/workflows/health.yml·scripts/health.js): 15분마다 게임 주소와 서버를 열어 보고, 죽었으면 잡이 실패해 메일이 간다
+test.describe('상태 알림(2026-11-18)', () => {
+  test.skip(({ isMobile }) => isMobile, '파일은 화면 크기와 상관없어서 PC에서만 본다');
+
+  test('15분마다 정각을 피해 돌고, 게임 index.html에 적힌 모듈을 모두 본다. 손으로 넣는 주소는 환경 변수로만 넘긴다', () => {
+    const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'health.yml'), 'utf8');
+    expect(yml).toContain("- cron: '7,22,37,52 * * * *'");   // 매시 정각은 붐벼서 늦거나 빠진다
+    expect(yml).toMatch(/permissions:\n  contents: read\n/);
+    expect(yml).toContain('EXTRA_URL: ${{ inputs.extra_url }}');
+    expect(yml).not.toMatch(/run:[^\n]*\$\{\{/);   // 넣은 값을 명령 줄에 바로 쓰지 않는다(명령 끼워 넣기)
+    const { gameFiles } = require('../scripts/health.js');
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    const listed = [...html.matchAll(/<script type="module" src="([^"]+)"|<link rel="modulepreload" href="([^"]+)"/g)].map((m) => m[1] ?? m[2]);
+    expect(gameFiles(html).sort()).toEqual([...new Set(listed)].sort());
+    expect(gameFiles(html)).toEqual(expect.arrayContaining(['js/main.js', 'js/infra/move.js', 'js/infra/stats.js']));
+  });
+});
+
+// 개인정보 처리방침(2026-11-18 사용자): 게임과 같은 곳의 privacy.html. 받는 값·두는 기간·서버 로그가 바뀌면 이 페이지와 게임 안내(js/main.js PRIVACY)를 같이 고친다
+test.describe('개인정보 처리방침(2026-11-18)', () => {
+  test.skip(({ isMobile }) => isMobile, '파일은 화면 크기와 상관없어서 PC에서만 본다');
+
+  test('privacy.html을 게임과 같이 올리고(_min에도), 빈칸 없이 시행일이 있으며 바깥 파일을 읽지 않는다', () => {
+    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    for (const dir of ['_site', '_min']) expect(ci.match(new RegExp(`cp (.+?) ${dir}/`))?.[1].split(/\s+/), dir).toContain('privacy.html');
+    const page = fs.readFileSync(path.join(ROOT, 'privacy.html'), 'utf8');
+    expect(page).not.toMatch(/\[\[|곧 들어감/);   // 초안의 빈칸·표시
+    const day = page.match(/<p class="date">시행일: (\d{4}-\d{2}-\d{2})<\/p>/)?.[1];
+    expect(page).toContain(`이 방침은 ${day}부터 적용합니다.`);
+    expect(page.match(/<(?:script|link|img|iframe|object|embed)\b[^>]*>/g)).toEqual([expect.stringMatching(/^<link rel="icon" href="data:image\/svg\+xml,/)]);   // 15절 '외부 글꼴이나 외부 스크립트를 쓰지 않습니다'
+    expect(fs.readFileSync(path.join(ROOT, 'js', 'main.js'), 'utf8')).toContain("const PRIVACY_URL = 'privacy.html';");
+  });
+
+  test("서버 로그는 오류만(2026-11-19 사용자): 서버가 찍는 줄은 오류(console.error(e))와 점수 검사에서 걸린 판(score_mismatch) 둘뿐이고 요청마다 남는 기록은 끈다. 바꾸면 처리방침 3·11절도 고친다", () => {
+    const src = path.join(ROOT, 'worker', 'src');
+    const calls = fs.readdirSync(src).filter((f) => f.endsWith('.js')).flatMap((f) => [...fs.readFileSync(path.join(src, f), 'utf8').matchAll(/console\.(\w+)\((.{0,60})/g)]
+      .map((m) => `${f} ${m[1]} ${m[2].startsWith('e)') ? 'e' : m[2].includes("event: 'score_mismatch'") ? 'score_mismatch' : m[2]}`));
+    expect([...new Set(calls)].sort()).toEqual(['index.js error e', 'index.js log score_mismatch']);
+    expect(fs.readFileSync(path.join(ROOT, 'worker', 'wrangler.toml'), 'utf8')).toContain('[observability]\nenabled = true\nredact_query_string = true\n\n[observability.logs]\ninvocation_logs = false\n');
+    const page = fs.readFileSync(path.join(ROOT, 'privacy.html'), 'utf8');
+    expect(page).toContain('<td data-label="정보">서버 로그(서버 오류, 점수가 다르게 온 판)</td><td data-label="두는 기간">3일</td>');
+    expect(page).toContain('서버 로그(Cloudflare Workers Logs)에는 두 가지만 남깁니다.');
   });
 });

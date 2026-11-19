@@ -34,3 +34,14 @@ simple = { limit = 30, period = 60 }
 name = "SEEDS_LIMIT"
 namespace_id = "1104"
 simple = { limit = 20, period = 60 }
+
+# 서버 로그(Workers Logs, 2026-11-19 사용자 '오류만'): console.error·console.log로 찍은 줄만 남기고 요청마다 남는 기록(invocation logs)은 끈다.
+# 지금 찍는 줄은 서버 오류(index.js console.error)와 점수 검사에서 걸린 판(score_mismatch, 계정 번호가 든다) 둘뿐이다(tests/meta.spec.js가 본다).
+# 남은 줄에 붙는 요청 주소의 ? 뒤 값(랭킹 번호 등)은 지운다. 무료는 하루 20만 줄·3일 보관이고 2026-12-01부터 Cloudflare Observability 요금으로 바뀐다(그 전에 다시 본다).
+# 남기는 줄을 바꾸면 처리방침(privacy.html) 3·11절도 고친다
+[observability]
+enabled = true
+redact_query_string = true
+
+[observability.logs]
+invocation_logs = false

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { kstDay, addDays } from '../src/rules.js';
-import { BATCH_MAX, BATCH_KEYS, EVENT_CAP, LATE_DAYS, STATS_SQL, SWING_SQL } from '../src/stats.js';
+import { BATCH_MAX, BATCH_KEYS, DEVICE_DAYS, EVENT_CAP, LATE_DAYS, STATS_SQL, SWING_SQL, ERRORS_SQL, cleanErrorMessage } from '../src/stats.js';
 import { memoryD1 } from './d1.js';
 
 // 게임이 sendBeacon으로 보내는 것처럼 text/plain 본문으로 보낸다
@@ -199,4 +199,94 @@ test(`이용 통계 묶음: 모드·스윙 칸이 합쳐 ${BATCH_KEYS}칸을 넘
   }
   assert.equal(env.DB.rows('SELECT 1 FROM play_stats').length, 5);   // 받은 묶음 하나만 셌다
   assert.equal(env.DB.rows('SELECT 1 FROM swing_stats').length, 2);
+});
+
+// 오류 종류(2026-11-18 운영 준비): 묶음에 errors: [{ build, src, line, col, name, message, os, browser }]. 서버는 그날 그 오류를 낸 기기 수만 센다
+const er = (patch) => ({ build: '86f966f', src: 'main.js', line: 1, col: 48213, name: 'TypeError', message: "Cannot read properties of undefined (reading 'x')", os: 'ios', browser: 'kakao', ...patch });
+test('오류 묶음: 판·자리·오류·메시지·기기·브라우저마다 그 오류를 낸 기기 수를 세고 기기 번호는 남기지 않는다. 오류도 그날 신호 수에 든다', async () => {
+  const env = { DB: memoryD1() }, day = kstDay(Date.now());
+  assert.equal((await send(env, batch({ errors: [er()] }))).status, 204);
+  assert.equal((await send(env, batch({ device: 'd-device-0002', counts: {}, errors: [er(), er({ os: 'android', browser: 'samsung' })] }))).status, 204);   // 오류만 있는 묶음(판을 못 열었을 때)
+  assert.equal((await send(env, batch())).status, 204);   // 오류 없는 묶음(예전 게임)
+  assert.deepEqual(env.DB.rows('SELECT day, build, src, line, col, name, message, os, browser, devices FROM error_stats ORDER BY os'), [
+    { ...er({ os: 'android', browser: 'samsung' }), day, devices: 1 },
+    { ...er(), day, devices: 2 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT device, events FROM play_devices ORDER BY device'), [{ device: 'd-device-0001', events: 19 + 18 }, { device: 'd-device-0002', events: 2 }]);
+  assert.ok(!env.DB.rows("SELECT name FROM pragma_table_info('error_stats')").some((c) => /device$/.test(c.name)));   // 기기 번호 칸이 없다
+  const t = env.DB.rows(ERRORS_SQL);   // npm run stats 셋째 표: 같은 오류는 기기·브라우저가 달라도 한 줄로 모은다
+  assert.deepEqual(t.map((x) => [x['마지막 날'], x['판'], x['자리'], x['오류'], x['기기 수'], x['기기'].split(',').sort(), x['브라우저'].split(',').sort()]),
+    [[day, '86f966f', 'main.js:1:48213', 'TypeError', 3, ['android', 'ios'], ['kakao', 'samsung']]]);
+});
+
+test('오류 묶음: 메시지는 서버가 한 번 더 지운다(주소·물음표 뒤·메일·큰따옴표 안·이름이 아닌 작은따옴표 안·한글·네 자리 넘는 숫자, 80자까지). 지운 것은 다시 지워도 그대로다', async () => {
+  const env = { DB: memoryD1() };
+  const raw = '닉네임 홍길동 https://walkoff-api.walkoff-api.workers.dev/me?player=p-123 kim@naver.com seed 1234567 "{"nick":"kimbo"}"';
+  assert.equal((await send(env, batch({ errors: [er({ message: raw })] }))).status, 204);
+  assert.deepEqual(env.DB.rows('SELECT message FROM error_stats'), [{ message: '… seed # "…"' }]);
+  const cases = [
+    ["Cannot read properties of undefined (reading 'nick')", "Cannot read properties of undefined (reading 'nick')"],   // 이름은 그대로(어디서 났는지 알게)
+    ["undefined is not an object (evaluating 'a.b.c')", "undefined is not an object (evaluating 'a.b.c')"],
+    ["Can't find variable: foo", "Can't find variable: foo"],
+    ['Failed to fetch https://walkoff-api.walkoff-api.workers.dev/rankings?player=abc', 'Failed to fetch …'],
+    [`Unexpected token '<', "<!DOCTYPE "... is not valid JSON`, `Unexpected token '…', "…"... is not valid JSON`],
+    [`Unexpected token 'k', "{"nick":"kimbo"}" is not valid JSON`, `Unexpected token 'k', "…" is not valid JSON`],   // JSON 조각 안 닉네임
+    ["Invalid nick '홍길동 1'", "Invalid nick '…'"],
+    ['Quota exceeded for seed 20261118 by kim.b@naver.com', 'Quota exceeded for seed # by …'],
+    ['line1\n  line2\ttab', 'line1 line2 tab'],
+    ['x'.repeat(300), 'x'.repeat(80)],
+    [undefined, ''],
+  ];
+  for (const [input, want] of cases) {
+    assert.equal(cleanErrorMessage(input), want, String(input));
+    assert.equal(cleanErrorMessage(want), want, want);
+  }
+});
+
+test('오류 묶음: 모양이 틀린 오류 칸(판·파일·줄·칸·이름·메시지·기기·브라우저)은 묶음째 거절하고 아무것도 세지 않는다', async () => {
+  const env = { DB: memoryD1() };
+  const bad = [
+    er({ build: 'HEAD' }), er({ build: '86f966' }), er({ src: '../worker/src/index.js' }), er({ src: 'https://x.test/a.js' }), er({ src: 'Main.js' }), er({ src: 'a/b/c.js' }),
+    er({ line: -1 }), er({ col: 1.5 }), er({ col: '3' }), er({ line: 1e8 }), er({ name: 'Type Error' }), er({ name: '<b>' }), er({ name: '' }),
+    er({ message: 'x'.repeat(201) }), er({ message: 3 }), er({ os: 'linux' }), er({ browser: 'opera' }), null, [er()], 'TypeError',
+  ];
+  for (const x of bad) {
+    const r = await send(env, batch({ errors: [x] }));
+    assert.deepEqual([r.status, (await r.json()).error], [400, 'bad_errors'], JSON.stringify(x));
+  }
+  for (const errors of [er(), {}, Array.from({ length: BATCH_KEYS + 1 }, (_, i) => er({ col: i }))]) {
+    const r = await send(env, batch({ counts: {}, errors }));
+    assert.deepEqual([r.status, (await r.json()).error], [400, 'bad_errors']);
+  }
+  assert.equal(env.DB.rows('SELECT 1 FROM error_stats').length, 0);
+  assert.equal(env.DB.rows('SELECT 1 FROM play_stats').length, 0);
+  assert.equal(env.DB.rows('SELECT 1 FROM play_devices').length, 0);
+});
+
+test(`오류 묶음: 오류 칸도 모드·스윙 칸과 합쳐 ${BATCH_KEYS}칸까지만 받고(묶음 하나가 쓰는 줄 상한 그대로), 그날 ${EVENT_CAP}번을 넘긴 기기의 오류는 세지 않는다`, async () => {
+  const env = { DB: memoryD1() };
+  const counts = Object.fromEntries(['challenge', 'scenario', 'practice', 'aim', 'duel'].map((m) => [m, { starts: 1, ends: 0 }]));   // 모드 5칸
+  assert.equal((await send(env, batch({ counts, swings: { 'challenge|touch': sw() }, errors: [er()] }))).status, 204);   // 합 7칸
+  const r = await send(env, batch({ counts, swings: { 'challenge|touch': sw() }, errors: [er(), er({ col: 7 })] }));   // 합 8칸
+  assert.deepEqual([r.status, (await r.json()).error], [400, 'bad_counts']);
+  await env.DB.prepare('UPDATE play_devices SET events = ?').bind(EVENT_CAP).run();
+  assert.equal((await send(env, batch({ counts: {}, errors: [er({ col: 9 })] }))).status, 204);
+  assert.deepEqual(env.DB.rows('SELECT col, devices FROM error_stats'), [{ col: 48213, devices: 1 }]);
+});
+
+test('이용 통계: 기기별 줄(무작위 번호)은 90일이 지나면 묶음을 받을 때 지우고, 날짜별 합계는 그대로 둔다. 지울 때 표를 다 훑지 않는다', async () => {
+  const env = { DB: memoryD1() }, day = kstDay(Date.now());
+  const old = [[DEVICE_DAYS + 30, 'd-old-0001'], [DEVICE_DAYS + 1, 'd-old-0002'], [DEVICE_DAYS, 'd-keep-0001'], [1, 'd-keep-0002']];
+  for (const [ago, device] of old) {
+    await env.DB.prepare('INSERT INTO play_devices (day, device, mobile, events) VALUES (?, ?, 0, 3)').bind(addDays(day, -ago), device).run();
+    await env.DB.prepare('INSERT INTO play_stats (day, mode, starts, ends) VALUES (?, ?, 3, 2)').bind(addDays(day, -ago), 'challenge').run();
+  }
+  assert.equal((await send(env, ev())).status, 204);
+  assert.deepEqual(env.DB.rows('SELECT device FROM play_devices ORDER BY day').map((r) => r.device), ['d-keep-0001', 'd-keep-0002', 'd-device-0001']);
+  assert.equal(env.DB.rows('SELECT COUNT(*) AS n FROM play_stats')[0].n, old.length + 1);
+  // 늦게 온 묶음(이틀 전 날짜)은 그 날짜로 재서 지운다: 90일째 줄은 남는다
+  assert.equal((await send(env, ev({ day: addDays(day, -LATE_DAYS), device: 'd-device-0002' }))).status, 204);
+  assert.deepEqual(env.DB.rows('SELECT device FROM play_devices WHERE day < ?', addDays(day, -2)).map((r) => r.device), ['d-keep-0001']);
+  const plan = env.DB.rows('EXPLAIN QUERY PLAN DELETE FROM play_devices WHERE day < ?', addDays(day, -DEVICE_DAYS)).map((r) => r.detail).join(' | ');
+  assert.match(plan, /SEARCH play_devices USING (?:PRIMARY KEY|INDEX sqlite_autoindex_play_devices_1) \(day<\?\)/);
 });

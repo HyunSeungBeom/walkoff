@@ -4143,6 +4143,14 @@ function submitTeamless() {
 }
 
 const UNOFFICIAL = 'KBO·각 구단과 관계없는 비공식 팬 게임이에요';
+// 개인정보 처리방침(2026-11-18 사용자, 게임과 같은 곳의 privacy.html): 내 계정과 카카오 로그인 단추 근처(팀 고르기·로그인 권유)에서 새 탭으로 연다.
+// 카카오 회원번호를 바꾼 값은 계정 열쇠라서 랭킹 말고도 코인·물건·칭호·선물·다른 기기에서 이어 하기에 쓴다(전에는 '랭킹에만 써요').
+// 카카오 로그인은 만 14세 이상만 한다(처리방침 9절). 팀 고르기는 남는 높이가 없어 앞 문장만 둔다(바로 아래가 '나중에 로그인하기')
+const PRIVACY_URL = 'privacy.html';
+const KAKAO_NOTE = '카카오에서는 회원번호만 받아요 · 내 기록을 잇는 데만 써요';
+const AGE_NOTE = ['만 14세 이상만 로그인할 수 있어요.', '14세 미만은 로그인 없이 칠 수 있어요(랭킹 없음)'];
+// 처리방침 링크(바깥 화살표, 터치는 손을 뗄 때 연다: linkAt). cx·cy는 글 가운데
+const privacyLink = (cx, cy, size) => ui.buttons.push({ r: drawOutLink('개인정보 처리방침', cx, cy, size), label: '개인정보 처리방침', href: PRIVACY_URL });
 // 랭킹 기록은 친 날의 팀으로 남는다. 팀을 바꿨는데 랭킹의 팀이 그대로라는 제보가 있어 알린다(2026-10-30)
 const TEAM_NOTE = '이미 친 기록은 그날 팀으로 남아요 · 새 팀은 다음 판부터';
 function drawTeamChip(r, t, on) {
@@ -4163,11 +4171,12 @@ function drawOnboard() {
   const cols = m || view.w < 800 ? 2 : 5, gap = m ? 8 : 10, w = m ? view.w - 32 : cols === 2 ? Math.min(view.w - 64, 600) : Math.min(900, view.w - 32);
   const cw = (w - gap * (cols - 1)) / cols, rows = Math.ceil(TEAMS.length / cols);
   // 낮은 화면(아이폰 SE 1세대 사파리 320×460)은 맨 아래 단추까지 화면에 들어가게 팀 단추를 폰 34·PC 44px까지 낮추고, 그래도 넘치면 줄 간격을 0.7배까지 줄인다
-  // (같은 점검: '나중에 로그인하기'가 화면 밖이었다). 글자·입력 칸·단추 높이는 그대로. air: 줄일 수 있는 간격의 합, room: 입력 칸·단추·링크를 뺀 높이
+  // (같은 점검: '나중에 로그인하기'가 화면 밖이었다). 글자·입력 칸·단추 높이는 그대로. air: 줄일 수 있는 간격의 합, room: 입력 칸·단추·링크를 뺀 높이.
+  // 로그인 안 한 사람은 카카오 단추 아래 두 줄(회원번호·14세, 줄 간격은 안 줄임)이 있어, 그래도 모자라면 폰 팀 단추를 30px까지 낮춘다(2026-11-19 처리방침)
   const air = view.h * (m ? 0.08 : 0.12) + (m ? 28 + 24 + 10 + 24 + 12 + 16 : 36 + 34 + 16 + 32 + 18 + 24) + rows * gap + (ob.next === 'menu' ? (m ? 18 : 22) : 0) + (guest ? (m ? 16 : 20) + 10 : 10);
-  const room = view.h - 8 - air - 44 - 48 - 36;
+  const room = view.h - 8 - air - 44 - 48 - 36 - (guest ? (m ? 14 : 18) : 0);
   let ch = m ? 40 : 52;
-  if (rows * ch > room) ch = Math.max(m ? 34 : 44, room / rows);
+  if (rows * ch > room) ch = Math.max(m ? (guest ? 30 : 34) : 44, room / rows);
   const k = clamp((room - rows * ch + air) / air, 0.7, 1);
   let y = view.h * (m ? 0.08 : 0.12) * k;
   text(first ? '내 팀을 고르세요' : '팀·닉네임 바꾸기', cx, y, { size: m ? 22 : 28, weight: 800 });
@@ -4196,8 +4205,13 @@ function drawOnboard() {
     addButton({ x: 8, y: 8, w: 76, h: 36 }, '‹ 뒤로', 'link', closeOnboard);   // 끝 화면으로(아래는 작은 폰에서 자리가 없다)
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 시작', 'kakao', () => confirmOnboard('kakao'));
     y += 48 + (m ? 16 : 20) * k;
-    text('카카오에서는 회원번호만 받아요 · 랭킹에만 써요', cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });
-    addButton({ x: cx - 100, y: y + 10 * k, w: 200, h: 36 }, '나중에 로그인하기', 'link', () => confirmOnboard('local'));
+    const sub = { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' };
+    text(KAKAO_NOTE, cx, y, sub);
+    y += m ? 14 : 18;
+    text(AGE_NOTE[0], cx, y, sub);
+    const [later, policy] = rowRects(cx, y + 10 * k, Math.min(bw, 300), 36, 2);   // '나중에 로그인하기'와 처리방침 링크를 한 줄에(낮은 폰에 줄이 남지 않는다)
+    addButton(later, '나중에 로그인하기', 'link', () => confirmOnboard('local'));
+    privacyLink(policy.x + policy.w / 2, policy.y + policy.h / 2, m ? 13 : 14);
   } else {
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, first ? '이 팀으로 하기' : '저장', 'primary', () => confirmOnboard('local'));
     addButton({ x: cx - 70, y: y + 48 + 10 * k, w: 140, h: 36 }, first ? '뒤로' : '취소', 'link', closeOnboard);
@@ -4732,29 +4746,37 @@ function drawLoginPrompt() {
   y += m ? 16 : 20;
   addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 로그인', 'kakao', startKakaoLogin);
   y += 48 + (m ? 16 : 20);
-  text('카카오에서는 회원번호만 받아요 · 랭킹에만 써요', cx, y, sub);
+  [KAKAO_NOTE, ...AGE_NOTE].forEach((l, i) => text(l, cx, y + i * (m ? 16 : 18), sub));
+  y += 2 * (m ? 16 : 18);
   addButton({ x: cx - 80, y: y + 10, w: 160, h: 36 }, '나중에 하기', 'link', () => { skipLogin(); startDefault(); });
   text('로그인하기 전에 친 판은 랭킹에 안 올라가요', cx, y + 64, sub);
+  privacyLink(cx, y + 98, m ? 13 : 14);
 }
 
 // 내 계정(로그인했을 때) 또는 카카오 로그인 안내(안 했을 때). 개인정보 안내도 여기 둔다
-// (2026-11-17 사용자: 선물 찾기, 이용 통계(worker/src/stats.js), 도전장 주소(game/duel.js)에 실리는 값을 더했다)
+// (2026-11-17 사용자: 선물 찾기, 이용 통계(worker/src/stats.js), 도전장 주소(game/duel.js)에 실리는 값을 더했다. 2026-11-18 사용자: 오류 종류를 세고,
+// 처리방침(privacy.html)에 맞춰 1줄(회원번호를 바꾼 값)과 5줄(복구용 기록 7일)을 고쳤다. 로그인 안 했으면 카카오 단추 아래에 14세 안내를 먼저 둔다)
 const PRIVACY = [
-  '카카오에서는 회원번호만 받아 알아볼 수 없게 저장해요.',
+  '카카오에서는 회원번호만 받아 비밀 키로 바꾼 값만 저장해요.',
   '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인 같은 내 기록에만 써요.',
-  '판 수·스윙 수를 세는 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
+  '판 수·스윙 수와 오류 종류를 세는 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
   '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
-  '랭킹 기록 지우기를 누르면 바로 모두 지워요.',
+  '랭킹 기록 지우기를 누르면 서버의 계정과 기록을 바로 지워요. 복구용 기록은 7일 뒤 사라져요.',
 ];
 function openAccount() { Object.assign(game, { state: 'account', account: { confirm: false } }); }
 function drawAccount() {
   dim(0.86);
   const m = view.mobile, cx = view.w / 2, bw = m ? view.w - 64 : 320, ac = game.account, t = teamById(settings.team);
-  let y = view.h * (m ? 0.16 : 0.2);
+  const lines = (loggedIn() ? ['카카오로 로그인돼 있어요', t ? `${t.name} · ${settings.nick}` : ''] : ['로그인하면 이번 주 랭킹에 올라가고,', '다른 폰이나 브라우저에서도 이어서 해요']).filter(Boolean);
+  ctx.font = font(m ? 11 : 13, 500);   // 화면보다 긴 문장은 띄어쓰기 자리에서 나눈다(wrapWords는 지금 글꼴로 잰다)
+  const notes = [...(loggedIn() ? [] : AGE_NOTE), ...PRIVACY].flatMap((l) => wrapWords(l, m ? view.w - 40 : 520)), lh = m ? 18 : 21;
+  const block = !loggedIn() ? 60 : !ac.confirm ? 120 : (m ? 24 : 28) + 60;
+  // 제목 가운데부터 맨 아래 줄(처리방침·닫기) 끝까지. 낮은 폰(아이폰 SE 1세대 사파리 320×460)은 제목을 올려 닫기까지 화면에 넣는다
+  const tall = (m ? 36 : 44) + lines.length * (m ? 22 : 26) + (m ? 12 : 16) + block + (m ? 8 : 12) + notes.length * lh + 44;
+  let y = Math.max(m ? 26 : 32, Math.min(view.h * (m ? 0.16 : 0.2), view.h - 8 - tall));
   text(loggedIn() ? '내 계정' : '카카오 로그인', cx, y, { size: m ? 22 : 28, weight: 800 });
   y += m ? 36 : 44;
-  const lines = loggedIn() ? ['카카오로 로그인돼 있어요', t ? `${t.name} · ${settings.nick}` : ''] : ['로그인하면 이번 주 랭킹에 올라가고,', '다른 폰이나 브라우저에서도 이어서 해요'];
-  lines.filter(Boolean).forEach((l) => { text(l, cx, y, { size: m ? 14 : 16, weight: 600, color: 'rgba(255,255,255,0.85)' }); y += m ? 22 : 26; });
+  lines.forEach((l) => { text(l, cx, y, { size: m ? 14 : 16, weight: 600, color: 'rgba(255,255,255,0.85)' }); y += m ? 22 : 26; });
   y += m ? 12 : 16;
   if (!loggedIn()) {
     addButton({ x: cx - bw / 2, y, w: bw, h: 48 }, '카카오로 로그인', 'kakao', startKakaoLogin);
@@ -4771,9 +4793,10 @@ function drawAccount() {
     y += (m ? 24 : 28) + 60;
   }
   y += m ? 8 : 12;
-  ctx.font = font(m ? 11 : 13, 500);   // 화면보다 긴 문장은 띄어쓰기 자리에서 나눈다(wrapWords는 지금 글꼴로 잰다)
-  PRIVACY.flatMap((l) => wrapWords(l, m ? view.w - 40 : 520)).forEach((l) => { text(l, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' }); y += m ? 18 : 21; });
-  addButton({ x: cx - 70, y: y + 8, w: 140, h: 36 }, '닫기', 'link', goTitle);
+  notes.forEach((l) => { text(l, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' }); y += lh; });
+  const [policy, close] = rowRects(cx, y + 8, Math.min(bw, 300), 36, 2);   // 처리방침 링크와 닫기를 한 줄에
+  privacyLink(policy.x + policy.w / 2, policy.y + policy.h / 2, m ? 13 : 14);
+  addButton(close, '닫기', 'link', goTitle);
 }
 
 // ===== 상점과 내 물건 =====
@@ -6062,8 +6085,10 @@ function drawDuelCard(d, cx, y) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 줄을 더하면 끝 글자를 올려 읽은 사람에게도 NEW를 다시 띄운다), label은 화면 머리
-  { id: '2026-11-19a', label: '11/19', items: [
+  { id: '2026-11-19b', label: '11/19', items: [
     '바뀌는 투수마다 얼굴도 정해져 있어요. 첫 주 강속구형은 눈 밑을 까맣게 칠하고 나오고, 포크볼러는 턱수염을 기르고 평소엔 표정이 없어서 다음 공이 더 안 읽혀요.',
+    '개인정보 처리방침을 만들었어요. 로그인 안내와 내 계정에서 열어 볼 수 있어요.',
+    '로그인은 만 14세 이상만 할 수 있어요. 카카오에서는 회원번호만 받아요.',
   ] },
   { id: '2026-11-18a', label: '11/18', items: [
     "폰에서 '결과 공유하기'를 누르면 이제 늘 공유 창이 떠요. 도전장 글과 카드 그림에서는 공마다 결과를 뺐어요.",
@@ -6442,7 +6467,7 @@ function drawMenu() {
     }
     bottom = Math.max(bottom, cy);
   });
-  text('판 수만 익명으로 세고, 이름·계정은 보내지 않아요', view.w / 2, bottom + c.foot / 2, { size: c.footFont, weight: 500, color: 'rgba(255,255,255,0.42)' });   // 이용 통계(track) 안내
+  text('이용 통계는 무작위 번호로만 세고, 이름·계정은 보내지 않아요', view.w / 2, bottom + c.foot / 2, { size: c.footFont, weight: 500, color: 'rgba(255,255,255,0.42)' });   // 이용 통계(track) 안내. 세는 것을 하나하나 적지 않는다(늘어도 안 틀리게). 같은 번호가 여러 날 남아 '익명'은 센 말이라 바꿨다(2026-11-18 사용자)
   // 넘치면 아래에 더 있을 때 아래 가장자리를, 위로 넘겼을 때 위 가장자리를 흐리게 한다(끝까지 넘기면 사라진다)
   menu.fade = { top: menu.max > 0 && menu.scroll > 0.5, bottom: menu.max > 0 && menu.scroll < menu.max - 0.5 };
   for (const [on, y0, y1] of [[menu.fade.top, 0, MENU_FADE], [menu.fade.bottom, view.h, view.h - MENU_FADE]]) {

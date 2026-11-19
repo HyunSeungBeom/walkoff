@@ -1,8 +1,9 @@
 // 이용 통계를 원격 D1에서 표로 뽑는다: worker 폴더에서 npm run stats. 원격 DB는 읽기만 한다
-// 날짜별 기기·판 수와 스윙 결과(src/stats.js, 2026-11-05 조준 타격 실험)에 더해 다시 온 비율·새 기기·도전장·주별 요약·무료 한도 어림(2026-11-18 통계 보강, stats-tables.js).
+// 날짜별 기기·판 수와 스윙 결과(src/stats.js, 2026-11-05 조준 타격 실험)에 더해 다시 온 비율·새 기기·도전장·주별 요약·무료 한도 어림(2026-11-18 통계 보강, stats-tables.js),
+// 오류 종류(src/stats.js, 2026-11-18 운영 준비).
 // 다시 온 비율·도전장 표의 날 수는 npm run stats -- --days 21처럼 바꾼다. 표는 한 번에 묻고(wrangler --json) 여기서 글자 표로 찍어서 터미널이 아닌 곳에서도 같다
 import { spawnSync } from 'node:child_process';
-import { STATS_SQL, SWING_SQL } from '../src/stats.js';
+import { STATS_SQL, SWING_SQL, ERRORS_SQL } from '../src/stats.js';
 import { kstDay } from '../src/rules.js';
 import { DAYS, deviceBackSql, playerBackSql, duelSql, weeklySql, withStyle, GAMES_SQL, limits, table } from './stats-tables.js';
 
@@ -24,6 +25,8 @@ const TABLES = [
   ['주별 요약(랭킹 주, 한국 시간 월~일)', weeklySql(), [
     '*: 이번 주(안 끝남). 다음 날은 다음 날이 끝난 날만 센다. 최고 평균은 사람마다 그 주 최고 점수의 평균',
     '랭킹 판 수는 남지 않아서(사람마다 하루 최고 한 판) 10구는 로그인 안 한 판까지 센다'], withStyle],
+  ['오류(최근 7일, 기기 수가 많은 30가지)', ERRORS_SQL, [
+    '자리(파일:줄:칸)를 소스 줄로: 레포 폴더에서 node scripts/where.js <판> <파일> <줄> <칸>. 같은 기기는 같은 오류를 하루 한 번만 보낸다']],
 ];
 
 const out = wrangler(['d1', 'execute', 'walkoff', '--remote', '--json', '--command', [...TABLES.map((t) => t[1]), GAMES_SQL].join(';\n')]);

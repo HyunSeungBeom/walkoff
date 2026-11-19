@@ -629,7 +629,7 @@ test.describe('화면', () => {
     await page.keyboard.press('Space');
     await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '나중에 하기'));
-    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).sort())).toEqual(['나중에 하기', '카카오로 로그인']);
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).sort())).toEqual(['개인정보 처리방침', '나중에 하기', '카카오로 로그인']);   // 처리방침 링크(2026-11-18)
     await page.keyboard.press('Escape');   // 닫으면 시작 화면. 다시 시작하면 또 묻는다
     await page.keyboard.press('Space');
     await expect.poll(() => page.evaluate(() => walkoff.game.state)).toBe('loginPrompt');
@@ -2248,28 +2248,106 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  // 개인정보 안내(2026-11-17 사용자: 선물 찾기·이용 통계·도전장 주소를 더해 다섯 문장). 폰 11px에서 통계 문장은 400px가 넘어 띄어쓰기 자리에서 나눠 그린다
-  test('내 계정: 개인정보 안내는 좁은 폰(360)에서도 긴 문장을 나눠 화면 안에 다 보이고, 닫기 단추와 겹치지 않는다', async ({ page }) => {
+  // 개인정보 안내(2026-11-17 사용자: 선물 찾기·이용 통계·도전장 주소를 더해 다섯 문장. 2026-11-18 처리방침에 맞춰 1·5줄을 고치고 처리방침 링크를 닫기 옆에 둠).
+  // 폰 11px에서 통계 문장은 400px가 넘어 띄어쓰기 자리에서 나눠 그린다
+  test('내 계정: 개인정보 안내는 좁은 폰(360)에서도 긴 문장을 나눠 화면 안에 다 보이고, 처리방침 링크·닫기 단추와 겹치지 않는다', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 640 });
     const errors = await open(page, '?seed=42', { login: true });
     await page.waitForFunction(() => walkoff.settings.playerId === 'p-account-0001');
     await page.evaluate(() => walkoff.openAccount());
-    const { rows, close, w } = await page.evaluate(() => {
+    const { rows, close, policy, w } = await page.evaluate(() => {
       const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, out = [];
       proto.fillText = function (s, x, y, ...rest) { out.push({ s: String(s), x, y, w: this.measureText(String(s)).width, font: this.font, color: this.fillStyle }); return fill.call(this, s, x, y, ...rest); };
       try { walkoff.render(performance.now() / 1000); } finally { proto.fillText = fill; }
-      return { rows: out.filter((o) => o.color === 'rgba(255, 255, 255, 0.55)' && o.font.includes('11px')), close: walkoff.ui.buttons.find((b) => b.label === '닫기').r, w: walkoff.view.w };
+      const at = (l) => walkoff.ui.buttons.find((b) => b.label === l)?.r;
+      return { rows: out.filter((o) => o.color === 'rgba(255, 255, 255, 0.55)' && o.font.includes('11px')), close: at('닫기'), policy: at('개인정보 처리방침'), w: walkoff.view.w };
     });
     expect(rows.map((r) => r.s).join(' ')).toBe([
-      '카카오에서는 회원번호만 받아 알아볼 수 없게 저장해요.',
+      '카카오에서는 회원번호만 받아 비밀 키로 바꾼 값만 저장해요.',
       '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인 같은 내 기록에만 써요.',
-      '판 수·스윙 수를 세는 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
+      '판 수·스윙 수와 오류 종류를 세는 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
       '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
-      '랭킹 기록 지우기를 누르면 바로 모두 지워요.',
-    ].join(' '));
+      '랭킹 기록 지우기를 누르면 서버의 계정과 기록을 바로 지워요. 복구용 기록은 7일 뒤 사라져요.',
+    ].join(' '));   // 로그인했으면 14세 안내는 없다
     expect(rows.length).toBeGreaterThan(5);   // 통계 문장은 두 줄
     for (const r of rows) expect([r.s, Math.round(r.x - r.w / 2) >= 8 && Math.round(r.x + r.w / 2) <= w - 8]).toEqual([r.s, true]);
-    expect(rows.at(-1).y + 8).toBeLessThan(close.y);
+    expect(rows.at(-1).y + 8).toBeLessThan(Math.min(close.y, policy.y));
+    expect([policy.x >= 0, policy.x + policy.w <= close.x, close.x + close.w <= w]).toEqual([true, true, true]);   // 한 줄에 나란히, 안 겹친다
+    expect(errors).toEqual([]);
+  });
+
+  test('메뉴: 아래 이용 통계 안내 한 줄은 좁은 폰(360)에서도 화면 안에 다 보인다(2026-11-18 문구, 세는 것을 하나하나 적지 않는다)', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    const errors = await open(page);
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀·닉네임'));
+    const { row, w } = await page.evaluate(() => {
+      const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, out = [];
+      proto.fillText = function (s, x, y, ...rest) { out.push({ s: String(s), x, w: this.measureText(String(s)).width }); return fill.call(this, s, x, y, ...rest); };
+      try { walkoff.render(performance.now() / 1000); } finally { proto.fillText = fill; }
+      return { row: out.find((o) => o.s.startsWith('이용 통계는')), w: walkoff.view.w };
+    });
+    expect(row?.s).toBe('이용 통계는 무작위 번호로만 세고, 이름·계정은 보내지 않아요');
+    expect([Math.round(row.x - row.w / 2) >= 8, Math.round(row.x + row.w / 2) <= w - 8]).toEqual([true, true]);
+    expect(errors).toEqual([]);
+  });
+
+  // 개인정보 처리방침(2026-11-18 사용자, privacy.html): 내 계정과 카카오 로그인 단추 근처(팀 고르기·로그인 권유)의 링크가 새 탭으로 연다(폰은 손가락을 뗄 때).
+  // 카카오 단추 아래에는 회원번호의 쓰임과 14세 안내를 둔다. 팀 고르기는 남는 높이가 없어 14세 안내의 앞 문장만 둔다(바로 아래가 '나중에 로그인하기')
+  test('개인정보 처리방침: 팀 고르기·로그인 권유·내 계정 링크가 privacy.html을 새 탭으로 열고(폰은 뗄 때, 끌어서 밖에서 떼면 안 엶), 카카오 단추 아래에 14세 안내가 있다', async ({ page, isMobile }) => {
+    const errors = await open(page, '?seed=42', { team: null });
+    const POLICY = PAGE.replace('index.html', 'privacy.html'), KAKAO = '카카오에서는 회원번호만 받아요 · 내 기록을 잇는 데만 써요';
+    const AGE = ['만 14세 이상만 로그인할 수 있어요.', '14세 미만은 로그인 없이 칠 수 있어요(랭킹 없음)'];
+    const popups = [];
+    page.on('popup', (p) => popups.push(p));
+    const opened = async (act) => {   // act로 연 새 탭의 주소. 게임 탭은 그 화면 그대로다
+      const [popup] = await Promise.all([page.waitForEvent('popup'), act()]);
+      await popup.waitForLoadState();
+      const url = popup.url();
+      await popup.close();
+      popups.length = 0;
+      return url;
+    };
+    const touchEv = (type, x, y) => page.evaluate(({ type, x, y }) => document.querySelector('canvas').dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 9, pointerType: 'touch', clientX: x, clientY: y })), { type, x, y });
+    const openPolicy = async () => {   // PC는 클릭, 폰은 누를 때는 안 열고 링크 위에서 뗄 때 연다('의견 보내기'와 같다)
+      const r = await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '개인정보 처리방침')?.r);
+      expect(r, '처리방침 링크').toBeTruthy();
+      if (!isMobile) return opened(() => tap(page, '개인정보 처리방침'));
+      await touchEv('pointerdown', r.x + r.w / 2, r.y + r.h / 2);
+      await page.waitForTimeout(300);
+      await touchEv('pointerup', r.x + r.w / 2, r.y - 60);
+      await page.waitForTimeout(300);
+      expect(popups).toEqual([]);
+      return opened(() => page.touchscreen.tap(r.x + r.w / 2, r.y + r.h / 2));
+    };
+    const screen = async (show, state) => {
+      await page.evaluate(show);
+      await page.waitForFunction((s) => walkoff.game.state === s && walkoff.ui.buttons.some((b) => b.label === '개인정보 처리방침'), state);
+      return drawnTexts(page);
+    };
+    // 팀 고르기(로그인 안 함): '나중에 로그인하기' 옆
+    let texts = await screen(() => walkoff.openOnboard('over'), 'onboard');
+    expect([texts.includes(KAKAO), texts.includes(AGE[0]), texts.includes(AGE[1])]).toEqual([true, true, false]);
+    expect(await openPolicy()).toBe(POLICY);
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('onboard');
+    // 로그인 권유: 14세 안내 두 문장
+    texts = await screen(() => { walkoff.game.state = 'loginPrompt'; }, 'loginPrompt');
+    expect([texts.includes(KAKAO), texts.includes(AGE[0]), texts.includes(AGE[1])]).toEqual([true, true, true]);
+    expect(await openPolicy()).toBe(POLICY);
+    // 내 계정(로그인 안 함): 카카오 단추 아래 14세 안내부터
+    texts = await screen(() => walkoff.openAccount(), 'account');
+    expect(AGE.every((l) => texts.join(' ').includes(l)), '14세 안내').toBe(true);
+    expect(await openPolicy()).toBe(POLICY);
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('account');
+    // 처리방침 페이지: 바깥 파일 없이 뜨고, 좁은 폰(320)에서도 옆으로 넘치지 않으며 폰은 표를 줄마다 카드로 보인다
+    await page.setViewportSize({ width: isMobile ? 320 : 1440, height: 640 });
+    const requests = [];
+    page.on('request', (r) => requests.push(r.url()));
+    await page.goto(POLICY);
+    expect(await page.title()).toBe('개인정보 처리방침 · walkoff');
+    expect(await page.evaluate(() => [document.documentElement.scrollWidth <= innerWidth, getComputedStyle(document.querySelector('td')).display, document.querySelector('a.back').getAttribute('href')]))
+      .toEqual([true, isMobile ? 'block' : 'table-cell', './']);
+    expect(requests).toEqual([POLICY]);
     expect(errors).toEqual([]);
   });
 
@@ -3721,6 +3799,92 @@ test.describe('이용 통계', () => {
     expect(body.swings).toEqual({ 'challenge|key': { swings: 1, contacts: 1, hits: 1, perfect: 1, near: 0, edge: 0, miss: 0 }, 'aim|key': { swings: 1, contacts: 1, hits: 1, perfect: 1, near: 1, edge: 0, miss: 0 } });
     expect(validateEvent(body, today)).toMatchObject({ ok: true, value: { n: 4 } });
     expect(errors).toEqual([]);
+  });
+
+  // 오류 종류(2026-11-18 운영 준비): 우리 파일(js/ 아래)에서 난 오류만 묶음의 errors에 싣는다. 테스트는 가짜 모듈을 js/infra/ 아래 주소로 내어 오류를 낸다
+  const fakeModule = (page, file, code) => page.route(new RegExp(`/js/infra/${file}(\\?|$)`), (r) => r.fulfill({ contentType: 'text/javascript', body: code }));
+  const runModule = async (page, src) => {
+    const before = await page.evaluate(() => window.__ran ?? 0);
+    await page.evaluate((src) => document.head.append(Object.assign(document.createElement('script'), { type: 'module', src })), src);
+    await page.waitForFunction((n) => (window.__ran ?? 0) > n, before);
+  };
+  const queuedErrors = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('walkoff.statsQueue') ?? '{}').errors?.length ?? 0);
+  const ran = 'window.__ran = (window.__ran ?? 0) + 1;';
+
+  test('오류 종류: 우리 파일에서 난 오류와 받지 않은 거절을 싣고(남의 스크립트 오류는 뺀다), 주소·메일·한글·긴 숫자·받은 글은 지운다. 같은 오류는 하루 한 번(새로고침해도), 하루 3가지까지. 서버가 그대로 받는다', async ({ page }) => {
+    const { validateEvent, cleanErrorMessage, ERROR_OS, ERROR_BROWSERS, BATCH_KEYS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
+    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
+    await catchBeacons(page, { human: true });
+    const raw = '닉네임 홍길동 https://walkoff-api.walkoff-api.workers.dev/me?player=p-123 kim@naver.com seed 1234567 "{"nick":"kimbo"}"';
+    await fakeModule(page, 'boom.js', `${ran} throw new TypeError(${JSON.stringify(raw)});`);
+    await fakeModule(page, 'reject.js', `${ran} Promise.reject(new RangeError('bad seed 98765'));`);
+    await fakeModule(page, 'fourth.js', `${ran} null.fourth;`);
+    const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    await runModule(page, 'js/infra/boom.js');
+    await runModule(page, 'js/infra/boom.js?again=1');   // 같은 자리·같은 오류는 한 번만
+    await runModule(page, 'js/infra/reject.js');
+    await expect.poll(() => queuedErrors(page)).toBe(2);
+    await page.evaluate(() => setTimeout(() => { throw new Error('foreign-marker'); }));   // 우리 파일이 아닌 스크립트(확장·앱 안 브라우저가 넣은 것과 같다)
+    await page.evaluate(() => { Promise.reject('보낸 글 홍길동'); });   // 오류가 아닌 값으로 거절: 자리는 ?, 메시지는 안 보낸다
+    await expect.poll(() => queuedErrors(page)).toBe(3);
+    await runModule(page, 'js/infra/fourth.js');   // 넷째 오류는 세지 않는다(하루 3가지까지)
+    expect(await queuedErrors(page)).toBe(3);
+    expect(await beacons(page)).toEqual([]);   // 오류도 화면을 떠날 때 묶음으로 보낸다
+    await leave(page);
+    const [sent] = await beacons(page), body = sent.body, today = kstDay(Date.now());
+    expect(Object.keys(body).sort()).toEqual(['counts', 'day', 'device', 'errors', 'mobile']);
+    expect(body.counts).toEqual({});
+    expect(body.errors.map(({ os, browser, col, ...e }) => e)).toEqual([
+      { build: 'local', src: 'infra/boom.js', line: 1, name: 'TypeError', message: '… seed # "…"' },
+      { build: 'local', src: 'infra/reject.js', line: 1, name: 'RangeError', message: 'bad seed #' },
+      { build: 'local', src: '?', line: 0, name: 'string', message: '' },
+    ]);
+    expect(body.errors.map((e) => e.col > 0)).toEqual([true, true, false]);
+    for (const e of body.errors) expect([ERROR_OS.includes(e.os), ERROR_BROWSERS.includes(e.browser)]).toEqual([true, true]);
+    expect(JSON.stringify(body)).not.toMatch(/홍길동|kimbo|naver\.com|player=|1234567|98765/);
+    const checked = validateEvent(body, today);
+    expect(checked).toMatchObject({ ok: true, value: { n: 3 } });
+    expect(checked.value.errors.map((e) => e[5])).toEqual(body.errors.map((e) => e.message));   // 서버가 한 번 더 지워도 그대로다
+    // 게임과 서버가 같은 규칙으로 지우고, 묶음 칸 수 상한도 같다
+    const cases = [raw, "Cannot read properties of undefined (reading 'nick')", `Unexpected token '<', "<!DOCTYPE "... is not valid JSON`, "Invalid nick '홍길동 1'", 'a\n\tb', 'x'.repeat(300)];
+    const game = await page.evaluate(async (cases) => { const s = await import('/js/infra/stats.js'); return { clean: cases.map(s.cleanMessage), keys: s.BATCH_KEYS }; }, cases);
+    expect(game).toEqual({ clean: cases.map(cleanErrorMessage), keys: BATCH_KEYS });
+    // 새로고침해도 오늘 센 오류는 다시 세지 않는다
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    await runModule(page, 'js/infra/boom.js');
+    await leave(page);
+    expect((await beacons(page)).length).toBe(0);   // 새로 연 페이지는 신호를 다시 받는다. 보낼 것이 없다
+    expect(errors.filter((m) => !/seed|foreign-marker|보낸 글|fourth/.test(m))).toEqual([]);   // 일부러 낸 오류 말고는 없다
+  });
+
+  test('오류 칸도 묶음의 칸 수 상한(서버 BATCH_KEYS)에 들어서, 칸이 차 있으면 먼저 보내고 새 묶음에 싣는다. 자동 브라우저는 오류도 세지 않는다', async ({ page, browser }) => {
+    const { validateEvent, MODES } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
+    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
+    await catchBeacons(page, { human: true });
+    await fakeModule(page, 'boom.js', `${ran} throw new Error('full');`);
+    await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    const modes = MODES.filter((m) => m !== 'daily').slice(0, 7);
+    expect(modes.length).toBe(7);
+    await page.evaluate(async (modes) => { const s = await import('/js/infra/stats.js'); for (const m of modes) s.track('start', m); }, modes);   // 모드 7칸
+    expect(await beacons(page)).toEqual([]);
+    await runModule(page, 'js/infra/boom.js');   // 여덟째 칸: 앞 묶음을 먼저 보낸다
+    const first = await beacons(page);
+    expect(first.map((b) => [Object.keys(b.body.counts).length, b.body.errors?.length ?? 0])).toEqual([[7, 0]]);
+    await leave(page);
+    const all = await beacons(page), today = kstDay(Date.now());
+    expect(all.map((b) => [Object.keys(b.body.counts).length, b.body.errors?.length ?? 0])).toEqual([[7, 0], [0, 1]]);
+    for (const b of all) expect(validateEvent(b.body, today).ok).toBe(true);
+
+    const bot = await browser.newPage();   // 자동 브라우저(navigator.webdriver): 오류를 내도 아무것도 모으거나 보내지 않는다
+    await catchBeacons(bot, { human: false });
+    await fakeModule(bot, 'boom.js', `${ran} throw new Error('bot');`);
+    await open(bot, `?seed=42&api=${encodeURIComponent(API)}`);
+    await runModule(bot, 'js/infra/boom.js');
+    await leave(bot);
+    expect(await beacons(bot)).toEqual([]);
+    expect(await bot.evaluate(() => [localStorage.getItem('walkoff.statsQueue'), localStorage.getItem('walkoff.errorsSeen')])).toEqual([null, null]);
+    await bot.close();
   });
 });
 

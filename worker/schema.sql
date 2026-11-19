@@ -85,6 +85,21 @@ CREATE TABLE IF NOT EXISTS swing_stats (
   miss INTEGER NOT NULL DEFAULT 0,               -- 조준: 과녁 밖
   PRIMARY KEY (day, mode, input)
 );
+-- 오류 종류(2026-11-18 운영 준비, src/stats.js). 게임이 우리 파일에서 난 오류를 기기마다 하루 한 번 보내고, 기기 번호 없이 그 오류를 낸 기기 수만 센다.
+-- 이미 있던 DB에는 migrations/0012_error_stats.sql로 더했다
+CREATE TABLE IF NOT EXISTS error_stats (
+  day TEXT NOT NULL,                             -- 한국 시간 날짜 YYYY-MM-DD
+  build TEXT NOT NULL,                           -- 배포한 커밋 7자리(이 컴퓨터에서 연 게임은 local)
+  src TEXT NOT NULL,                             -- js/ 아래 파일(main.js, infra/stats.js 등). 어디서 났는지 모르는 거절은 ?
+  line INTEGER NOT NULL,                         -- 줄(배포한 js는 줄여서 거의 1)
+  col INTEGER NOT NULL,                          -- 칸. 소스 줄은 scripts/where.js로 찾는다
+  name TEXT NOT NULL,                            -- 오류 이름(TypeError 등)
+  message TEXT NOT NULL,                         -- 주소·한글·메일·긴 숫자를 지운 80자까지의 메시지
+  os TEXT NOT NULL,                              -- ios, android, windows, mac, other
+  browser TEXT NOT NULL,                         -- kakao, naver, instagram, facebook, whale, samsung, edge, firefox, chrome, safari, other
+  devices INTEGER NOT NULL DEFAULT 0,            -- 그날 이 오류를 낸 기기 수
+  PRIMARY KEY (day, build, src, line, col, name, message, os, browser)
+);
 
 -- 10구 도전 시드 표(2026-10-30, src/seeds.js). 서버가 판마다 내주고 점수와 함께 한 번만 받는다. 이미 있던 DB에는 migrations/0004_seed_tokens.sql로 더했다
 CREATE TABLE IF NOT EXISTS seed_tokens (
