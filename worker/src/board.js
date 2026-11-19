@@ -23,16 +23,18 @@ export const saveDaily = (db, s) => db.prepare(`INSERT INTO daily_scores (player
 
 // 요약에서 한 사람 몫을 그 주 기록으로 다시 계산해 넣는다(saveDaily와 같은 묶음 뒤에). SQL 안에서 계산해서 동시에 온 점수끼리 덮어쓰지 않는다.
 // 팀·닉네임은 summarize와 같은 규칙: 최고 기록 가운데 먼저 넣은 줄의 팀, 가장 최근 날의 닉네임. 요약 줄이 아직 없으면 바꾸지 않는다(읽을 때 만든다).
-// 숨긴 판은 빼고 세고, 그 주에 보이는 판이 하나도 없으면(그날 숨긴 판보다 낮은 점수만 보냈다) 요약에서 뺀다
+// 숨긴 판은 빼고 세고, 그 주에 보이는 판이 하나도 없으면(그날 숨긴 판보다 낮은 점수만 보냈다) 요약에서 뺀다.
+// 하위 질의에서 나온 json_array 값은 json()으로 한 번 더 감싼다. 새 SQLite(Node 24.22.3에 든 것)는 하위 질의를 지나면 JSON 표시를 잃어서
+// json_set이 배열 대신 따옴표 친 글자로 넣었다(요약을 읽으면 최고 기록이 '[' 한 글자, 2026-11-19 CI). D1이 SQLite를 올려도 같게 돈다
 export function updateBoard(db, week, playerId) {
   const range = [playerId, week, addDays(week, 6)];   // (player_id, day) 기본 키로 그 주 7일만 읽는다
   return db.prepare(`UPDATE weekly_boards SET players = CASE
-      WHEN EXISTS (SELECT 1 FROM daily_scores WHERE player_id = ? AND day BETWEEN ? AND ? AND hidden = 0) THEN json_set(players, ?, (
+      WHEN EXISTS (SELECT 1 FROM daily_scores WHERE player_id = ? AND day BETWEEN ? AND ? AND hidden = 0) THEN json_set(players, ?, json((
         SELECT json_array(MAX(score),
           (SELECT team FROM daily_scores WHERE player_id = ? AND day BETWEEN ? AND ? AND hidden = 0 ORDER BY score DESC, rowid ASC LIMIT 1),
           COUNT(*), MAX(day),
           (SELECT nick FROM daily_scores WHERE player_id = ? AND day BETWEEN ? AND ? AND hidden = 0 ORDER BY day DESC LIMIT 1))
-        FROM daily_scores WHERE player_id = ? AND day BETWEEN ? AND ? AND hidden = 0))
+        FROM daily_scores WHERE player_id = ? AND day BETWEEN ? AND ? AND hidden = 0)))
       ELSE json_remove(players, ?) END
     WHERE week = ?`).bind(...range, pathOf(playerId), ...range, ...range, ...range, pathOf(playerId), week);
 }
