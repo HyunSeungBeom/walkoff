@@ -1,9 +1,11 @@
-// 랭킹 규칙. 공 순서·점수 상한(maxScoreFor)·팀 목록은 게임과 같은 파일(js/core)을 그대로 가져다 쓴다(2026-11-03 코드 나누기.
+// 랭킹 규칙. 공 순서·10구 다시 돌리기(playChallenge)·점수 상한(maxScoreFor)·팀 목록은 게임과 같은 파일(js/core)을 그대로 가져다 쓴다(2026-11-03 코드 나누기.
 // 전에는 worker/src/pitches.js와 이 파일에 복사본을 두고 테스트로 둘이 같은지 맞춰 봤다). 주 계산은 게임도 같은 규칙이라 테스트가 맞춰 본다
-import { makeSequence, pitcherHand, dailySeed, styleOn } from '../../js/core/pitches.js';
+import { makeSequence, pitcherHand, dailySeed, styleOn, SEQ_LEN } from '../../js/core/pitches.js';
 import { maxScoreFor, scoreRange } from '../../js/core/score.js';
+import { playChallenge } from '../../js/core/challenge.js';
 import { TEAM_IDS } from '../../js/core/catalog.js';
 import { ticketError } from './seeds.js';
+import { MOVE_MS } from './scenario.js';
 export { TEAM_IDS, maxScoreFor, scoreRange };   // 서버 테스트와 게임 테스트가 여기서 가져간다
 const DAY_MS = 864e5;
 export const DAILY_LAST_DAY = '2026-10-30';   // 오늘의 10구가 없어진 날. 그날까지 친 판만 받는다
@@ -43,11 +45,17 @@ export function validateProfile(b) {
   return { ok: true, value: { nick, team } };
 }
 
-// 10구 판 점수 한 건을 검사한다. 그 판의 공 순서로 나올 수 없는 전광판과, 그 전광판으로 낼 수 없는 점수를 거른다.
-// 전광판은 공마다 S 단타·D 2루타·T 3루타·H 홈런·Y 볼·R 그 밖이고(2026-11-05, 칭호를 정하려고 안타 종류를 받는다), 예전 게임은 안타가 모두 G다.
-// 한 판에 G와 종류를 섞지는 않는다. 종류를 알면 점수가 정타 보너스만큼만 열려 하한·상한을 다 보고, G는 지금까지처럼 상한만 본다(scoreRange).
-// 타이밍은 게임이 재서 보내므로 사람이 친 것인지까지는 가릴 수 없다(정타만 쳤다고 꾸민 점수는 막지 못한다).
+// 10구 판 점수 한 건을 검사한다(다시 돌리기, 2026-11-19 사용자 '랭킹 점수 검사 강화'에서 (나)를 고름). 게임이 공마다 judgeSwing에 넣은 타이밍
+// (moves, 그냥 보낸 공 null)과 타석(bats)을 보내면 서버가 표의 시드로 같은 판을 처음부터 다시 돌려(js/core/challenge.js playChallenge) 그 점수·전광판을
+// 저장한다. 게임이 보낸 score·lights는 쓰지 않고, 다르면 어긋남(mismatch)으로 알리기만 한다(사용자 결정 '서버 점수로 올림': 거절·숨김 없이 올려서
+// 꾸민 숫자는 버려지고, 판정을 바꾸는 배포 몇 분 동안 옛 게임으로 친 정상 판도 손해가 없다). 다시 돌리는 데 판당 평균 0.15ms다.
+// 타이밍은 여전히 게임이 재서 보내므로, core로 공마다 좋은 타이밍을 계산해 보내는 봇까지는 막지 못한다. 그래서 그날 최고 판의 재료(play)를 남겨 둔다.
+// 타이밍이 없는 옛 게임(열어 둔 탭, 남겨 둔 판)은 MOVES_FROM 전까지만 아래 범위 검사로 받는다. 전광판은 공마다 S 단타·D 2루타·T 3루타·H 홈런·Y 볼·R
+// 그 밖이고(2026-11-05), 그 전 게임은 안타가 모두 G다. 종류를 알면 점수가 정타 보너스만큼만 열려 하한·상한을 다 보고, G는 상한만 본다(scoreRange).
+// 범위 검사는 닿는 공이면 홈런을 받아서, 어떤 타이밍으로든 홈런이 나는 공이 40%뿐인데도 꾸민 전광판이 통과했다(2026-11-18 서버 지키기에서 잼).
 // 사람 ID는 보낸 내용이 아니라 로그인 표에서 꺼낸 값을 받는다. ticket은 10구 도전 점수와 함께 온 표를 DB에서 꺼낸 줄(없으면 null)
+export const MOVES_FROM = Date.parse('2026-11-22T15:00:00Z');   // 한국 시간 2026-11-23(월) 0시. 홍보 주부터는 타이밍 없는 판을 받지 않는다(그 뒤 범위 검사 길은 지워도 된다)
+export const SAME_SWINGS = 5;   // 휘두른 공이 5개 이상인데 타이밍이 모두 같은 판은 거절한다. 사람은 사실상 못 치고, 요청의 타이밍을 모두 0으로 고치면 이렇게 된다
 export function validateSubmission(b, nowMs, playerId, ticket = null) {
   if (!/^[a-z0-9-]{8,40}$/.test(String(playerId ?? ''))) return { ok: false, error: 'bad_player' };
   const profile = validateProfile(b);
@@ -57,6 +65,7 @@ export function validateSubmission(b, nowMs, playerId, ticket = null) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, error: 'bad_day' };
   const today = kstDay(nowMs);
   if (day < addDays(today, -2) || day > addDays(today, 1)) return { ok: false, error: 'stale_day' };   // 늦게 보낸 기록은 이틀까지 받는다
+  if (b.moves !== undefined || nowMs >= MOVES_FROM) return replaySubmission(b, { playerId, nick, team, day }, nowMs, ticket);
   if (!/^[GSDTHYR]{1,40}$/.test(lights) || (lights.includes('G') && /[SDTH]/.test(lights))) return { ok: false, error: 'bad_lights' };   // 게임은 공을 40개까지 만든다
   const found = seedsFor(b, day, ticket, playerId, lights.length, nowMs);
   if (found.error) return { ok: false, error: found.error };
@@ -65,6 +74,24 @@ export function validateSubmission(b, nowMs, playerId, ticket = null) {
   const hit = Number.isInteger(score) && score >= 0 ? ranges.find(({ r }) => score >= r.min && score <= r.max) : null;
   if (!hit) return { ok: false, error: 'bad_score' };
   return { ok: true, value: { playerId, nick, team, day, week: weekStart(day), score, lights, seed: hit.seed, style: found.style } };   // seed·style: 칭호를 쌓을 때 공 순서를 다시 만든다
+}
+
+// 타이밍으로 판을 다시 돌려 받는다(위 validateSubmission). 타이밍이 없으면 moves_required, 모양이 틀리거나 판이 마지막 공에서 끝나지 않으면 bad_moves.
+// play는 그 판을 다시 돌릴 재료(시드·투수 유형·타석·공마다 타이밍)이고 그날 최고 판이면 daily_scores에 남는다(board.js saveDaily)
+function replaySubmission(b, who, nowMs, ticket) {
+  const { moves, bats } = b;
+  if (moves === undefined) return { ok: false, error: 'moves_required' };
+  if (!Array.isArray(moves) || moves.length < 1 || moves.length > SEQ_LEN || (bats !== 'R' && bats !== 'L')
+    || !moves.every((m) => m === null || (Number.isInteger(m) && Math.abs(m) <= MOVE_MS))) return { ok: false, error: 'bad_moves' };
+  const swings = moves.filter((m) => m !== null);
+  if (swings.length >= SAME_SWINGS && swings.every((m) => m === swings[0])) return { ok: false, error: 'bad_moves' };
+  const found = seedsFor(b, who.day, ticket, who.playerId, moves.length, nowMs);
+  if (found.error) return { ok: false, error: found.error };
+  const [seed] = found.seeds, { style } = found, game = playChallenge(seqOf(seed, style), moves, bats);
+  if (!game) return { ok: false, error: 'bad_moves' };
+  const sent = { score: Number.isInteger(b.score) ? b.score : null, lights: String(b.lights ?? '').slice(0, SEQ_LEN) };
+  const mismatch = sent.score !== game.score || sent.lights !== game.lights ? sent : null;   // 게임이 보낸 값(로그에만 남긴다)
+  return { ok: true, value: { ...who, week: weekStart(who.day), score: game.score, lights: game.lights, seed, style, play: JSON.stringify({ seed, style, bats, moves }), mismatch } };
 }
 
 // key가 큰 순서로 줄 세우고, 같은 값은 같은 등수(1, 2, 2, 4)

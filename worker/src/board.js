@@ -15,10 +15,10 @@ async function weekRows(db, week) {
   return results;
 }
 
-// 같은 사람·같은 날은 그날 가장 높은 판만 남긴다(주간 순위는 이번 주 최고 기록)
-export const saveDaily = (db, s) => db.prepare(`INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights) VALUES (?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT (player_id, day) DO UPDATE SET score = excluded.score, lights = excluded.lights, nick = excluded.nick, team = excluded.team
-  WHERE excluded.score > daily_scores.score`).bind(s.playerId, s.day, s.week, s.nick, s.team, s.score, s.lights);
+// 같은 사람·같은 날은 그날 가장 높은 판만 남긴다(주간 순위는 이번 주 최고 기록). play는 그 판을 다시 돌릴 재료(2026-11-19 rules.js, 타이밍 없이 온 판은 NULL)
+export const saveDaily = (db, s) => db.prepare(`INSERT INTO daily_scores (player_id, day, week, nick, team, score, lights, play) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (player_id, day) DO UPDATE SET score = excluded.score, lights = excluded.lights, play = excluded.play, nick = excluded.nick, team = excluded.team
+  WHERE excluded.score > daily_scores.score`).bind(s.playerId, s.day, s.week, s.nick, s.team, s.score, s.lights, s.play ?? null);
 
 // 요약에서 한 사람 몫을 그 주 기록으로 다시 계산해 넣는다(saveDaily와 같은 묶음 뒤에). SQL 안에서 계산해서 동시에 온 점수끼리 덮어쓰지 않는다.
 // 팀·닉네임은 summarize와 같은 규칙: 최고 기록 가운데 먼저 넣은 줄의 팀, 가장 최근 날의 닉네임. 요약 줄이 아직 없으면 바꾸지 않는다(읽을 때 만든다)

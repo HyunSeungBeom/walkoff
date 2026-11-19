@@ -183,6 +183,8 @@ export default {
         const checked = validateSubmission(body, now, acct.player_id, ticket);
         if (!checked.ok) return json({ ok: false, error: checked.error }, 400);
         const s = checked.value;
+        // 게임이 보낸 점수·전광판이 서버가 다시 돌린 판과 다르면 서버 값으로 올리고 로그(npx wrangler tail)에만 남긴다(rules.js validateSubmission)
+        if (s.mismatch) console.log(JSON.stringify({ event: 'score_mismatch', player: s.playerId, day: s.day, sent: s.mismatch, server: { score: s.score, lights: s.lights } }));
         // 같은 사람·같은 날은 그날 가장 높은 판만 남기고(saveDaily), 그 주 요약의 내 몫을 다시 계산한다(updateBoard). accepted는 그날 기록이 새로 생기거나 올랐다는 뜻.
         // 계정에는 마지막으로 쓴 닉네임·팀과 랭킹 판 수(선물 조건, gifts.js)를 적어 둔다. 10구 도전의 표는 같은 묶음에서 쓴 것으로 적는다(점수가 못 들어가면 표도 남는다).
         // 같은 표로 동시에 두 번 보내면 둘 다 들어갈 수 있지만, 같은 공 순서라 그날 가장 높은 점수 하나만 남고 코인은 20초 간격으로 한 번이다

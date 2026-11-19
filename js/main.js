@@ -6,7 +6,8 @@ import { shareSite } from './infra/site.js';
 import { clamp, DEG, easeOut, lerp, mulberry32, pickWeighted, polar } from './core/math.js';
 import { BALL_R, BASE1, BASE2, BASE3, FAIR_SPRAY, fenceDist, INFIELDERS, MOUND, OUTFIELDERS, RELEASE, ZONE } from './core/field.js';
 import { ballPos, hardMatchup as hardMatchupIn, makePitch, makeSequence, PITCH_MIX, pitcherHand, PITCHES, REACH_M, STYLE_START, styleOn, zoneMiss } from './core/pitches.js';
-import { CHANCES, hitStreakBefore as hitStreakIn, hitStreakBonus, hrStreakBefore as hrStreakIn, hrStreakBonus, PERFECT_BONUS } from './core/score.js';
+import { CHANCES, hitStreakBefore as hitStreakIn, hitStreakBonus, hrStreakBefore as hrStreakIn, hrStreakBonus } from './core/score.js';
+import { addStreak, lightCode, pitchGain } from './core/challenge.js';
 import { groundPath, interceptGround, sprintTime } from './core/race.js';
 import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, leadAt, makeScenario as makeScenarioIn, SCENARIOS, scenarioPitch, scenarioPoints } from './core/scenario.js';
@@ -3085,8 +3086,6 @@ const KIND_COLOR = { hr: '#ff6b4a', triple: '#4ade80', double: '#4ade80', single
 // 공마다 코드 하나: S 단타·D 2루타·T 3루타·H 홈런·Y 볼·R 그 밖. G는 예전 판과 끝내기 상황 타석의 '어떤 안타'다
 const LIGHT = { hit: '#3ddc6e', ball: '#facc15', miss: '#ff4d4d' };
 const STAR_K = 1.2;   // 별은 불 반지름의 1.2배
-const HIT_CODE = { single: 'S', double: 'D', triple: 'T', hr: 'H' };
-const lightCode = (r) => (r.hit ? HIT_CODE[r.kind] : r.kind === 'ball' ? 'Y' : 'R');
 const LIGHT_BY_CODE = { S: LIGHT.hit, D: LIGHT.hit, T: LIGHT.hit, G: LIGHT.hit, Y: LIGHT.ball, R: LIGHT.miss };
 
 function drawLight(x, y, radius, color) {
@@ -4258,10 +4257,10 @@ async function submitScore(s, mode) {
   if (!settings.nick) saveTeamAndNick(settings.team, defaultNick());
   if (!loggedIn()) return;   // 끝 화면에는 로그인하라는 줄이 나온다
   if (game.fixedSeed) { game.rankInfo = { status: 'unranked' }; return; }   // 주소에 ?seed=를 붙여 공 순서를 정한 판
-  // 서버는 자기가 내준 시드(token)로 공 순서를 다시 만들어 전광판·점수를 맞춰 본다. 시드를 못 받은 판은 token 없이 가서 거절된다.
-  // seed는 시드를 내주기 전의 서버가 보던 값이다
-  // 불은 안타 종류(S·D·T·H)를 담아 보내고 서버가 그것으로 칭호를 정하고 점수 하한·상한을 본다(2026-11-05 칭호 서버부터. 그 전 서버는 G·Y·R만 받았다)
-  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, seed: game.seed, ...(game.ticket ? { token: game.ticket.token } : {}) };
+  // 서버는 자기가 내준 시드(token)로 공 순서를 다시 만들고, 공마다 휘두른 때(moves, judgeSwing에 넣은 ms, 그냥 보낸 공 null)와 타석(bats)으로
+  // 판을 처음부터 다시 돌려 그 점수·전광판을 랭킹에 올린다(2026-11-19 랭킹 점수 검사 강화, core/challenge.js). 시드를 못 받은 판은 token 없이 가서 거절된다.
+  // score·lights는 서버가 다시 돌린 값과 어긋나는지 볼 때만 쓴다. seed는 시드를 내주기 전의 서버가 보던 값이다
+  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, seed: game.seed, moves: game.moves.slice(), bats: s.bats, ...(game.ticket ? { token: game.ticket.token } : {}) };
   keepPending(body);
   game.rankInfo = { status: 'sending' };
   let res;
@@ -6721,17 +6720,12 @@ function swing(eventTime, input = 'key', at = null) {
   const bt = ballTime() + Math.max(0, (eventTime - game.clockAt) / 1000);
   game.swingAt = bt;
   const dtMs = Math.round((bt - p.T) * 1000 - settings.offset);
-  if (game.mode === 'scenario') game.moves[game.i] = dtMs;
+  if (game.mode === 'scenario' || game.mode === 'challenge') game.moves[game.i] = dtMs;   // 서버가 이 타이밍으로 판을 다시 돌린다
   const aim = game.aim ? aimFrom(at ?? aimCursor(), p) : null;
   if (aim) game.aims[game.i] = aim;
   const r = judgeSwing(p, dtMs, settings.bats, aim);
   if (game.mode === 'challenge') trackSwing(game.aim ? 'aim' : 'challenge', input, r);   // 10구는 지금 조작의 기준선
-  if (game.mode === 'challenge' && r.hit) {   // 연속 홈런·연속 안타 보너스 중 큰 쪽 하나
-    const hits = hitStreakBefore(game.i) + 1, hb = hitStreakBonus(hits);
-    if (r.kind === 'hr') { r.streak = hrStreakBefore(game.i) + 1; r.streakBonus = hrStreakBonus(r.streak); }
-    if (hb > (r.streakBonus ?? 0)) { r.streakBonus = 0; r.hitStreak = hits; r.hitBonus = hb; }
-    r.points += (r.streakBonus ?? 0) + (r.hitBonus ?? 0);
-  }
+  if (game.mode === 'challenge') addStreak(game.results, game.i, r);   // 연속 홈런·연속 안타 보너스 중 큰 쪽 하나(서버 다시 돌리기와 같은 core 함수)
   game.swingAim = swingAim(p, r, aim);   // 그림에서 배트가 지나는 자리(판정은 그대로, 조준 판은 겨눈 자리)
   if (r.kind === 'whiff') Sound.whoosh();
   else {
@@ -6772,7 +6766,7 @@ function finish(r) {
     game.scnPlay = ev.play;   // 타석 반응이 본다(삼진 k-looking·k-swinging)
     game.scnWinT = game.scn.end === 'win' ? walkoffTime(r) : null;   // 끝내기 승리면 이긴 점수가 홈을 밟을 때 끝 화면으로(update)
   } else {
-    game.gained = (r.points + (r.perfect ? PERFECT_BONUS : 0)) * (game.lastChance ? 2 : 1);
+    game.gained = pitchGain(r, game.lastChance);
     game.score += game.gained;
     game.left -= 1;
     if (r.kind === 'ball') {
@@ -6899,7 +6893,7 @@ function update(dt) {
   // 와인드업은 누르고 0.5초에 시작했다. 화면이 거의 제자리에 올 때까지 시계를 와인드업 시작(0초)에 붙잡는다(많아야 WINDUP_HOLD초). 이미 제자리면 그대로다
   if (game.state === 'windup' && game.t > 0 && game.held < WINDUP_HOLD && !screenHome()) { game.held += Math.min(dt, game.t); game.t = 0; }
   if (game.state === 'windup' && ballTime() >= 0) { game.state = 'pitch'; Sound.release(); }
-  if (game.state === 'pitch' && game.swingAt == null && ballTime() > p.T + FOUL_MS / 1000) { if (game.mode === 'scenario') game.moves[game.i] = null; finish(judgeTake(p)); }
+  if (game.state === 'pitch' && game.swingAt == null && ballTime() > p.T + FOUL_MS / 1000) { if (game.mode === 'scenario' || game.mode === 'challenge') game.moves[game.i] = null; finish(judgeTake(p)); }
   if ((game.state === 'pitch' || game.state === 'result') && !hasBattedBall() && !game.mittDone && ballTime() > p.T * 1.05) {
     game.mittDone = true; Sound.mitt();
   }

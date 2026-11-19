@@ -10,6 +10,15 @@ import { SEED_TTL_MS, signSeed } from '../src/seeds.js';
 import { GIFTS_PER_DAY, GIFT_MIN_GAMES } from '../src/gifts.js';
 import { memoryD1 } from './d1.js';
 import { perfectBatter, playScenario, randomBatter, whiffBatter } from './scenario-play.js';
+import { playChallenge } from '../../js/core/challenge.js';
+
+// 테스트 시계(2026-11-19 랭킹 점수 검사 강화): 서버는 한국 시간 2026-11-23(월) 0시부터 타이밍 없는 판을 받지 않는다(rules.js MOVES_FROM).
+// 아래 점수 테스트 대부분은 그 전 게임처럼 전광판·점수를 보내므로, 실제 날짜와 상관없이 같은 결과가 나오게 시계를 2026-11-20(금) 12시부터 흐르게 둔다.
+// 11-23 뒤 범위 검사 길을 지우면 이 시계를 없애고 점수 테스트를 타이밍 판(scoreOf)으로 옮긴다
+const realClock = Date.now, CLOCK_AT = Date.parse('2026-11-20T03:00:00Z');
+let clockShift = CLOCK_AT - realClock();
+Date.now = () => realClock() + clockShift;
+const clockTo = (iso) => { clockShift = Date.parse(iso) - realClock(); };
 
 const SITE = 'https://hyunseungbeom.github.io/walkoff/';
 const N = 'nonce-0123456789';
@@ -72,6 +81,21 @@ const score = (t, patch = {}) => ({ nick: '민성', team: 'lg', day: kstDay(Date
 const playedAs = (seed, code, style) => played(seed, style).replace(/G/g, code);
 const rangeOf = (seed, lights, style) => scoreRange(lights, seqFor(seed, style));
 const NO_TICKET = { token: 'no-such-token', seed: 42 };   // 로그인부터 막히는 요청에 넣는 아무 표
+// 2026-11-19부터 게임이 보내는 판(다시 돌리기): 표의 공 순서대로 존 밖 공은 보내고 존 안 공은 pick(존 안 공 차례)으로 휘두른 타이밍(null이면 지켜봄)과,
+// 그 타이밍을 core로 다시 돌린 점수·전광판. 서버는 보낸 점수 대신 다시 돌린 값을 쓴다
+const DTS = [0, -30, 25, -55, 70, -15, 40, -80, 10, 5];
+const movesFor = (t, pick = (k) => DTS[k % DTS.length]) => {
+  const out = [];
+  let left = 10, k = 0;
+  for (const p of seqFor(t.seed, t.style)) { if (!left) break; if (zoneMiss(p) > 0) out.push(null); else { out.push(pick(k++)); left--; } }
+  return out;
+};
+const scoreOf = (t, patch = {}, pick = undefined) => {
+  const moves = movesFor(t, pick), g = playChallenge(seqFor(t.seed, t.style), moves, 'R');
+  return score(t, { moves, bats: 'R', lights: g.lights, score: g.score, ...patch });
+};
+// 시드를 정한 표(10분 전에 받은 것처럼). 다시 돌린 점수를 판끼리 견주는 테스트가 실제 날짜와 상관없이 같은 판을 치게 한다
+const fixedSeed = async (playerId, seed) => { const at = Date.now() - 600000; return { token: await ticketAt(playerId, seed, at), seed, style: styleAt(at) }; };
 
 test('로그인 시작: 카카오로 보내고, 허용하지 않은 돌아갈 주소는 거절한다', async () => {
   const { kakao } = await login('c1');
@@ -164,6 +188,39 @@ test('그 판의 공 순서로 나올 수 없는 점수는 거절한다(2026-10-
   assert.deepEqual(await post(t, { score: 99999 }), [400, 'bad_score']);
   assert.deepEqual(await post(t), [200, 'ok']);   // 거절된 판은 표를 쓰지 않는다
   assert.equal(env.DB.rows('SELECT score FROM daily_scores').length, 1);   // 거절된 판은 남지 않는다
+});
+
+test('다시 돌리기(2026-11-19): 타이밍을 보낸 판은 서버가 다시 돌린 점수·전광판을 저장하고 그날 최고 판에 다시 돌릴 재료(play)를 남긴다. 숫자만 고친 요청은 서버 값으로 받고 로그에만 남긴다', async () => {
+  const token = (await login('c1', 'p-device-0001')).hash.login;
+  const tHigh = await fixedSeed('p-device-0001', 42), high = scoreOf(tHigh);
+  const low = scoreOf(await fixedSeed('p-device-0001', 42), {}, () => null);   // 한 번도 안 친 판(볼만 점수)
+  assert.ok(low.score < high.score, `${low.score} < ${high.score}`);
+  const logs = [], realLog = console.log, quiet = async (fn) => { console.log = (line) => logs.push(JSON.parse(line)); try { return await fn(); } finally { console.log = realLog; } };
+  const rows = () => env.DB.rows('SELECT score, lights, play FROM daily_scores');
+  const res = await quiet(async () => (await call('POST', '/scores', { token, body: { ...high, score: high.score + 50000, lights: 'H'.repeat(10) } })).json());
+  assert.deepEqual([res.ok, res.accepted, res.me.best, res.earned], [true, true, high.score, Math.floor(high.score / 100)]);
+  const saved = [{ score: high.score, lights: high.lights, play: JSON.stringify({ seed: 42, style: tHigh.style, bats: 'R', moves: high.moves }) }];
+  assert.deepEqual(rows(), saved);
+  assert.deepEqual(logs, [{ event: 'score_mismatch', player: 'p-device-0001', day: high.day, sent: { score: high.score + 50000, lights: 'H'.repeat(10) }, server: { score: high.score, lights: high.lights } }]);
+  // 같은 날 더 낮은 판은 그날 기록(점수·재료)을 바꾸지 않는다. 보낸 값이 맞으면 로그도 없다
+  assert.equal((await quiet(async () => (await call('POST', '/scores', { token, body: low })).json())).accepted, false);
+  assert.deepEqual([rows(), logs.length], [saved, 1]);
+});
+
+test('한국 시간 2026-11-23(월) 0시부터는 타이밍 없는 옛 게임 판을 받지 않는다(moves_required). 타이밍이 틀린 판도 거절하고, 거절한 판은 표를 쓰지 않는다', async () => {
+  const before = clockShift;
+  clockTo('2026-11-24T03:00:00Z');   // 한국 시간 11-24(화) 12시, 강속구형 주
+  try {
+    const token = (await login('c1', 'p-device-0001')).hash.login, t = await seeded(token);
+    const post = async (body) => { const r = await call('POST', '/scores', { token, body }); return [r.status, (await r.json()).error ?? 'ok']; };
+    assert.equal(t.style, 'power');
+    assert.deepEqual(await post(score(t)), [400, 'moves_required']);   // 열어 둔 옛 탭이 보낸 판(전광판·점수만)
+    const body = scoreOf(t);
+    assert.deepEqual(await post({ ...body, moves: body.moves.slice(0, -1) }), [400, 'bad_moves']);   // 판이 끝나지 않은 타이밍
+    assert.deepEqual(await post({ ...body, moves: movesFor(t, () => 0) }), [400, 'bad_moves']);   // 휘두른 타이밍이 모두 같다
+    assert.deepEqual(await post(body), [200, 'ok']);   // 거절한 판은 표를 쓰지 않았다
+    assert.deepEqual(env.DB.rows('SELECT score, lights FROM daily_scores'), [{ score: body.score, lights: body.lights }]);
+  } finally { clockShift = before; }
 });
 
 test('10구 도전은 서버가 내준 표로만 받는다: 표 하나에 한 번, 내 표만, 기한 안, 한 판 칠 시간이 지나야', async () => {

@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate, DAILY_LAST_DAY, styleAt } from '../src/rules.js';
+import { kstDay, weekStart, addDays, maxScoreFor, validateSubmission, aggregate, DAILY_LAST_DAY, styleAt, MOVES_FROM, SAME_SWINGS } from '../src/rules.js';
 import { SEED_TTL_MS, MIN_PITCH_MS } from '../src/seeds.js';
 import { makeSequence, pitcherHand, dailySeed, zoneMiss } from '../../js/core/pitches.js';
+import { playChallenge } from '../../js/core/challenge.js';
 
 test('한국 시간 날짜와 월요일 0시 주 경계', () => {
   assert.equal(kstDay(Date.parse('2026-10-25T14:59:59Z')), '2026-10-25');   // 한국 시간 일요일 23:59:59
@@ -55,6 +56,15 @@ const check = (patch, playerId = PID) => validateSubmission({ ...base, ...patch 
 // 10구 도전: 서버가 내준 표(seed_tokens 한 줄)와 함께 검사한다. 기본은 1분 전에 받은 아직 안 쓴 표
 const ticket = (seed, patch = {}) => ({ id: 'tk', player_id: PID, seed, issued_at: NOW - 60e3, used_at: null, ...patch });
 const challenge = (seed, patch = {}, tk = ticket(seed)) => validateSubmission({ ...base, mode: 'challenge', token: 'tk', lights: played(seed), ...patch }, NOW, PID, tk);
+// 다시 돌리기(2026-11-19)에 보내는 공마다 타이밍: 존 밖 공은 보내고(null), 존 안 공은 pick(존 안 공 차례)로 휘두르거나(ms) 지켜본다(null). 기회 10번을 다 쓰면 끝
+const DTS = [0, -30, 25, -55, 70, -15, 40, -80, 10, 5];
+const movesBy = (seed, style = 'classic', pick = (k) => DTS[k % DTS.length]) => {
+  const out = [];
+  let left = 10, k = 0;
+  for (const p of makeSequence(seed, pitcherHand(seed) === 'L', style)) { if (!left) break; if (zoneMiss(p) > 0) out.push(null); else { out.push(pick(k++)); left--; } }
+  return out;
+};
+const replayOf = (seed, moves, style = 'classic', bats = 'R') => playChallenge(makeSequence(seed, pitcherHand(seed) === 'L', style), moves, bats);
 
 test('맞는 점수는 받고 그 주 월요일을 붙인다', () => {
   assert.deepEqual(check({}), { ok: true, value: { playerId: PID, ...base, week: '2026-10-26', seed: dailySeed(DAY), style: 'classic' } });   // mode가 없는 예전 게임은 오늘의 10구로 본다(seed는 맞은 공 순서의 시드)
@@ -126,16 +136,61 @@ test('이번 주 투수(2026-11-16): 표를 내준 주의 유형 공 순서로 �
   assert.equal(styleAt(Date.parse('2026-11-29T15:00:00Z')), 'finesse');   // 11-30(월) 기교파
   const now = Date.parse('2026-11-24T03:00:00Z'), day = '2026-11-24';   // 한국 시간 11-24(화) 12:00, 강속구형 주
   const tk = (seed, issued = now - 60e3) => ({ id: 'tk', player_id: PID, seed, issued_at: issued, used_at: null });
-  const send = (seed, lights, t = tk(seed), at = now, d = day) => validateSubmission({ ...base, day: d, mode: 'challenge', token: 'tk', lights }, at, PID, t);
-  // 정통파 공 순서로 친 전광판이 강속구형 공 순서로는 나올 수 없는 시드(시드 1~40 가운데 처음 것)
-  const seed = Array.from({ length: 40 }, (_, i) => i + 1).find((s) => maxScoreFor(played(s), makeSequence(s, pitcherHand(s) === 'L', 'power')) === null);
+  // 11-23부터는 타이밍을 보내야 받는다(MOVES_FROM). 서버가 그 타이밍을 표를 내준 주의 유형 공 순서로 다시 돌린다
+  const send = (seed, moves, t = tk(seed), at = now, d = day) => validateSubmission({ ...base, day: d, mode: 'challenge', token: 'tk', moves, bats: 'R' }, at, PID, t);
+  // 정통파 공 순서로 친 타이밍이 강속구형 공 순서로는 다른 판이 되는 시드(시드 1~40 가운데 처음 것)
+  const seed = Array.from({ length: 40 }, (_, i) => i + 1).find((s) => replayOf(s, movesBy(s), 'power')?.lights !== replayOf(s, movesBy(s)).lights);
   assert.ok(seed, '유형이 바뀌면 공 순서가 달라진다');
-  const ok = send(seed, played(seed, 'power'));
-  assert.deepEqual([ok.ok, ok.value?.style, ok.value?.week], [true, 'power', '2026-11-23']);
-  assert.equal(send(seed, played(seed)).error, 'bad_lights');   // 정통파로 친 판은 받지 않는다
-  // 일요일 밤(정통파 주)에 받은 표로 자정을 넘겨 끝낸 판: 정통파로 보고 받는다. 날짜가 월요일이라 새 주 랭킹에 들어간다
-  const late = send(seed, played(seed), tk(seed, Date.parse('2026-11-22T14:58:00Z')), Date.parse('2026-11-22T15:01:00Z'), '2026-11-23');
-  assert.deepEqual([late.ok, late.value?.style, late.value?.week], [true, 'classic', '2026-11-23']);
+  const ok = send(seed, movesBy(seed, 'power'));
+  assert.deepEqual([ok.ok, ok.value?.style, ok.value?.week, ok.value?.lights], [true, 'power', '2026-11-23', replayOf(seed, movesBy(seed, 'power'), 'power').lights]);
+  const classic = send(seed, movesBy(seed));   // 정통파 순서로 친 타이밍도 강속구형 공 순서로 다시 돌린다(판이 안 맞으면 bad_moves)
+  assert.equal(classic.value?.lights ?? classic.error, replayOf(seed, movesBy(seed), 'power')?.lights ?? 'bad_moves');
+  // 일요일 밤(정통파 주)에 받은 표로 자정을 넘겨 끝낸 판: 정통파로 다시 돌려 받는다. 날짜가 월요일이라 새 주 랭킹에 들어간다
+  const late = send(seed, movesBy(seed), tk(seed, Date.parse('2026-11-22T14:58:00Z')), Date.parse('2026-11-22T15:01:00Z'), '2026-11-23');
+  assert.deepEqual([late.ok, late.value?.style, late.value?.week, late.value?.lights], [true, 'classic', '2026-11-23', replayOf(seed, movesBy(seed)).lights]);
+});
+
+test('다시 돌리기(2026-11-19): 서버가 공마다 타이밍으로 판을 다시 돌려 그 점수·전광판을 받고, 게임이 보낸 점수·전광판은 쓰지 않는다', () => {
+  const seed = 42, moves = movesBy(seed), game = replayOf(seed, moves);
+  const send = (patch = {}, tk = ticket(seed)) => validateSubmission({ ...base, mode: 'challenge', token: 'tk', moves, bats: 'R', lights: game.lights, score: game.score, ...patch }, NOW, PID, tk);
+  assert.deepEqual(send(), { ok: true, value: { playerId: PID, nick: base.nick, team: base.team, day: DAY, week: '2026-10-26', score: game.score, lights: game.lights, seed, style: 'classic',
+    play: JSON.stringify({ seed, style: 'classic', bats: 'R', moves }), mismatch: null } });
+  // 숫자만 고친 요청(2026-10-30 조작처럼): 서버가 다시 돌린 값으로 받고, 보낸 값은 어긋남으로 알린다(로그에만 남는다)
+  const forged = send({ score: 99999, lights: 'H'.repeat(10) });
+  assert.deepEqual([forged.ok, forged.value.score, forged.value.lights, forged.value.mismatch], [true, game.score, game.lights, { score: 99999, lights: 'H'.repeat(10) }]);
+  assert.deepEqual(send({ score: undefined, lights: undefined }).value.mismatch, { score: null, lights: '' });
+  const lefty = send({ bats: 'L' }), asLefty = replayOf(seed, moves, 'classic', 'L');   // 왼손 타자로 친 판은 왼손으로 다시 돌린다
+  assert.deepEqual([lefty.value.score, lefty.value.lights], [asLefty.score, asLefty.lights]);
+  assert.equal(send({ seed: 7 }).value.seed, seed);   // 게임이 보낸 시드는 쓰지 않는다
+  // 표 검사는 그대로다. 한 판 칠 시간은 보낸 공 수 × 1.5초
+  assert.equal(send({}, ticket(seed, { issued_at: NOW - moves.length * MIN_PITCH_MS })).ok, true);
+  assert.equal(send({}, ticket(seed, { issued_at: NOW - moves.length * MIN_PITCH_MS + 1 })).error, 'too_fast');
+  assert.equal(send({}, null).error, 'bad_seed');
+  assert.equal(send({}, ticket(seed, { used_at: NOW - 1000 })).error, 'seed_used');
+});
+
+test('다시 돌리기: 타이밍 모양이 틀리거나, 판이 마지막 공에서 끝나지 않거나, 휘두른 타이밍이 모두 같으면 bad_moves', () => {
+  const seed = 42, moves = movesBy(seed), last = (v) => moves.map((m, i) => (i === moves.length - 1 ? v : m));
+  const send = (patch) => validateSubmission({ ...base, mode: 'challenge', token: 'tk', moves, bats: 'R', ...patch }, NOW, PID, ticket(seed)).error ?? 'ok';
+  for (const bad of ['x', null, {}, [], Array(41).fill(null), last(1.5), last('0'), last(5001), moves.slice(0, -1), [...moves, null]]) assert.equal(send({ moves: bad }), 'bad_moves', JSON.stringify(bad));
+  for (const bats of [undefined, 'X', 'r']) assert.equal(send({ bats }), 'bad_moves', String(bats));
+  assert.equal(send({ moves: last(5000) }), 'ok');   // 아주 늦게 휘두른 헛스윙도 MOVE_MS까지는 받는다
+  // 휘두른 공 5개 이상의 타이밍이 모두 같은 판(요청의 타이밍을 모두 0으로 고친 판). 사람은 사실상 이렇게 못 친다
+  assert.equal(SAME_SWINGS, 5);
+  assert.equal(send({ moves: movesBy(seed, 'classic', () => 0) }), 'bad_moves');
+  assert.equal(send({ moves: movesBy(seed, 'classic', (k) => (k < 4 ? 0 : null)) }), 'ok');   // 4번만 휘둘렀다(나머지는 지켜본 스트라이크)
+  assert.equal(send({ moves: movesBy(seed, 'classic', (k) => (k === 9 ? 1 : 0)) }), 'ok');   // 하나라도 다르면 받는다
+});
+
+test('타이밍 없는 옛 게임 판은 한국 시간 2026-11-23(월) 0시 전까지만 범위 검사로 받는다', () => {
+  assert.equal(MOVES_FROM, Date.parse('2026-11-22T15:00:00Z'));
+  const seed = 42, tk = (at) => ticket(seed, { issued_at: at - 60e3 });
+  const old = (at, day = '2026-11-22') => validateSubmission({ ...base, day, mode: 'challenge', token: 'tk', lights: played(seed), score: 3000 }, at, PID, tk(at));
+  assert.equal(old(MOVES_FROM - 1).ok, true);   // 11-22(일) 23:59:59.999에 온 옛 게임 판
+  assert.equal(old(MOVES_FROM).error, 'moves_required');
+  assert.equal(old(MOVES_FROM, '2026-11-23').error, 'moves_required');
+  const moves = movesBy(seed), now = validateSubmission({ ...base, day: '2026-11-23', mode: 'challenge', token: 'tk', moves, bats: 'R' }, MOVES_FROM, PID, tk(MOVES_FROM));
+  assert.deepEqual([now.ok, now.value.score], [true, replayOf(seed, moves).score]);
 });
 
 test('주간 순위: 이번 주 최고 기록으로 줄 세우고, 같은 점수는 같은 등수, 팀 점수는 팀원 최고 기록의 합', () => {

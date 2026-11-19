@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS daily_scores (
   score INTEGER NOT NULL,
   lights TEXT NOT NULL,                          -- 전광판 공마다 S 단타·D 2루타·T 3루타·H 홈런·Y 볼·R 나머지(2026-11-05까지의 판은 안타가 모두 G)
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 랭킹 점수 검사 강화(2026-11-19, src/rules.js 다시 돌리기). 이미 있던 DB에는 migrations/0014_play.sql로 더했다
+  play TEXT,                                     -- 그 판을 다시 돌릴 재료 JSON {seed, style, bats, moves: 공마다 타이밍 ms, 그냥 보낸 공 null}. 타이밍 없이 온 판은 NULL
   PRIMARY KEY (player_id, day)
 );
 CREATE INDEX IF NOT EXISTS daily_scores_week ON daily_scores (week);
