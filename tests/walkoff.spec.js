@@ -87,6 +87,9 @@ async function mockApi(page, opts = {}) {
       return (opts.seedHold ? new Promise((done) => heldSeeds.push(done)) : Promise.resolve()).then(() => reply({ ok: true, ...t }));
     }
     if (url.pathname === '/me' && req.method() === 'PUT' && opts.failProfile) return reply({ ok: false, error: 'server_error' }, 500);   // 팀·닉네임 저장 실패(테스트 중에 바꿀 수 있게 요청 때 읽는다)
+    // rejectNick: 이 닉네임들은 서버가 거절한다(서버 닉네임 목록이 게임보다 새것, 2026-11-19 공개 화면 지키기). 점수는 표를 쓰기 전에 거절한다
+    const rejected = () => (opts.rejectNick ?? []).includes(JSON.parse(req.postData() || '{}').nick);
+    if (url.pathname === '/me' && req.method() === 'PUT' && rejected()) return reply({ ok: false, error: 'bad_nick' }, 400);
     if (url.pathname === '/me') {
       return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles], counts: { ...record.counts }, title: record.title,
         ...(account.tag != null ? { tag: account.tag } : {}), games: account.games ?? 0, giftsLeft: Math.max(0, GIFTS_PER_DAY - sent.length), gifts: inbox.map((g) => ({ ...g })) } : { ok: true });
@@ -118,6 +121,8 @@ async function mockApi(page, opts = {}) {
     }
     if (url.pathname === '/scores') {
       if (opts.scoreFail) return reply({ ok: false, error: 'server_error' }, 500);
+      if (opts.hidden) return reply({ ok: false, error: 'hidden' }, 400);   // 운영 명령으로 랭킹에서 숨긴 계정
+      if (rejected()) return reply({ ok: false, error: 'bad_nick' }, 400);
       const { score, mode, token, lights } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
       const ticket = tickets.find((t) => t.token === token);
       if (mode === 'challenge' && !token) return reply({ ok: false, error: 'seed_required' }, 400);
@@ -924,6 +929,43 @@ test.describe('화면', () => {
   });
 
   // 칭호(2026-11-05): 공 하나로 끝내는 판(endOnePitch)은 첫 공 홈런이라 '첫 홈런'을 받는다(남은 기회를 줄인 시험 판이라 끝내기 찬스는 아니다)
+  test('서버가 닉네임을 거절하면(서버 목록이 게임보다 새것, 2026-11-19 공개 화면 지키기) 기본 닉네임으로 바꿔 알리고 같은 표로 한 번 더 보낸다', async ({ page }) => {
+    // 계정에 같은 팀·닉네임이 있어 열 때 팀·닉네임을 다시 올리지 않는다(그러면 그때 바뀐다). '테스트'는 open이 넣어 두는 닉네임
+    const errors = await open(page, '', { login: true, api: { rejectNick: ['테스트'], account: { nick: '테스트', team: 'lg' } } });
+    await seedReady(page);
+    await endOnePitch(page);
+    await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
+    const sent = sentScores(errors).map((c) => c.body), nick = await page.evaluate(() => walkoff.settings.nick);
+    expect(nick).toMatch(/^타자\d{4}$/);
+    expect(sent.map((b) => b.nick)).toEqual(['테스트', nick]);
+    expect(sent[1].token).toBe(sent[0].token);   // 거절된 판의 표는 아직 안 쓴 것이라 그대로 다시 보낸다
+    expect(await page.evaluate(() => [walkoff.store.get('nick', ''), walkoff.game.toast?.text])).toEqual([nick, `쓸 수 없는 닉네임이라 바꿨어요 · 새 닉네임 ${nick}`]);
+    expect(errors).toEqual([]);
+  });
+
+  test('규칙이 생기기 전에 정한 닉네임(빈칸·기호)은 서버에 보내기 전에 기본 닉네임으로 바꿔 알린다(로그인하면서 계정에 올릴 때)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => { localStorage.setItem('walkoff.nick', '타 자!'); localStorage.setItem('walkoff.session', 'test-session'); });
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    await expect.poll(() => errors.calls.filter((c) => c.method === 'PUT' && c.path === '/me').length).toBe(1);   // 새 계정이라 이 브라우저 팀·닉네임을 올린다
+    const put = errors.calls.find((c) => c.method === 'PUT' && c.path === '/me').body, nick = await page.evaluate(() => walkoff.settings.nick);
+    expect(put).toEqual({ nick, team: 'lg' });
+    expect(nick).toMatch(/^타자\d{4}$/);
+    expect(await page.evaluate(() => walkoff.game.toast?.text)).toBe(`쓸 수 없는 닉네임이라 바꿨어요 · 새 닉네임 ${nick}`);
+    expect(errors).toEqual([]);
+  });
+
+  test('랭킹에서 숨긴 계정(운영 명령)은 끝 화면에 그 까닭을 보인다', async ({ page }) => {
+    const errors = await open(page, '', { login: true, api: { hidden: true } });
+    await seedReady(page);
+    await endOnePitch(page);
+    await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'rejected');
+    expect(await page.evaluate(() => walkoff.game.rankInfo.error)).toBe('hidden');
+    expect(await drawnTexts(page)).toContain('랭킹에서 숨긴 계정이라 안 올라가요 · 랭킹 보기 ›');
+    expect(errors).toEqual([]);
+  });
+
   test("칭호: 로그인했으면 서버가 정한 새 칭호를 끝 화면 위 띠로 띄우고(같은 칭호는 한 번), 메뉴 카드 닉네임 옆에 대표 칭호, 메뉴 '칭호' 화면에 받은 것과 조건을 보인다", async ({ page }) => {
     const errors = await open(page, '', { login: true });
     await seedReady(page);
@@ -2247,6 +2289,39 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
+  test('닉네임 규칙(2026-11-19 공개 화면 지키기): 쓸 수 없는 닉네임은 저장하지 않고 입력 칸 위 줄에 까닭을 띄우며, 고쳐 적으면 지운다. 서버가 거절하면 기본 닉네임으로 바꿔 다시 적는다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { login: true, api: { rejectNick: ['새이름'], account: { nick: '테스트', team: 'lg' } } });   // 계정과 같아서 열 때는 올리지 않는다
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀·닉네임'));
+    await tap(page, '팀·닉네임');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '저장'));
+    const nick = page.locator('input[aria-label="닉네임"]'), WORD = '쓸 수 없는 닉네임이에요 · 다른 이름을 써 주세요';
+    for (const [typed, why] of [['시1발', WORD], ['tlqkf', WORD], ['운영자', WORD], ['타 자', '한글·영문·숫자만 쓸 수 있어요'], ['ㅋㅋ타자', '한글·영문·숫자만 쓸 수 있어요']]) {
+      await nick.fill(typed);
+      await nick.press('Enter');
+      expect(await page.evaluate(() => ({ state: walkoff.game.state, why: walkoff.game.onboard.nickError, nick: walkoff.settings.nick })), typed).toEqual({ state: 'onboard', why, nick: '테스트' });
+      expect(await drawnTexts(page), typed).toContain(why);
+    }
+    await nick.fill('타자지존');   // 욕과 글자가 겹치는 보통 낱말은 된다. 고쳐 적으면 까닭이 지워진다
+    expect(await page.evaluate(() => walkoff.game.onboard.nickError)).toBe(null);
+    await nick.press('Enter');
+    expect(await page.evaluate(() => [walkoff.game.state, walkoff.settings.nick])).toEqual(['title', '타자지존']);
+    await expect.poll(() => errors.calls.filter((c) => c.method === 'PUT').map((c) => c.body.nick)).toEqual(['타자지존']);   // 걸린 닉네임은 서버에 보내지 않았다
+    // 서버만 거절하는 닉네임(서버 목록이 더 새것): 기본 닉네임으로 바꿔 한 번 더 적고 알린다
+    await tap(page, '메뉴');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '팀·닉네임'));
+    await tap(page, '팀·닉네임');
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '저장'));
+    await nick.fill('새이름');
+    await nick.press('Enter');
+    await expect.poll(() => errors.calls.filter((c) => c.method === 'PUT').length).toBe(3);
+    const fixed = await page.evaluate(() => walkoff.settings.nick);
+    expect(errors.calls.filter((c) => c.method === 'PUT').map((c) => c.body.nick)).toEqual(['타자지존', '새이름', fixed]);
+    expect(fixed).toMatch(/^타자\d{4}$/);
+    expect(await page.evaluate(() => walkoff.game.toast?.text)).toBe(`쓸 수 없는 닉네임이라 바꿨어요 · 새 닉네임 ${fixed}`);
+    expect(errors).toEqual([]);
+  });
+
   test('랭킹에서 사람을 누르면 그 사람이 입은 모습을 크게 보고(예전 기록은 기본 모습), 닫으면 목록과 내 모습으로 돌아온다', async ({ page }) => {
     const look = { bat: 'bat-fire', helmet: 'helmet-tiger', glove: 'glove-white', shoe: 'shoe-duck', uniform: 'uniform-home', number: 'number-on', no: 7, trail: 'trail-heart', sound: 'sound-bomb' };
     const rankings = { ...SAMPLE_RANKING, players: [{ ...SAMPLE_RANKING.players[0], look }, { ...SAMPLE_RANKING.players[1], look: null }] };
@@ -3378,9 +3453,26 @@ test.describe('친구 도전장', () => {
     expect(errors).toEqual([]);
   });
 
+  test("보낸 사람 닉네임이 규칙에 안 맞는 도전장(욕·투명 글자·11자, 손으로 꾸민 주소)은 그대로 열고 보낸 사람을 '친구'로 보인다(2026-11-19 공개 화면 지키기)", async ({ page }) => {
+    const errors = await open(page, await duelQuery({ nick: '씨발' }));
+    expect(await page.evaluate(() => walkoff.game.duel)).toEqual({ ...SENDER, nick: null, style: 'classic' });
+    const title = await drawnTexts(page);
+    expect(title).toContain('친구의 도전장 · 300점');
+    expect(title.join(' ')).not.toContain('씨발');
+    await startTap(page);
+    await page.waitForFunction(() => walkoff.game.state === 'windup' || walkoff.game.state === 'pitch');
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['친구', '300점']));   // 전광판 아래 보낸 사람 줄
+    for (const nick of ['\u3164', '명\u200b은', '열한글자닉네임입니다요']) {
+      await page.goto(`${PAGE}${await duelQuery({ nick })}`);
+      await page.waitForFunction(() => !!window.walkoff);
+      expect(await page.evaluate(() => walkoff.game.duel?.nick), JSON.stringify(nick)).toBe(null);
+    }
+    expect(errors).toEqual([]);
+  });
+
   test('잘못된 도전장 주소는 도전장 없이 시작 화면을 열고 알린다', async ({ page }) => {
     const { duelCode } = await duelMod();
-    const bad = ['a.16', 'zz', duelCode({ ...SENDER, score: 401 }), duelCode({ ...SENDER, lights: 'GRRRRRRRRR' }), duelCode({ ...SENDER, team: 'bears' }), duelCode({ ...SENDER, nick: '열한글자닉네임입니다요' }), `b${duelCode(SENDER).slice(1)}`];
+    const bad = ['a.16', 'zz', duelCode({ ...SENDER, score: 401 }), duelCode({ ...SENDER, lights: 'GRRRRRRRRR' }), duelCode({ ...SENDER, team: 'bears' }), `b${duelCode(SENDER).slice(1)}`];
     const errors = await open(page, `?vs=${bad[0]}`);
     for (const [i, code] of bad.entries()) {
       if (i) { await page.goto(`${PAGE}?vs=${code}`); await page.waitForFunction(() => !!window.walkoff); }

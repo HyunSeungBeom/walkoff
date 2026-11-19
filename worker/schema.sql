@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS daily_scores (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- 랭킹 점수 검사 강화(2026-11-19, src/rules.js 다시 돌리기). 이미 있던 DB에는 migrations/0014_play.sql로 더했다
   play TEXT,                                     -- 그 판을 다시 돌릴 재료 JSON {seed, style, bats, moves: 공마다 타이밍 ms, 그냥 보낸 공 null}. 타이밍 없이 온 판은 NULL
+  -- 공개 화면 지키기(2026-11-19, scripts/mod.mjs). 이미 있던 DB에는 migrations/0013_moderation.sql로 더했다
+  hidden INTEGER NOT NULL DEFAULT 0,             -- 0 보임, 1 판을 숨김, 2 계정을 숨기면서 같이 숨김. 주간 요약은 0인 줄로만 만든다
   PRIMARY KEY (player_id, day)
 );
 CREATE INDEX IF NOT EXISTS daily_scores_week ON daily_scores (week);
@@ -33,7 +35,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   counts TEXT NOT NULL DEFAULT '{}',             -- 칭호마다 쌓은 수(JSON, js/core/titles.js countsOf)
   -- 선물하기(2026-11-10, src/gifts.js). 이미 있던 DB에는 migrations/0010_gift.sql로 더했다
   tag INTEGER,                                   -- 바뀌지 않는 번호(게임은 '골든#4821', 0~9999, 4자리가 차면 10000~99999). 처음 로그인할 때 준다
-  games INTEGER NOT NULL DEFAULT 0               -- 10구 랭킹 판 수(선물은 GIFT_MIN_GAMES판 넘게 친 계정만)
+  games INTEGER NOT NULL DEFAULT 0,              -- 10구 랭킹 판 수(선물은 GIFT_MIN_GAMES판 넘게 친 계정만)
+  -- 공개 화면 지키기(2026-11-19, scripts/mod.mjs). 이미 있던 DB에는 migrations/0013_moderation.sql로 더했다
+  hidden_at INTEGER                              -- 계정을 숨긴 시각(ms). 숨긴 계정은 점수·선물을 못 보내고 받는 사람 찾기에 안 나온다
 );
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_tag ON accounts (tag);
 CREATE INDEX IF NOT EXISTS accounts_nick ON accounts (nick);   -- 받는 사람 찾기

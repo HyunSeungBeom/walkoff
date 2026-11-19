@@ -9,6 +9,7 @@ import { scoreRange } from '../../js/core/score.js';
 import { SEED_TTL_MS, signSeed } from '../src/seeds.js';
 import { GIFTS_PER_DAY, GIFT_MIN_GAMES } from '../src/gifts.js';
 import { memoryD1 } from './d1.js';
+import { hidePlayer, hideScores, resetNick, showPlayer } from '../scripts/mod-sql.js';
 import { perfectBatter, playScenario, randomBatter, whiffBatter } from './scenario-play.js';
 import { playChallenge } from '../../js/core/challenge.js';
 
@@ -648,4 +649,62 @@ test('상점 물건 13개(2026-11-12): 새 물건도 core/catalog.js 값대로 �
   const r = await call('POST', '/shop/gift', { token: a, body: { to: tagB, item: 'glove-catpaw' } }), sent = await r.json();
   assert.deepEqual([r.status, sent.coins], [200, coins - 500]);
   assert.deepEqual((await me(b)).owned, ['glove-catpaw']);
+});
+
+// ===== 공개 화면 지키기(2026-11-19) =====
+const runMod = (list) => env.DB.batch(list.map(({ sql, args }) => env.DB.prepare(sql).bind(...args)));
+const nicksOn = async () => (await (await call('GET', '/rankings')).json()).players.map((p) => p.nick);
+
+test('닉네임 규칙(js/core/nick.js): 닉네임 바꾸기·점수 올리기·받는 사람 찾기가 같은 규칙으로 거절하고, 걸린 까닭은 알리지 않는다', async () => {
+  const token = (await login('c1', 'p-device-0001')).hash.login;
+  const put = async (nick) => { const r = await call('PUT', '/me', { token, body: { nick, team: 'lg' } }); return [r.status, (await r.json()).error ?? null]; };
+  for (const nick of ['시1발', 'tlqkf', '운영자', '\u3164', '타 자', 'ㅋㅋ', '⚾타자', 'walkoff']) assert.deepEqual(await put(nick), [400, 'bad_nick'], nick);
+  assert.deepEqual(await put('\u1100\u1161\u11a8타자'), [200, null]);   // 풀어 쓴 자모는 합쳐서 저장한다
+  assert.equal((await me(token)).nick, '각타자');
+  const t = await seeded(token);
+  const bad = await call('POST', '/scores', { token, body: score(t, { nick: '병신' }) });
+  assert.deepEqual([bad.status, (await bad.json()).error], [400, 'bad_nick']);
+  assert.equal(env.DB.rows('SELECT * FROM daily_scores').length, 0);
+  assert.equal((await call('POST', '/scores', { token, body: score(t, { nick: '타자지존' }) })).status, 200);   // 거절된 판의 표는 아직 안 쓴 것이라 다시 보낼 수 있다
+  assert.deepEqual(await nicksOn(), ['타자지존']);
+  const find = async (q) => (await call('GET', `/players?nick=${encodeURIComponent(q)}`, { token })).status;
+  assert.deepEqual([await find('시발'), await find('타 자'), await find('타자지존')], [400, 400, 200]);
+});
+
+test('계정 숨김(운영 명령 hide-player): 랭킹에서 빠지고 점수·선물을 못 보내며 받는 사람 찾기에 안 나온다. 풀면 돌아온다', async () => {
+  const cheat = await named('c1', 'p-device-0001', '골든'), good = await named('c3', 'p-device-0002', '가람');
+  await call('POST', '/scores', { token: cheat, body: score(await seeded(cheat), { nick: '골든', score: 5000 }) });
+  await call('POST', '/scores', { token: good, body: score(await seeded(good), { nick: '가람' }) });
+  assert.deepEqual(await nicksOn(), ['골든', '가람']);
+  await runMod(hidePlayer({ playerId: 'p-device-0001', now: Date.now() }));
+  assert.deepEqual(await nicksOn(), ['가람']);
+  const res = await call('POST', '/scores', { token: cheat, body: score(await seeded(cheat), { nick: '골든', score: 6000 }) });
+  assert.deepEqual([res.status, (await res.json()).error], [400, 'hidden']);
+  assert.deepEqual(await nicksOn(), ['가람']);
+  const r = await (await call('GET', '/rankings?player=p-device-0001')).json();
+  assert.deepEqual([r.me, r.allTime], [null, null]);   // 본인 화면에도 숨긴 판은 없다(그림자 차단을 하지 않는다)
+  assert.deepEqual((await (await call('GET', `/players?nick=${encodeURIComponent('골든')}`, { token: good })).json()).players, []);
+  await env.DB.prepare("UPDATE accounts SET coins = 5000, games = 50").run();
+  const tagCheat = (await me(cheat)).tag, tagGood = (await me(good)).tag;
+  const gift = async (token, to) => { const g = await call('POST', '/shop/gift', { token, body: { to, item: 'bat-red' } }); return [g.status, (await g.json()).error ?? null]; };
+  assert.deepEqual(await gift(good, tagCheat), [404, 'no_player']);
+  assert.deepEqual(await gift(cheat, tagGood), [400, 'hidden']);
+  await runMod(showPlayer({ playerId: 'p-device-0001' }));
+  assert.deepEqual(await nicksOn(), ['골든', '가람']);
+  assert.equal((await call('POST', '/scores', { token: cheat, body: score(await seeded(cheat), { nick: '골든', score: 6000 }) })).status, 200);
+  assert.deepEqual(await gift(cheat, tagGood), [200, null]);
+});
+
+test('판 숨김(hide-scores)과 닉네임 기본값으로(reset-nick): 랭킹에 바로 보이고, 게임은 다음에 열 때 계정 닉네임을 받아 간다', async () => {
+  const token = await named('c1', 'p-device-0001', '골든');
+  await call('POST', '/scores', { token, body: score(await seeded(token), { nick: '골든', score: 5000 }) });
+  const week = weekStart(kstDay(Date.now()));
+  await runMod(hideScores({ playerId: 'p-device-0001', week }));
+  assert.deepEqual(await nicksOn(), []);
+  assert.equal((await (await call('GET', '/rankings?player=p-device-0001')).json()).allTime, null);
+  await env.DB.prepare('UPDATE daily_scores SET hidden = 0').run();
+  await env.DB.prepare('DELETE FROM weekly_boards').run();
+  await runMod(resetNick({ playerId: 'p-device-0001', nick: '타자5555' }));
+  assert.deepEqual(await nicksOn(), ['타자5555']);
+  assert.equal((await me(token)).nick, '타자5555');
 });

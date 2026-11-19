@@ -32,12 +32,13 @@ test('도전장 주소: 만든 값을 그대로 읽고, 닉네임은 base64url�
   const code = duelCode(BASE);
   assert.match(code, /^a\.[0-9a-z]+\.[0-9a-z]+\.[SDTHYR]+\.hanwha\.L\.[A-Za-z0-9_-]+\.1$/);   // 끝은 번째(영문·숫자)
   assert.deepEqual(parseDuel(code), { ...BASE, style: 'classic' });   // 판 글자 a는 정통파
-  for (const d of [{ ...BASE, score: RANGE.max }, { ...BASE, team: null, bats: 'R', n: 12, nick: 'a.b c' }, { ...BASE, seed: 2147483647, lights: 'RRRRRRRRRR', score: 0 }]) {
+  for (const d of [{ ...BASE, score: RANGE.max }, { ...BASE, team: null, bats: 'R', n: 12, nick: 'Ohtani17' }, { ...BASE, seed: 2147483647, lights: 'RRRRRRRRRR', score: 0 }]) {
     const c = duelCode(d);
     assert.equal(c.split('.').length, 8);
     assert.deepEqual(parseDuel(c), { ...d, style: 'classic' });
   }
   assert.equal(duelCode({ ...BASE, team: null }).split('.')[4], '-');
+  assert.equal(duelCode({ ...BASE, nick: 'a.b c' }).split('.').length, 8);   // 마침표가 든 글자도 칸을 깨지 않는다(지금 규칙으로는 닉네임이 될 수 없어 '친구'로 열린다)
 });
 
 test('이번 주 투수 판은 판 글자 b 뒤에 투수 유형을 싣고 그 유형의 공 순서로 검사한다. 정통파 판은 예전처럼 a다', () => {
@@ -53,7 +54,7 @@ test('이번 주 투수 판은 판 글자 b 뒤에 투수 유형을 싣고 그 �
   }
 });
 
-test('도전장 주소: 판 글자·칸 수·시드·불·점수·팀·타석·번째·닉네임 가운데 하나라도 틀리면 받지 않는다', () => {
+test('도전장 주소: 판 글자·칸 수·시드·불·점수·팀·타석·번째 가운데 하나라도 틀리면 받지 않는다', () => {
   const code = duelCode(BASE), nick = (s) => Buffer.from(s, 'utf8').toString('base64url');
   const bad = [
     '', 'a', `b${code.slice(1)}`, `${code}.x`, code.split('.').slice(0, 7).join('.'),
@@ -66,13 +67,22 @@ test('도전장 주소: 판 글자·칸 수·시드·불·점수·팀·타석·�
     swap(code, 2, (RANGE.max + 1).toString(36)), swap(code, 2, (RANGE.min - 1).toString(36)), swap(code, 2, '1.5'),
     swap(code, 4, 'bears'), swap(code, 4, ''), swap(code, 5, 'X'), swap(code, 5, 'l'),
     swap(code, 7, '0'), swap(code, 7, 'zzz'),
-    swap(code, 6, nick('열한글자닉네임입니다요')), swap(code, 6, nick('a\u0007b')), swap(code, 6, nick('   ')), swap(code, 6, ''),
-    swap(code, 6, '%%%'), swap(code, 6, Buffer.from([0xff, 0xfe]).toString('base64url')),   // base64가 아니거나 UTF-8이 아님
   ];
   for (const c of bad) assert.equal(parseDuel(c), null, c);
   assert.equal(parseDuel(null), null);
   assert.equal(parseDuel(swap(code, 6, nick(' 명은 '))).nick, '명은');   // 서버처럼 앞뒤 빈칸은 뺀다
   assert.equal(parseDuel(swap(code, 6, nick('열글자닉네임입니다'))).nick, '열글자닉네임입니다');
+});
+
+test('도전장 닉네임(2026-11-19 공개 화면 지키기): 서버와 같은 닉네임 규칙에 안 맞으면 도전장은 그대로 열고 닉네임만 null(게임은 \'친구\')', () => {
+  const code = duelCode(BASE), nick = (s) => Buffer.from(s, 'utf8').toString('base64url');
+  const odd = [nick('씨발'), nick('tlqkf'), nick('운영자'), nick('\u3164'), nick('명\u200b은'), nick('명 은'), nick('열한글자닉네임입니다요'), nick('a\u0007b'), nick('   '), '',
+    '%%%', Buffer.from([0xff, 0xfe]).toString('base64url')];   // 욕·사칭·투명 글자·빈칸·11자·제어 문자·빈 값·base64가 아님·UTF-8이 아님
+  for (const n64 of odd) {
+    const d = parseDuel(swap(code, 6, n64));
+    assert.ok(d, n64);
+    assert.deepEqual(d, { ...BASE, style: 'classic', nick: null }, n64);   // 시드·점수·불은 그대로 검사한 값
+  }
 });
 
 test('도전장 기록: 시작할 때마다 몇 번째인지 올리고, 처음 끝까지 친 점수만 남기며, 최근 것부터 DUEL_KEEP개', () => {

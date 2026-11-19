@@ -14,6 +14,7 @@ import { applyScenario as applyScenarioIn, leadAt, makeScenario as makeScenarioI
 import { carryOf, catchTime, flightDuration, flightPos } from './core/flight.js';
 import { GIFT_MIN_GAMES, GIFTS_PER_DAY, ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
 import { TITLES, TIERS, titleById, countsOf, addCounts, cleanCounts, titlesFor, topTitle } from './core/titles.js';
+import { checkNick } from './core/nick.js';
 import { connect } from './sim/port.js';
 import { bendJoint, smooth, unit3, V } from './sim/geom.js';
 import { pitcherHandAt, pitcherSkeleton, WINDUP } from './sim/pose.js';
@@ -3218,9 +3219,10 @@ function drawDuelStrip(d, L) {
   ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1; ctx.stroke();
   const nameW = m ? 60 : 110, scoreW = m ? 74 : 100;
   ctx.font = font(size, 800);
-  let name = d.nick;
+  const full = duelName(d);
+  let name = full;
   while ([...name].length > 1 && ctx.measureText(name).width > nameW) name = [...name].slice(0, -1).join('');
-  text(name === d.nick ? name : `${name}…`, x + 12, cy + 0.5, { size, weight: 800, align: 'left', color: 'rgba(255,255,255,0.85)' });
+  text(name === full ? name : `${name}…`, x + 12, cy + 0.5, { size, weight: 800, align: 'left', color: 'rgba(255,255,255,0.85)' });
   const passed = game.score > d.score;
   text(`${d.score.toLocaleString()}${passed ? ' 넘음' : '점'}`, x + w - 12, cy + 0.5, { size, weight: 800, align: 'right', color: passed ? LIGHT.hit : LED_AMBER });
   const codes = d.lights.split(''), n = codes.length, c0 = x + 12 + nameW + 10, c1 = x + w - 12 - scoreW;
@@ -3552,6 +3554,23 @@ function saveTeamAndNick(team, nick) {
   Object.assign(settings, { team, nick });
   store.set('team', team); store.set('nick', nick);
 }
+// 닉네임 규칙(core/nick.js, 2026-11-19 공개 화면 지키기). 서버도 같은 규칙으로 거절하고, 어느 낱말에 걸렸는지는 알리지 않는다
+const NICK_WHY = { long: '닉네임은 10자까지 써요', chars: '한글·영문·숫자만 쓸 수 있어요', word: '쓸 수 없는 닉네임이에요 · 다른 이름을 써 주세요' };
+// 쓸 수 없는 닉네임(규칙이 생기기 전에 정했거나, 서버 목록이 이 게임보다 새것)을 기본 닉네임으로 바꾸고 알린다. 메뉴 '팀·닉네임'에서 다시 고친다
+function renameToDefault() {
+  const nick = defaultNick();
+  settings.nick = nick; store.set('nick', nick);
+  toast(`쓸 수 없는 닉네임이라 바꿨어요 · 새 닉네임 ${nick}`);
+  return nick;
+}
+// 서버·도전장에 실을 닉네임. 아직 정하지 않았으면 조용히 기본 닉네임을 정해 두고(보낼 때마다 바뀌지 않게), 규칙에 안 맞으면 바꾸고 알린다
+function sendableNick() {
+  const nick = cleanNick(settings.nick);
+  if (nick) return nick;
+  if (settings.nick) return renameToDefault();
+  settings.nick = defaultNick(); store.set('nick', settings.nick);
+  return settings.nick;
+}
 const batSide = () => (settings.bats === 'L' ? -1 : 1);
 
 // ===== 진동 =====
@@ -3695,10 +3714,13 @@ function shareText(s, mode = 'challenge', dare = null) {
     dare.url,
   ].filter(Boolean).join('\n');
 }
+// 받은 도전장의 보낸 사람. 닉네임이 규칙에 안 맞으면(game/duel.js가 null로 준다: 욕·투명 글자 등) '친구'로 보인다(2026-11-19 공개 화면 지키기)
+const duelName = (d) => d.nick ?? '친구';
+const duelWho = (d) => (d.nick ? `${d.nick}님` : '친구');
 // 받은 도전장(d) 점수와 견준 한 줄: "명은님 12,300점보다 800점 더 쳤어요"
 const duelGap = (score, d) => {
-  const diff = score - d.score, at = `${d.nick}님 ${d.score.toLocaleString()}점`;
-  return diff > 0 ? `${at}보다 ${diff.toLocaleString()}점 더 쳤어요` : diff < 0 ? `${at}에 ${(-diff).toLocaleString()}점 모자라요` : `${d.nick}님과 같은 점수예요`;
+  const diff = score - d.score, at = `${duelWho(d)} ${d.score.toLocaleString()}점`;
+  return diff > 0 ? `${at}보다 ${diff.toLocaleString()}점 더 쳤어요` : diff < 0 ? `${at}에 ${(-diff).toLocaleString()}점 모자라요` : `${d.nick ? `${d.nick}님과` : '친구와'} 같은 점수예요`;
 };
 
 // ===== 친구 도전장(2026-11-16 사용자 '추천 순서대로') =====
@@ -3709,11 +3731,11 @@ const duelLogged = () => store.get(DUELS_KEY, []);
 // 공유할 도전장. 보내는 사람의 이 판도 그 공으로 친 판이라 기록에 남긴다(되갚기 주소를 열면 이 점수와 견주고, 다시 치면 2번째 도전이다)
 function dareOf() {
   const s = game.summary, vs = game.duelTry > 0 ? game.duel : null;
-  if (!cleanNick(settings.nick)) { settings.nick = defaultNick(); store.set('nick', settings.nick); }   // 닉네임을 정하기 전이면 지금 정해 둔다(보낼 때마다 바뀌지 않게)
+  const nick = sendableNick();   // 닉네임을 정하기 전이면 지금 정해 둔다(보낼 때마다 바뀌지 않게)
   if (!vs && !duelEntry(duelLogged(), game.seed)) store.set(DUELS_KEY, duelLog(duelLogged(), game.seed, { start: true, score: s.score }));
   const n = Math.min(999, vs ? game.duelTry : duelEntry(duelLogged(), game.seed)?.tries ?? 1);
-  const code = duelCode({ seed: game.seed, score: s.score, lights: s.lights, team: settings.team, bats: s.bats, n, nick: settings.nick, style: game.style });
-  return { url: `${SHARE_URL}?vs=${code}`, nick: settings.nick, n, vs };
+  const code = duelCode({ seed: game.seed, score: s.score, lights: s.lights, team: settings.team, bats: s.bats, n, nick, style: game.style });
+  return { url: `${SHARE_URL}?vs=${code}`, nick, n, vs };
 }
 // 주소의 도전장을 연다(열 때 한 번). 잘못된 주소면 도전장 없이 시작 화면을 열고 알린다
 function openDuelLink() {
@@ -4085,6 +4107,7 @@ Object.assign(nickInput.style, {
   font: `700 16px ${FONT}`, textAlign: 'center',   // 16px보다 작으면 아이폰이 입력할 때 화면을 확대한다
 });
 document.body.appendChild(nickInput);
+nickInput.addEventListener('input', () => { if (game.onboard) game.onboard.nickError = null; });
 
 // next: 'over'(팀을 안 고른 사람이 끝 화면에서 고르기, 고르면 그 끝 화면으로) | 'menu'(메뉴에서 바꾸기).
 // 처음 온 사람은 팀을 고르지 않고 바로 치고 첫 판 끝 화면에서 고른다(2026-11-16. 전에는 열자마자 이 화면이었다)
@@ -4104,7 +4127,8 @@ function closeOnboard() {
 function confirmOnboard(how = 'local') {
   const ob = game.onboard;
   if (!ob.team) { toast('팀을 골라 주세요'); return; }
-  const nick = nickInput.value.trim().slice(0, 10) || defaultNick();
+  const typed = checkNick(nickInput.value), nick = typed.ok ? typed.nick : typed.why === 'empty' ? defaultNick() : null;
+  if (!nick) { ob.nickError = NICK_WHY[typed.why]; nickInput.focus(); return; }   // 입력 칸 위 줄에 띄우고, 고쳐 적으면 지운다
   saveTeamAndNick(ob.team, nick);
   nickInput.blur();
   pushProfile();
@@ -4162,7 +4186,7 @@ function drawOnboard() {
   }
   text(UNOFFICIAL, cx, y, { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.55)' });   // 구단 이름은 상표라서 공식 게임이 아니라고 밝힌다
   y += (m ? 24 : 32) * k;
-  text('닉네임 · 랭킹에 보여요(10자까지)', cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
+  text(ob.nickError ?? '닉네임 · 랭킹에 보여요(10자까지)', cx, y, { size: m ? 12 : 14, weight: 600, color: ob.nickError ? LIGHT.miss : 'rgba(255,255,255,0.7)' });
   y += (m ? 12 : 18) * k;
   const iw = m ? view.w - 64 : 300;
   Object.assign(nickInput.style, { display: 'block', left: `${cx - iw / 2}px`, top: `${y}px`, width: `${iw}px`, height: '44px' });
@@ -4239,13 +4263,24 @@ function keepPending(body) {
   if (stale || body.score > old.score) store.set('pending', body);
 }
 
+// 점수를 보낸다. 서버가 닉네임을 거절하면(서버 목록이 이 게임보다 새것) 기본 닉네임으로 바꿔 한 번 더 보낸다.
+// 거절된 판의 표는 아직 쓰지 않은 것이라 같은 표로 다시 받는다(2026-11-19 공개 화면 지키기)
+async function postScoreNick(body) {
+  const res = await postScore(body);
+  if (res.status !== 400 || res.data?.error !== 'bad_nick') return res;
+  body.nick = renameToDefault();
+  const kept = store.get('pending', null);
+  if (kept?.token === body.token) store.set('pending', { ...kept, nick: body.nick });   // 다시 보내다 끊겨도 다음에는 바꾼 닉네임으로
+  return postScore(body);
+}
+
 // 남겨 둔 판을 보낸다. 받은 응답(내 순위)을 돌려준다. 서버 시드가 없는 판(예전 게임이 남긴 로그인 전 판)은 버린다
 async function sendPending() {
   const body = store.get('pending', null);
   if (!body || typeof body !== 'object' || !loggedIn()) return null;
   if (!body.token) { store.remove('pending'); return null; }
   try {
-    const { status, data } = await postScore(body);
+    const { status, data } = await postScoreNick(body);
     if (status === 401) { logout('expired'); return null; }
     if (status < 500) store.remove('pending');
     return status === 200 && data.ok ? data : null;
@@ -4260,11 +4295,11 @@ async function submitScore(s, mode) {
   // 서버는 자기가 내준 시드(token)로 공 순서를 다시 만들고, 공마다 휘두른 때(moves, judgeSwing에 넣은 ms, 그냥 보낸 공 null)와 타석(bats)으로
   // 판을 처음부터 다시 돌려 그 점수·전광판을 랭킹에 올린다(2026-11-19 랭킹 점수 검사 강화, core/challenge.js). 시드를 못 받은 판은 token 없이 가서 거절된다.
   // score·lights는 서버가 다시 돌린 값과 어긋나는지 볼 때만 쓴다. seed는 시드를 내주기 전의 서버가 보던 값이다
-  const body = { nick: settings.nick, team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, seed: game.seed, moves: game.moves.slice(), bats: s.bats, ...(game.ticket ? { token: game.ticket.token } : {}) };
+  const body = { nick: sendableNick(), team: settings.team, day: s.date, score: s.score, lights: s.lights, mode, seed: game.seed, moves: game.moves.slice(), bats: s.bats, ...(game.ticket ? { token: game.ticket.token } : {}) };
   keepPending(body);
   game.rankInfo = { status: 'sending' };
   let res;
-  try { res = await postScore(body); } catch { res = { status: 0, data: {} }; }
+  try { res = await postScoreNick(body); } catch { res = { status: 0, data: {} }; }
   const { status, data } = res;
   if (status === 401) { logout('expired'); settleBest(s, null); return; }   // 남겨 둔 판은 다시 로그인하면 보낸다
   if (status > 0 && status < 500 && store.get('pending', null)?.token === body.token) store.remove('pending');
@@ -4393,7 +4428,8 @@ function rankLine() {
   const ri = game.rankInfo;
   if (ri?.status === 'unranked') return '주소로 정한 공은 랭킹에 안 올라가요 · 랭킹 보기 ›';
   if (!ri || ri.status === 'sending') return '이번 주 랭킹을 불러오는 중…';
-  if (ri.status === 'rejected') return ri.error === 'seed_required' ? '랭킹 서버에 연결하지 못해 안 올라갔어요 · 랭킹 보기 ›' : '이 판은 랭킹에 올리지 못했어요 · 랭킹 보기 ›';
+  if (ri.status === 'rejected') return ri.error === 'seed_required' ? '랭킹 서버에 연결하지 못해 안 올라갔어요 · 랭킹 보기 ›'
+    : ri.error === 'hidden' ? '랭킹에서 숨긴 계정이라 안 올라가요 · 랭킹 보기 ›' : '이 판은 랭킹에 올리지 못했어요 · 랭킹 보기 ›';   // hidden: 운영 명령으로 숨긴 계정(2026-11-19)
   if (ri.status === 'error') return '랭킹 서버에 연결하지 못했어요 · 랭킹 보기 ›';
   if (!ri.me) return '이번 주 랭킹 보기 ›';
   return ri.newBest ? `이번 주 최고 기록! ${ri.me.rank}위 · 랭킹 보기 ›` : `이번 주 최고 ${(ri.me.best ?? ri.me.total ?? 0).toLocaleString()}점 · ${ri.me.rank}위 · 랭킹 보기 ›`;
@@ -4622,8 +4658,10 @@ async function syncAccount() {
     let msg = '카카오로 로그인했어요';
     if (store.get('profileDirty', 0) && teamById(settings.team)) await pushProfile();   // 지난번에 바꾼 팀을 못 적었으면 서버의 옛 팀으로 덮지 않고 다시 보낸다
     else if (teamById(acct.team)) {
-      if (acct.team !== settings.team || (acct.nick && acct.nick !== settings.nick)) msg = `이어서 해요 · ${teamById(acct.team).short} ${acct.nick || settings.nick}`;
-      saveTeamAndNick(acct.team, acct.nick || settings.nick || defaultNick());
+      const nick = cleanNick(acct.nick);   // 규칙에 안 맞는 계정 닉네임(규칙이 생기기 전에 정한 것)은 받지 않고 이 브라우저 닉네임으로 고쳐 적는다
+      if (acct.team !== settings.team || (nick && nick !== settings.nick)) msg = `이어서 해요 · ${teamById(acct.team).short} ${nick || settings.nick}`;
+      saveTeamAndNick(acct.team, nick || settings.nick || defaultNick());
+      if (acct.nick && !nick) await pushProfile();
       if (game.state === 'onboard' && game.onboard.next === 'over') closeOnboard();   // 끝 화면에서 팀을 고르는 중에 계정 팀을 받았다
     } else await pushProfile();
     if (auth.fresh) toast(msg);
@@ -4639,7 +4677,8 @@ async function syncAccount() {
 async function pushProfile() {
   if (!auth.token || !settings.team) return true;
   try {
-    const res = await api('/me', { method: 'PUT', body: { nick: settings.nick || defaultNick(), team: settings.team } });
+    let res = await api('/me', { method: 'PUT', body: { nick: sendableNick(), team: settings.team } });
+    if (res.status === 400 && (await res.json().catch(() => ({}))).error === 'bad_nick') res = await api('/me', { method: 'PUT', body: { nick: renameToDefault(), team: settings.team } });   // 서버 목록이 더 새것
     if (res.status === 401) { logout('expired'); return false; }
     if (!res.ok) throw new Error(`profile ${res.status}`);
     store.remove('profileDirty');
@@ -5733,6 +5772,7 @@ const GIFT_ERRORS = {
   self: () => '나에게는 보낼 수 없어요',
   no_player: () => '찾는 사람이 없어요',
   free_item: () => '기본 물건은 선물할 수 없어요',
+  hidden: () => '랭킹에서 숨긴 계정은 선물할 수 없어요',   // 운영 명령으로 숨긴 계정(2026-11-19)
 };
 // 보내기 전에 막히는 까닭(알고 있는 값으로만, 서버가 다시 본다). 없으면 null
 function giftBlock(it) {
@@ -6009,7 +6049,7 @@ function drawTitle(time) {
 const duelVerdict = (diff) => (diff > 0 ? '이겼어요' : diff < 0 ? '졌어요' : '비겼어요');
 function drawDuelCard(d, cx, y) {
   const m = view.mobile, mine = duelEntry(duelLogged(), d.seed), codes = d.lights.split('');
-  text(`${d.nick}님의 도전장 · ${d.score.toLocaleString()}점`, cx, y, { size: m ? 17 : 21, weight: 800, color: '#f2c94c', shadow: true });
+  text(`${duelWho(d)}의 도전장 · ${d.score.toLocaleString()}점`, cx, y, { size: m ? 17 : 21, weight: 800, color: '#f2c94c', shadow: true });
   const lg = Math.min(m ? 22 : 26, (m ? view.w - 80 : 480) / Math.max(1, codes.length - 1));
   codes.forEach((c, i) => drawMark(cx + (i - (codes.length - 1) / 2) * lg, y + (m ? 26 : 32), Math.min(m ? 7 : 8, lg * 0.34), c));
   const note = !mine?.tries ? (d.n >= 2 ? `${d.n}번째 도전 점수 · 같은 공으로 넘겨 보세요` : '같은 공으로 넘겨 보세요 · 랭킹 없음')
@@ -6478,7 +6518,7 @@ function drawGameOver() {
   const need = game.aim ? (m ? 466 : 529) : (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + (tm ? tmStep : 0) + (goal != null ? goalStep : 0), tail = 28 + (m ? 54 : 49);
   const k = y + need - view.h > 1 ? clamp((view.h - y - tail - 86) / (need - tail - 86), 0.75, 1) : 1;
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
-  const head = duel ? `${duel.nick}님의 도전장 · ${game.duelTry >= 2 ? `${game.duelTry}번째 도전` : `${duel.score.toLocaleString()}점`}` : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`;
+  const head = duel ? `${duelWho(duel)}의 도전장 · ${game.duelTry >= 2 ? `${game.duelTry}번째 도전` : `${duel.score.toLocaleString()}점`}` : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`;
   text(game.aim ? '조준 타격(실험)' : head, cx, y, { size: m ? 17 : 21, color: 'rgba(255,255,255,0.75)' });
   y += (m ? 54 : 70) * k;
   text(s.score.toLocaleString(), cx, y, { size: m ? 56 : 80, weight: 900, color: '#f2c94c', shadow: true });

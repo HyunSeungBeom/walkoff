@@ -4,6 +4,7 @@ import { makeSequence, pitcherHand, dailySeed, styleOn, SEQ_LEN } from '../../js
 import { maxScoreFor, scoreRange } from '../../js/core/score.js';
 import { playChallenge } from '../../js/core/challenge.js';
 import { TEAM_IDS } from '../../js/core/catalog.js';
+import { checkNick } from '../../js/core/nick.js';
 import { ticketError } from './seeds.js';
 import { MOVE_MS } from './scenario.js';
 export { TEAM_IDS, maxScoreFor, scoreRange };   // 서버 테스트와 게임 테스트가 여기서 가져간다
@@ -36,13 +37,14 @@ function seedsFor(b, day, ticket, playerId, pitches, nowMs) {
 }
 export const seqOf = (seed, style = 'classic') => makeSequence(seed, pitcherHand(seed) === 'L', style);
 
-// 닉네임(10자까지)과 팀
+// 닉네임과 팀. 닉네임은 게임과 같은 규칙(js/core/nick.js: 한글·영문·숫자 10자까지, 욕·사칭 목록, 2026-11-19)이고,
+// 걸린 까닭은 돌려주지 않는다(bad_nick 하나). 점수 올리기(/scores)와 닉네임 바꾸기(PUT /me)가 같이 쓴다
 export function validateProfile(b) {
   if (!b || typeof b !== 'object') return { ok: false, error: 'bad_body' };
-  const nick = String(b.nick ?? '').trim(), team = String(b.team ?? '');
-  if (!nick || [...nick].length > 10 || /[\u0000-\u001f\u007f]/.test(nick)) return { ok: false, error: 'bad_nick' };
+  const nick = checkNick(b.nick), team = String(b.team ?? '');
+  if (!nick.ok) return { ok: false, error: 'bad_nick' };
   if (!TEAM_IDS.includes(team)) return { ok: false, error: 'bad_team' };
-  return { ok: true, value: { nick, team } };
+  return { ok: true, value: { nick: nick.nick, team } };
 }
 
 // 10구 판 점수 한 건을 검사한다(다시 돌리기, 2026-11-19 사용자 '랭킹 점수 검사 강화'에서 (나)를 고름). 게임이 공마다 judgeSwing에 넣은 타이밍

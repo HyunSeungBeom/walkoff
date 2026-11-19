@@ -55,9 +55,9 @@ async function looksOf(db, ids) {
 // 이번 주 순위와 지난주 1등(사람, 팀). 주마다 모아 둔 요약(board.js)으로 매긴다.
 // looks면 이번 주 목록에 입은 물건(look)을 붙이고(/rankings만), lastWeek가 아니면 지난주는 읽지 않는다(/scores는 내 순위만 쓴다)
 // 그 사람의 역대 최고(지난주·한 달 전 포함, 계정으로 친 10구 점수 전체). 기본 키(player_id, day)로 그 사람 줄만 읽는다.
-// 메뉴 '역대'를 기기마다가 아니라 계정 기록으로 보이게(2026-11-05 사용자 '역대는 계정으로 친 점수 중 역대급으로 잘 친 기록이어야 한다')
+// 메뉴 '역대'를 기기마다가 아니라 계정 기록으로 보이게(2026-11-05 사용자 '역대는 계정으로 친 점수 중 역대급으로 잘 친 기록이어야 한다'). 숨긴 판은 빼고 본다
 async function allTimeBest(db, playerId) {
-  const row = await db.prepare('SELECT MAX(score) AS best FROM daily_scores WHERE player_id = ?').bind(playerId).first();
+  const row = await db.prepare('SELECT MAX(score) AS best FROM daily_scores WHERE player_id = ? AND hidden = 0').bind(playerId).first();
   return row?.best ?? null;
 }
 
@@ -127,8 +127,9 @@ async function loginCallback(url, env, now) {
   return backTo(st.r, { login: await newSession(env, playerId, now), n: st.n });
 }
 
-// 로그인 표의 계정. 기록을 지운 계정의 표는 받지 않는다. 번호가 없으면(마이그레이션 0010 뒤 옛 서버가 만든 계정) 이때 준다
-const ACCOUNT_COLS = 'player_id, nick, team, coins, owned, equipped, titles, counts, tag, games';
+// 로그인 표의 계정. 기록을 지운 계정의 표는 받지 않는다. 번호가 없으면(마이그레이션 0010 뒤 옛 서버가 만든 계정) 이때 준다.
+// hidden_at은 랭킹에서 숨긴 계정(2026-11-19 공개 화면 지키기, scripts/mod.mjs)이다. 점수와 선물을 받지 않는다
+const ACCOUNT_COLS = 'player_id, nick, team, coins, owned, equipped, titles, counts, tag, games, hidden_at';
 const accountById = (db, pid) => db.prepare(`SELECT ${ACCOUNT_COLS} FROM accounts WHERE player_id = ?`).bind(pid).first();
 async function account(request, env, now) {
   const pid = await sessionPlayer(env, request, now);
@@ -178,6 +179,7 @@ export default {
       }
       if (url.pathname === '/scores' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        if (acct.hidden_at != null) return json({ ok: false, error: 'hidden' }, 400);   // 숨긴 계정(게임은 끝 화면에 '랭킹에서 숨긴 계정이라 안 올라가요'를 띄운다)
         const body = await request.json().catch(() => null);
         const ticket = body?.mode === 'challenge' ? await findSeed(env.DB, env.SESSION_SECRET, body.token) : null;
         const checked = validateSubmission(body, now, acct.player_id, ticket);
@@ -293,6 +295,7 @@ export default {
       // 선물 보내기: { to: 받는 사람 번호, item: 물건 id }. 답은 보낸 사람 지갑과 오늘 남은 수
       if (url.pathname === '/shop/gift' && method === 'POST') {
         if (!acct) return json({ ok: false, error: 'login_required' }, 401);
+        if (acct.hidden_at != null) return json({ ok: false, error: 'hidden', ...wallet(acct) }, 400);
         const b = await request.json().catch(() => null), it = itemById(b?.item);
         if (!it) return json({ ok: false, error: 'unknown_item' }, 400);
         if (it.price === 0) return json({ ok: false, error: 'free_item' }, 400);

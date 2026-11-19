@@ -7,7 +7,7 @@ import { mulberry32 } from '../../js/core/math.js';
 import { memoryD1 } from './d1.js';
 
 const WEEK = '2026-11-02', NOW = Date.parse('2026-11-05T03:00:00Z');
-const rowsOf = (db, week) => db.rows('SELECT player_id, day, nick, team, score FROM daily_scores WHERE week = ?', week);
+const rowsOf = (db, week) => db.rows('SELECT player_id, day, nick, team, score FROM daily_scores WHERE week = ? AND hidden = 0', week);   // 숨긴 판은 순위에 안 들어간다
 const send = (db, s) => db.batch([saveDaily(db, { week: WEEK, lights: 'G', ...s }), updateBoard(db, WEEK, s.playerId)]);
 const same = async (db, ids, what) => {
   const list = await readBoard(db, WEEK, NOW), rows = rowsOf(db, WEEK);
@@ -32,6 +32,29 @@ test('점수를 받을 때마다 고친 주간 요약은 그 주 기록 전체�
     await same(db, ids, `시드 ${seed} · 기록 지운 뒤`);
     assert.ok(!db.rows('SELECT players FROM weekly_boards')[0].players.includes(gone));
   }
+});
+
+test('숨긴 판(2026-11-19 공개 화면 지키기)은 점수를 받을 때 고친 요약에도 다시 만든 요약에도 안 들어간다. 그 주에 보이는 판이 없어지면 요약에서 빠진다', async () => {
+  for (const seed of [11, 12, 13]) {
+    const db = memoryD1(), rnd = mulberry32(seed), pick = (a) => a[Math.floor(rnd() * a.length)];
+    const ids = Array.from({ length: 8 }, (_, i) => `p-test-${String(i).padStart(4, '0')}`);
+    await readBoard(db, WEEK, NOW);
+    for (let i = 0; i < 200; i++) {
+      const playerId = pick(ids), day = addDays(WEEK, Math.floor(rnd() * 7));
+      // 운영 명령이 그날 판을 숨긴 뒤 같은 사람이 또 친다(더 높은 판이면 그 줄이 바뀌어도 숨긴 채다)
+      if (rnd() < 0.15) await db.prepare('UPDATE daily_scores SET hidden = 1 WHERE player_id = ? AND day = ?').bind(playerId, day).run();
+      // 점수 끝자리를 사람마다 달리한다. 숨겼다 다시 보인 사람은 요약 안에서 자리가 뒤로 가서, 같은 점수끼리의 줄 순서(등수는 같다)는 다시 만들 때까지 다를 수 있다
+      await send(db, { playerId, day, team: pick(TEAM_IDS), nick: pick(['가람', '나래']), score: 100 * Math.floor(rnd() * 60) + Number(playerId.slice(-1)) });
+      if (i % 20 === 19) await same(db, ids, `숨김 시드 ${seed} · ${i + 1}번째 점수`);
+    }
+  }
+  const db = memoryD1(), one = { playerId: 'p-test-0001', day: WEEK, team: 'lg', nick: '가람' };
+  await readBoard(db, WEEK, NOW);
+  await send(db, { ...one, score: 9000 });
+  await db.prepare('UPDATE daily_scores SET hidden = 1 WHERE player_id = ?').bind(one.playerId).run();
+  await send(db, { ...one, score: 100 });   // 숨긴 판보다 낮아서 그날 줄은 그대로(숨긴 채)이고, 보이는 판이 없어 요약에서 빠진다
+  assert.equal(db.rows('SELECT players FROM weekly_boards')[0].players, '{}');
+  assert.deepEqual(await readBoard(db, WEEK, NOW + BOARD_TTL_MS), []);
 });
 
 test('요약이 없거나 6시간이 지나면 그 주 기록으로 다시 만든다(손으로 고친 기록도 맞춰진다)', async () => {

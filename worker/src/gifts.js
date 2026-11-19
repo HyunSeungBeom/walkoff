@@ -5,6 +5,7 @@ import { kstDay } from './rules.js';
 import { ownedOf, lookOf } from './shop.js';
 import { titlesIn, shownTitle } from './titles.js';
 import { GIFTS_PER_DAY, GIFT_MIN_GAMES } from '../../js/core/catalog.js';   // 하루 보내는 수, 보낼 수 있는 계정의 랭킹 판 수(넘게). 게임도 안내 글에 쓴다
+import { checkNick } from '../../js/core/nick.js';
 export { GIFTS_PER_DAY, GIFT_MIN_GAMES };
 
 export const FIND_LIMIT = 10;       // 찾기 결과 수
@@ -30,19 +31,20 @@ export async function giveTag(db, playerId) {
   return null;
 }
 
-// 찾기 글: '골든'(그 닉네임 모두) 또는 '골든#4821'(그 한 명). 번호는 게임이 4자리(5자리)로 보이는 그대로 받는다
+// 찾기 글: '골든'(그 닉네임 모두) 또는 '골든#4821'(그 한 명). 번호는 게임이 4자리(5자리)로 보이는 그대로 받는다.
+// 닉네임은 저장할 때와 같은 규칙(js/core/nick.js)으로 맞춰 본다(쓸 수 없는 닉네임은 찾지 않는다)
 export function parseFind(raw) {
   const q = String(raw ?? '').trim(), m = /^(.+?)\s*#(\d{4,5})$/.exec(q);
-  const nick = (m ? m[1] : q).trim();
-  if (!nick || [...nick].length > 10) return null;
-  return { nick, tag: m ? Number(m[2]) : null };
+  const nick = checkNick(m ? m[1] : q);
+  if (!nick.ok) return null;
+  return { nick: nick.nick, tag: m ? Number(m[2]) : null };
 }
 
-// 받는 사람 찾기: 정확히 같은 닉네임(앞뒤 빈칸 뺌)만, 나는 빼고, 판을 많이 친 사람부터 FIND_LIMIT명.
+// 받는 사람 찾기: 정확히 같은 닉네임(앞뒤 빈칸 뺌)만, 나와 랭킹에서 숨긴 계정(2026-11-19)은 빼고, 판을 많이 친 사람부터 FIND_LIMIT명.
 // 랭킹처럼 닉네임·번호·팀·대표 칭호·입은 물건을 주고 계정 ID는 주지 않는다
 export async function findPlayers(db, q, meId) {
   const { results } = await db.prepare(`SELECT nick, tag, team, owned, equipped, titles FROM accounts
-    WHERE nick = ? AND tag IS NOT NULL AND player_id != ?${q.tag != null ? ' AND tag = ?' : ''} ORDER BY games DESC, tag LIMIT ${FIND_LIMIT}`)
+    WHERE nick = ? AND tag IS NOT NULL AND hidden_at IS NULL AND player_id != ?${q.tag != null ? ' AND tag = ?' : ''} ORDER BY games DESC, tag LIMIT ${FIND_LIMIT}`)
     .bind(q.nick, meId, ...(q.tag != null ? [q.tag] : [])).all();
   return results.map((a) => ({ nick: a.nick, tag: a.tag, team: a.team, title: shownTitle(a.equipped, titlesIn(a.titles)), look: lookOf(a.equipped, ownedOf(a.owned)) }));
 }
@@ -66,7 +68,7 @@ function giftError(from, to, it, sent) {
 // 그래서 두 번 누르거나 같은 물건을 둘이 동시에 보내도 한 번만 간다. 받은 물건은 바로 받는 사람 것이고 입는 것은 받는 사람이 한다(거절은 없다)
 export async function sendGift(db, from, toTag, it, now) {
   const day = kstDay(now);
-  const findTo = () => (Number.isInteger(toTag) ? db.prepare('SELECT player_id, nick, tag, owned FROM accounts WHERE tag = ?').bind(toTag).first() : null);
+  const findTo = () => (Number.isInteger(toTag) ? db.prepare('SELECT player_id, nick, tag, owned FROM accounts WHERE tag = ? AND hidden_at IS NULL').bind(toTag).first() : null);   // 숨긴 계정은 없는 사람처럼
   const [to, sent] = await Promise.all([findTo(), sentToday(db, from.player_id, day)]);
   const error = giftError(from, to, it, sent);
   if (error) return { error, games: from.games };
