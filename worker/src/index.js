@@ -3,7 +3,7 @@
 // 로그인 표는 쿠키가 아니라 Authorization 머리글로 받는다(게임과 서버 주소가 달라서 쿠키는 브라우저가 막는다).
 // 끝내기 상황은 랭킹 없이 코인만 준다(2026-11-04, scenario.js: 서버가 같은 시드로 판을 다시 돌려 확인한다)
 import { kstDay, weekStart, addDays, validateSubmission, validateProfile, rankSummary, styleAt } from './rules.js';
-import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer } from './auth.js';
+import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer, SITES } from './auth.js';
 import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
 import { validateEvent, recordEvent } from './stats.js';
 import { issueSeed, findSeed, useSeed, dropOldSeeds } from './seeds.js';
@@ -37,7 +37,7 @@ async function limited(request, env, path, key = request.headers.get('cf-connect
   return !success;
 }
 const tooMany = () => new Response(JSON.stringify({ ok: false, error: 'rate_limited' }), { status: 429, headers: { ...HEADERS, 'retry-after': '60' } });
-const SITE = 'https://hyunseungbeom.github.io/walkoff/';   // 로그인 시간이 지났을 때 '게임으로 돌아가기'. 옛 주소는 넘기기를 켜면 새 주소로 보내 준다(auth.js SITES)
+const SITE = SITES[1];   // 로그인 시간이 지났을 때 '게임으로 돌아가기': 새 주소 walkoff.kr(auth.js SITES는 옛·새 순서, 2026-11-20 옛 주소 넘기기를 켬)
 
 // 합계 방식이던 예전 게임(fa4649a까지)은 사람 점수를 total로 읽는다. 열어 둔 탭까지 다 바뀔 때까지 같은 값을 total로도 보낸다
 const withTotal = (p) => (p ? { ...p, total: p.best } : null);

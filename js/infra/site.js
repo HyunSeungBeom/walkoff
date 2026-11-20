@@ -3,8 +3,9 @@
 // tests/meta.spec.js가 본다. 브라우저 밖(CI의 미리보기 태그 바꾸기, 테스트)에서도 읽어서 이 파일은 화면·저장소를 쓰지 않는다
 export const OLD_SITE = 'https://hyunseungbeom.github.io/walkoff/';
 export const NEW_SITE = 'https://walkoff.kr/';
-// 옛 주소 넘기기. 새 주소가 PC·아이폰에서 잘 열리는 것을 본 뒤 켠다. 켜면 새 주소가 사람들이 치는 주소다(HOME)
-export const MOVE_ON = false;
+// 옛 주소 넘기기. 새 주소가 PC·아이폰에서 잘 열리는 것을 본 뒤 켠다(2026-11-20 켬, 작업 글 walkoff-domain.md 5절). 켜면 새 주소가 사람들이 치는 주소다(HOME).
+// 끌 때는 index.html의 미리보기 태그도 HOME으로 같이 돌린다(tests/meta.spec.js가 본다)
+export const MOVE_ON = true;
 export const HOME = MOVE_ON ? NEW_SITE : OLD_SITE;
 
 // 주소(href)가 옛·새 주소 가운데 어느 쪽인지(OLD_SITE·NEW_SITE). 둘 다 아니면 null(이 컴퓨터·테스트, Cloudflare가 따로 주는 pages.dev 주소)

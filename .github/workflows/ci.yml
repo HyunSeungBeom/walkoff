@@ -75,13 +75,18 @@ jobs:
           grep -q "src=\"js-${GITHUB_SHA::7}/main.js\"" _site/index.html
           for f in $(grep -o 'modulepreload" href="[^"]*"' _site/index.html | cut -d'"' -f3); do test -f "_site/$f"; done   # 미리 받는 모듈이 모두 올라갔다
           node scripts/keep-prev.js https://hyunseungbeom.github.io/walkoff/ _site   # 지금 배포된 판의 모듈 폴더도 남긴다(10분 캐시된 옛 index.html이 찾는다)
-      - name: 새 주소에 올릴 판(같은 파일에 미리보기 태그만 새 주소로, 주소는 js/infra/site.js)
+      - name: 새 주소에 올릴 판(같은 파일에 미리보기 태그는 새 주소, 머리글 규칙만 더함. 주소는 js/infra/site.js)
         run: |
           read -r OLD NEW <<< "$(node -e "import('./js/infra/site.js').then((s) => console.log(s.OLD_SITE, s.NEW_SITE))")"
           cp -r _site _cf
-          sed -i "s|content=\"${OLD}|content=\"${NEW}|g" _cf/index.html
+          sed -i "s|content=\"${OLD}|content=\"${NEW}|g" _cf/index.html   # 레포의 태그가 옛 주소일 때(넘기기를 켜기 전이나 끈 뒤)만 바뀐다
           grep -q "<meta property=\"og:url\" content=\"${NEW}\">" _cf/index.html
           grep -q "<meta property=\"og:image\" content=\"${NEW}og.png\">" _cf/index.html
+          # 새 주소 머리글(_headers). Cloudflare Pages만 읽는 파일이라 옛 주소(_site)에는 넣지 않는다
+          # - 모든 경로에 HSTS(6개월, 하위 도메인 포함): walkoff.kr 기록은 DNS only라(한국 요청이 미국 LAX로 가지 않게, 2026-11-20 사용자) zone의 HSTS 설정이 걸리지 않는다
+          # - 모듈 폴더(js-커밋7자리)는 커밋마다 새 이름이라 한 번 받은 파일이 바뀌지 않는다. 1년 캐시해서 다시 온 사람이 모듈 30여 개를 매번 다시 확인하지 않게 한다(2026-11-19 사용자).
+          #   index.html은 Pages 기본(max-age=0, 매번 확인)이라 새 판이 바로 보인다
+          printf '%s\n' '/*' '  Strict-Transport-Security: max-age=15552000; includeSubDomains' '/js-*' '  Cache-Control: public, max-age=31536000, immutable' > _cf/_headers
       - uses: actions/upload-artifact@v7
         with:
           name: cf-site

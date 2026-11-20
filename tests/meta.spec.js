@@ -15,8 +15,10 @@ test.describe('링크 미리보기', () => {
     await page.goto(PAGE);
     const meta = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('meta[property], meta[name]')]
       .map((m) => [m.getAttribute('property') || m.getAttribute('name'), m.getAttribute('content')])));
-    expect(meta['og:url']).toBe(SITE);
-    expect(meta['og:image']).toBe(SITE + 'og.png');
+    // 사람들이 치는 주소(js/infra/site.js HOME, 옛 주소 넘기기를 켜면 새 주소). 옛 주소 페이지도 같은 태그라 카톡이 새 주소 쪽을 읽는다
+    const { HOME } = await import(pathToFileURL(path.join(ROOT, 'js', 'infra', 'site.js')).href);
+    expect(meta['og:url']).toBe(HOME);
+    expect(meta['og:image']).toBe(HOME + 'og.png');
     expect([meta['og:image:width'], meta['og:image:height']]).toEqual(['1200', '630']);
     expect(meta['twitter:card']).toBe('summary_large_image');
     for (const key of ['og:title', 'og:description', 'description']) expect(meta[key], key).toBeTruthy();
@@ -124,7 +126,7 @@ test.describe('주소 옮기기(2026-11-17)', () => {
     const { OLD_SITE, NEW_SITE } = await import(pathToFileURL(path.join(ROOT, 'js', 'infra', 'site.js')).href);
     const { SITES } = await import(pathToFileURL(path.join(ROOT, 'worker', 'src', 'auth.js')).href);
     expect(SITES).toEqual([OLD_SITE, NEW_SITE]);   // 서버가 로그인 뒤 돌려보낼 주소
-    expect(OLD_SITE).toBe(SITE);   // 레포의 미리보기 태그는 옛 주소이고, 새 주소에 올릴 때 CI가 바꾼다
+    expect(OLD_SITE).toBe(SITE);   // 앞 판 모듈을 남길 때(keep-prev) 읽는 옛 주소. 미리보기 태그는 HOME이고, 옛 주소일 때는 새 주소에 올릴 때 CI가 바꾼다
     const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8'), main = fs.readFileSync(path.join(ROOT, 'js', 'main.js'), 'utf8');
     const move = html.indexOf('<script type="module" src="js/infra/move.js"></script>');
     expect(move).toBeGreaterThan(0);
@@ -146,6 +148,10 @@ test.describe('주소 옮기기(2026-11-17)', () => {
     expect(ci).toContain('cp -r _site _cf');   // 테스트를 거친 같은 파일(앞 판 모듈 폴더 포함)
     expect(ci).toContain('sed -i "s|content=\\"${OLD}|content=\\"${NEW}|g" _cf/index.html');
     expect(ci).toContain('grep -q "<meta property=\\"og:url\\" content=\\"${NEW}\\">" _cf/index.html');
+    // 새 주소 머리글: 모든 경로에 HSTS(walkoff.kr은 DNS only라 zone 설정이 안 걸린다, 2026-11-20 사용자), 모듈 폴더만 1년 캐시(2026-11-19 사용자, 커밋마다 새 폴더라 바뀌지 않는다).
+    // index.html은 Pages 기본(매번 확인)이라 캐시 규칙에 없다. 옛 주소(GitHub Pages)는 이 파일을 안 읽어서 넣지 않는다
+    expect(ci).toContain(`printf '%s\\n' '/*' '  Strict-Transport-Security: max-age=15552000; includeSubDomains' '/js-*' '  Cache-Control: public, max-age=31536000, immutable' > _cf/_headers`);
+    expect(ci).not.toContain('_site/_headers');
     expect(ci).toContain('worker/node_modules/.bin/wrangler pages deploy _cf --project-name walkoff --branch main');
     expect(ci).toMatch(/if \[ -z "\$CLOUDFLARE_API_TOKEN" \] \|\| \[ -z "\$CLOUDFLARE_ACCOUNT_ID" \]; then [^\n]*exit 0; fi/);
     expect(ci).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');   // 토큰은 레포 비밀값으로만

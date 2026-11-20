@@ -1,7 +1,7 @@
 // @ts-check
 // 옛 주소(github.io)에서 새 주소(walkoff.kr)로 이 기기 기록을 넘기는 일(2026-11-17 주소 옮기기, js/infra/move.js·site.js)을 실제 브라우저로 본다.
 // 두 주소는 Playwright가 가로채 이 컴퓨터의 게임 파일로 답한다. 그래서 출처가 달라 저장소가 따로인 것과 주소를 옮길 때 넘어온 곳(referrer)이 실제와 같다.
-// 넘기기 스위치(site.js MOVE_ON)는 켠 파일로 답해서 켠 판·끈 판을 모두 본다(켠 판은 레포의 site.js에서 그 한 줄만 바꾼다)
+// 넘기기 스위치(site.js MOVE_ON)는 켠 파일·끈 파일로 답해서 켠 판·끈 판을 모두 본다(레포의 site.js에서 그 한 줄만 바꾼다. 2026-11-20부터 레포는 켠 판)
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
@@ -24,15 +24,16 @@ const duel = () => import(pathToFileURL(path.join(ROOT, 'js', 'game', 'duel.js')
 
 test.skip(({ isMobile }) => isMobile, '주소와 저장소는 화면 크기와 상관없어서 PC에서만 본다');
 
-// 옛·새 주소를 이 컴퓨터의 게임 파일로 답한다. on이면 넘기기를 켠 site.js로 답한다. blank.html은 게임 없이 그 주소의 저장소를 읽을 빈 페이지
+// 옛·새 주소를 이 컴퓨터의 게임 파일로 답한다. site.js는 on이면 넘기기를 켠 파일, 아니면 끈 파일로 답한다. blank.html은 게임 없이 그 주소의 저장소를 읽을 빈 페이지
 async function serveSites(context, { on }) {
-  const siteJs = fs.readFileSync(path.join(ROOT, 'js', 'infra', 'site.js'), 'utf8'), onJs = siteJs.replace('export const MOVE_ON = false;', 'export const MOVE_ON = true;');
-  expect(onJs, 'site.js의 넘기기 스위치 줄').not.toBe(siteJs);
+  const siteJs = fs.readFileSync(path.join(ROOT, 'js', 'infra', 'site.js'), 'utf8'), SWITCH = /^export const MOVE_ON = (?:true|false);$/m;
+  expect(siteJs, 'site.js의 넘기기 스위치 줄').toMatch(SWITCH);
+  const served = siteJs.replace(SWITCH, `export const MOVE_ON = ${on};`);
   for (const base of [OLD, NEW]) {
     await context.route(`${base}**`, async (route) => {
       const rel = new URL(route.request().url()).pathname.slice(new URL(base).pathname.length) || 'index.html';
       if (rel === 'blank.html') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>blank</title>' });
-      if (on && /^js(-[0-9a-f]{7})?\/infra\/site\.js$/.test(rel)) return route.fulfill({ contentType: 'text/javascript', body: onJs });
+      if (/^js(-[0-9a-f]{7})?\/infra\/site\.js$/.test(rel)) return route.fulfill({ contentType: 'text/javascript', body: served });
       return route.fulfill({ response: await route.fetch({ url: LOCAL + rel }) });
     });
   }

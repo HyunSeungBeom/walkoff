@@ -144,6 +144,7 @@ test('로그인 실패: 취소, 카카오 오류, 망가진 확인 표', async (
   const forged = await call('GET', `/auth/kakao/callback?${new URLSearchParams({ code: 'c1', state: `${body}.${sig[0] === 'A' ? 'B' : 'A'}${sig.slice(1)}` })}`);
   assert.equal(forged.status, 400);
   assert.match(forged.headers.get('content-type'), /text\/html/);
+  assert.match(await forged.text(), /href="https:\/\/walkoff\.kr\/">게임으로 돌아가기</);   // 돌아갈 주소를 모르면 새 주소로(2026-11-20 넘기기를 켬)
   // DB가 막힌 날(무료 한도를 넘으면 D1이 오류를 낸다): 날 JSON 대신 게임으로 돌려보낸다
   env.DB = { ...env.DB, prepare: () => { throw new Error("D1_ERROR: Your account has exceeded D1's free tier daily row write limit."); } };
   assert.deepEqual((await login('c4')).hash, { login_error: 'server', n: N });

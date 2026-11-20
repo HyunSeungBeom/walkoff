@@ -465,7 +465,7 @@ test.describe('판정 계산', () => {
       'walkoff 10구 도전 (좌타)',
       '🟢🟡🔴🔴🟢',
       '2,100점 · 홈런 1 · 최장 128m',
-      'https://hyunseungbeom.github.io/walkoff/',
+      'https://walkoff.kr/',
     ]);
     // 안타 종류를 담은 불: 홈런만 별, 단타·2루타·3루타는 초록
     const kinds = await page.evaluate(() => walkoff.shareText({ bats: 'R', lights: 'SYHRDTH', score: 3900, hr: 2, far: 131 }));
@@ -482,14 +482,14 @@ test.describe('판정 계산', () => {
       'walkoff 10구 도전 (우타)',
       '🟢🔴🟡',
       '3,200점 · 새 최고 기록 · 홈런 2 · 최장 131m',
-      'https://hyunseungbeom.github.io/walkoff/',
+      'https://walkoff.kr/',
     ]);
     expect(r.scenario.split('\n')).toEqual([
       'walkoff 끝내기 상황 (좌타)',
       '끝내기 승리! 원정 4 : 5 홈',
       '🔴🟢🟢',
       '처음 상황: 2사 1·2루, 1점 차',
-      'https://hyunseungbeom.github.io/walkoff/',
+      'https://walkoff.kr/',
     ]);
   });
 
@@ -3532,7 +3532,7 @@ test.describe('친구 도전장', () => {
     let lines = (await page.evaluate(() => window.__shared)).split('\n');
     expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 (우타)', '테스트님 0점 · 홈런 0', '같은 공 40개로 이 점수를 넘겨 보세요']);   // 공마다 결과(이모지 줄)는 싣지 않는다(2026-11-18)
     let link = new URL(lines.at(-1));
-    expect(`${link.origin}${link.pathname}`).toBe('https://hyunseungbeom.github.io/walkoff/');
+    expect(`${link.origin}${link.pathname}`).toBe('https://walkoff.kr/');
     expect(parseDuel(link.searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'R', n: 1, nick: '테스트', style: 'classic' });
     expect(await page.evaluate(() => walkoff.store.get('duels', null))).toEqual([{ seed: 42, tries: 1, first: 0 }]);   // 보낸 사람도 그 공을 한 번 쳤다
     // 친구(민성)가 같은 공으로 6,800점을 쳐서 되갚은 주소를 보낸 사람이 연다
@@ -3608,8 +3608,8 @@ test.describe('결과 공유', () => {
   }
 
   const MODES = [   // 10구 공유는 도전장이라 마지막 줄이 같은 공을 칠 주소다(2026-11-16)
-    ['10구 도전', 'challenge', /^walkoff 10구 도전장 \(우타\)$/, '다시 하기', /^https:\/\/hyunseungbeom\.github\.io\/walkoff\/\?vs=a\.[0-9a-z]+\./],
-    ['끝내기 상황', 'scenario', /^walkoff 끝내기 상황 \(우타\)$/, '다시 하기', /^https:\/\/hyunseungbeom\.github\.io\/walkoff\/$/],
+    ['10구 도전', 'challenge', /^walkoff 10구 도전장 \(우타\)$/, '다시 하기', /^https:\/\/walkoff\.kr\/\?vs=a\.[0-9a-z]+\./],
+    ['끝내기 상황', 'scenario', /^walkoff 끝내기 상황 \(우타\)$/, '다시 하기', /^https:\/\/walkoff\.kr\/$/],
   ];
   for (const [name, mode, firstLine, other, lastLine] of MODES) {
     test(`${name} 끝 화면: 결과 공유하기를 누르면 첫 줄에 모드가 적힌 결과가 나간다`, async ({ page }) => {
@@ -3646,7 +3646,7 @@ test.describe('결과 공유', () => {
     });
     expect(sent).toMatchObject({ files: 1, type: 'image/png', w: 1080, h: 1080 });
     expect(sent.text.split('\n')[0]).toMatch(/^walkoff 10구 도전장 \(우타\)$/);
-    expect(sent.text.split('\n').at(-1)).toMatch(/^https:\/\/hyunseungbeom\.github\.io\/walkoff\/\?vs=a\./);
+    expect(sent.text.split('\n').at(-1)).toMatch(/^https:\/\/walkoff\.kr\/\?vs=a\./);
     // 그림 공유가 안 되는 브라우저는 예전처럼 글만 보낸다
     await page.evaluate(() => { window.__close(); window.__filesOk = false; });
     await expect.poll(() => page.evaluate(() => walkoff.game.sharing)).toBe(false);
@@ -3667,7 +3667,7 @@ test.describe('결과 공유', () => {
     }, { s, mode });
     await setPlayedDays(page, [0, 1, 2]);
     const base = { score: 2350, hr: 1, hits: 3, balls: 2, far: 118, lights: 'GRYGRRYGRRRR', bats: 'R' };
-    expect(await cardTexts(base, 'challenge')).toEqual(['끝내기', 'walkoff', '10구 도전 · 우타', '2,350', '주전 타자 · 3일 연속', '홈런 1 · 안타 3 · 볼 2 · 가장 멀리 118m', 'walkoff · hyunseungbeom.github.io/walkoff']);
+    expect(await cardTexts(base, 'challenge')).toEqual(['끝내기', 'walkoff', '10구 도전 · 우타', '2,350', '주전 타자 · 3일 연속', '홈런 1 · 안타 3 · 볼 2 · 가장 멀리 118m', 'walkoff · walkoff.kr']);
     expect((await cardTexts({ ...base, bats: 'L', newBest: true }, 'challenge')).slice(2, 5)).toEqual(['10구 도전 · 좌타', '2,350', '새 최고 기록! · 3일 연속']);
     const scn = await cardTexts({ end: 'win', away: 3, home: 4, pa: 'RGYG', pitches: 9, label: '2아웃 만루', bats: 'R' }, 'scenario');
     expect(scn.slice(2, 6)).toEqual(['끝내기 상황 · 우타', '끝내기 승리!', expect.stringMatching(/^\S+ 3 : 4 \S+ · 9회말$/), '타석 4 · 안타 2 · 볼넷 1 · 투구 9개']);
@@ -5642,7 +5642,7 @@ test.describe('여러 기기(2026-11-18): 뗄 때 공유·낮은 화면·가로 
     }, { x, mode });
     expect(await arcs(s, 'challenge')).toBe(0);   // 전에는 11개
     expect(await arcs({ end: 'win', away: 3, home: 4, pa: 'RGYG', pitches: 9, label: '2아웃 만루', bats: 'R' }, 'scenario')).toBe(4);
-    const dare = { url: 'https://hyunseungbeom.github.io/walkoff/?vs=x', nick: '명은', n: 1, vs: null };
+    const dare = { url: 'https://walkoff.kr/?vs=x', nick: '명은', n: 1, vs: null };
     const [withDare, plain] = await page.evaluate(({ s, dare }) => [walkoff.shareText(s, 'challenge', dare), walkoff.shareText(s, 'challenge')], { s, dare });
     expect(withDare.split('\n')).toEqual(['walkoff 10구 도전장 (우타)', '명은님 2,350점 · 홈런 1 · 최장 118m', '같은 공 40개로 이 점수를 넘겨 보세요', dare.url]);
     expect(plain.split('\n')[1]).toBe('🟢🔴🟡🟢🔴🔴🟡🟢🔴🔴🔴⭐');
