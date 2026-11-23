@@ -4,7 +4,7 @@
 // 끝내기 상황은 랭킹 없이 코인만 준다(2026-11-04, scenario.js: 서버가 같은 시드로 판을 다시 돌려 확인한다)
 import { kstDay, weekStart, addDays, validateSubmission, validateProfile, rankSummary, styleAt } from './rules.js';
 import { allowedReturn, authorizeUrl, kakaoUserId, accountKey, newSession, newState, verify, sessionPlayer, SITES } from './auth.js';
-import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf } from './shop.js';
+import { itemById, coinsFor, COIN_GAP_MS, ownedOf, lookOf, saleOn } from './shop.js';
 import { validateEvent, recordEvent } from './stats.js';
 import { issueSeed, findSeed, useSeed, dropOldSeeds } from './seeds.js';
 import { checkScenario } from './scenario.js';
@@ -252,6 +252,7 @@ export default {
         const it = itemById((await request.json().catch(() => null))?.item);
         if (!it) return json({ ok: false, error: 'unknown_item' }, 400);
         if (it.price === 0) return json({ ok: false, error: 'free_item' }, 400);
+        if (saleOn(it, kstDay(now)) !== 'on') return json({ ok: false, error: 'not_on_sale', ...wallet(acct) }, 400);   // 기간 한정 물건은 그 기간(한국 시간)에만 산다
         // 코인이 넉넉하고 아직 안 가진 물건일 때만 한 문장으로 코인을 빼고 물건을 넣는다(두 번 눌러도 한 번만 산다)
         const r = await env.DB.prepare(`UPDATE accounts SET coins = coins - ?, owned = json_insert(owned, '$[#]', ?)
           WHERE player_id = ? AND coins >= ? AND NOT EXISTS (SELECT 1 FROM json_each(accounts.owned) WHERE json_each.value = ?)`)
@@ -299,6 +300,7 @@ export default {
         const b = await request.json().catch(() => null), it = itemById(b?.item);
         if (!it) return json({ ok: false, error: 'unknown_item' }, 400);
         if (it.price === 0) return json({ ok: false, error: 'free_item' }, 400);
+        if (saleOn(it, kstDay(now)) !== 'on') return json({ ok: false, error: 'not_on_sale', ...wallet(acct) }, 400);   // 기간 한정 물건은 그 기간에만 보낸다
         const sent = await sendGift(env.DB, acct, b.to, it, now);
         const after = await accountById(env.DB, acct.player_id);
         if (sent.error) return json({ ok: false, error: sent.error, games: sent.games, ...wallet(after) }, sent.error === 'no_player' ? 404 : 400);

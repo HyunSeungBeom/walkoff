@@ -418,6 +418,34 @@ test('상점: 산 것만 입고, 코인이 모자라거나 이미 있으면 못 
   assert.deepEqual([mine.coins, mine.owned, mine.look.bat, mine.look.no], [50, ['bat-red', 'number-on'], 'bat-red', 7]);   // 다른 기기에서도 그대로
 });
 
+test('겨울 한정(2026-11-23): 한국 시간 12-01 0시부터 12-31 24시까지만 사고 선물한다. 기간 밖은 not_on_sale이고 코인은 그대로, 산 물건은 기간이 지나도 입는다', async () => {
+  const before = clockShift;
+  try {
+    const a = await named('c1', 'p-device-0001', '가람'), b = await named('c3', 'p-device-0002', '골든'), tagB = (await me(b)).tag;
+    await env.DB.prepare("UPDATE accounts SET coins = 20000, games = ? WHERE player_id = 'p-device-0001'").bind(GIFT_MIN_GAMES + 1).run();
+    const post = async (path, body) => { const r = await call('POST', path, { token: a, body }); return [r.status, (await r.json()).error ?? 'ok']; };
+    const buy = (item) => post('/shop/buy', { item }), gift = (item) => post('/shop/gift', { to: tagB, item });
+    clockTo('2026-11-30T14:59:59Z');   // 한국 시간 11-30 23:59:59
+    assert.deepEqual(await buy('helmet-santa'), [400, 'not_on_sale']);
+    assert.deepEqual(await gift('helmet-santa'), [400, 'not_on_sale']);
+    assert.deepEqual(await buy('trail-sleigh'), [400, 'not_on_sale']);   // 겨울 레전드도
+    assert.equal((await me(a)).coins, 20000);   // 거절한 것은 코인을 빼지 않았다
+    clockTo('2026-11-30T15:00:00Z');   // 12-01 0시
+    assert.deepEqual(await buy('helmet-santa'), [200, 'ok']);
+    assert.deepEqual(await gift('glove-mitten'), [200, 'ok']);
+    clockTo('2026-12-31T14:59:59Z');   // 12-31 23:59:59
+    assert.deepEqual(await buy('trail-sleigh'), [200, 'ok']);
+    assert.equal((await me(a)).coins, 20000 - 800 - 400 - 10000);
+    clockTo('2026-12-31T15:00:00Z');   // 2027-01-01 0시
+    assert.deepEqual(await buy('uniform-santa'), [400, 'not_on_sale']);
+    assert.deepEqual(await gift('uniform-santa'), [400, 'not_on_sale']);
+    assert.deepEqual(await buy('bat-red'), [200, 'ok']);   // 한정이 아닌 물건은 그대로
+    assert.deepEqual(await post('/shop/equip', { item: 'helmet-santa' }), [200, 'ok']);   // 산 물건은 기간이 지나도 입는다
+    const mine = await me(a), got = await me(b);
+    assert.deepEqual([mine.look.helmet, mine.owned.includes('trail-sleigh'), got.owned], ['helmet-santa', true, ['glove-mitten']]);
+  } finally { clockShift = before; }
+});
+
 test('다른 주소의 게임이 로그인 표를 보낼 수 있다(CORS)', async () => {
   const res = await call('OPTIONS', '/me');
   assert.equal(res.status, 204);

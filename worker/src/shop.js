@@ -1,7 +1,7 @@
 // 상점 물건과 코인 규칙(2026-10-29 사용자 결정). 물건 id·종류·가격은 게임과 같은 파일(js/core/catalog.js)을 그대로 쓴다(2026-11-03 코드 나누기.
 // 전에는 여기에 복사본을 두고 테스트로 맞춰 봤다). 가격은 서버가 이 목록으로 정한다(게임이 보낸 가격은 믿지 않는다). 가격 0은 처음부터 가진 기본 물건이다
-import { SLOTS, ITEMS } from '../../js/core/catalog.js';
-export { SLOTS, ITEMS };
+import { SLOTS, ITEMS, saleOn } from '../../js/core/catalog.js';
+export { SLOTS, ITEMS, saleOn };   // saleOn: 기간 한정 물건(겨울 한정)을 그날 살 수 있는지(2026-11-23)
 
 export const itemById = (id) => ITEMS.find((i) => i.id === id) ?? null;
 export const DEFAULTS = Object.fromEntries(SLOTS.map((s) => [s, ITEMS.find((i) => i.slot === s && i.price === 0).id]));

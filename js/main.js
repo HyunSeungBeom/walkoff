@@ -12,7 +12,7 @@ import { groundPath, interceptGround, sprintTime } from './core/race.js';
 import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, leadAt, makeScenario as makeScenarioIn, SCENARIOS, scenarioPitch, scenarioPoints } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos } from './core/flight.js';
-import { GIFT_MIN_GAMES, GIFTS_PER_DAY, ITEMS, SLOTS, TEAM_IDS } from './core/catalog.js';
+import { GIFT_MIN_GAMES, GIFTS_PER_DAY, ITEMS, SALES, SLOTS, TEAM_IDS, saleOn } from './core/catalog.js';
 import { TITLES, TIERS, titleById, countsOf, addCounts, cleanCounts, titlesFor, topTitle } from './core/titles.js';
 import { checkNick } from './core/nick.js';
 import { connect } from './sim/port.js';
@@ -1285,7 +1285,142 @@ function drawChocoBat(a, b, wa, wb, col, detail) {
   segment(F.at(H + 0.05, 0.013), F.at(0.96, 0.017), c0 * 0.16, c1 * 0.16, CHOCO.gloss);
   segment(F.at(H + 0.04, -0.015), F.at(0.95, -0.019), c0 * 0.14, c1 * 0.14, CHOCO.shade);
 }
+// ===== 2026-11-23 더한 배트: 효자손(600)·고등어(600)·우산(500)·기타(1,500), 겨울 한정 붕어빵(600) =====
+// 배트 모양 윤곽: u0~u1을 n칸으로 나눠 위쪽 가장자리(반폭 w(u), m)와 아래쪽 가장자리(wd(u))를 잇는 닫힌 경로. F는 batFrame
+function batOutline(F, u0, u1, n, w, wd = w) {
+  ctx.beginPath();
+  for (let i = 0; i <= n; i++) { const u = lerp(u0, u1, i / n), p = F.at(u, w(u)); ctx[i ? 'lineTo' : 'moveTo'](p.x, p.y); }
+  for (let i = n; i >= 0; i--) { const u = lerp(u0, u1, i / n), p = F.at(u, -wd(u)); ctx.lineTo(p.x, p.y); }
+  ctx.closePath();
+}
+// 배트 끝 자리 p에서 돌린 좌표로 그린다: +x는 배트 끝 쪽, +y는 위쪽(빛 쪽). f(s)의 s는 그 자리에서 1m가 몇 px인지
+function atBatLocal(F, p, f) {
+  const uy = F.up.x * -F.d.y + F.up.y * F.d.x;   // 위쪽이 돌린 좌표의 +y(1)인지 -y(-1)인지
+  ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(Math.atan2(F.d.y, F.d.x)); ctx.scale(1, uy);
+  f(p.s);
+  ctx.restore();
+}
+// 효자손: 대나무 막대(굵기 2.4cm, 마디 셋)의 끝에 손가락 넷을 오므린 작은 손이 위쪽으로 휜다
+const SCRATCHER = { node: '#9c7040', groove: 'rgba(110,72,36,0.85)', shine: 'rgba(255,244,214,0.55)' };
+function drawScratcherBat(a, b, wa, wb, col, detail) {
+  const F = batFrame(a, b, wa, wb), len = Math.hypot(b.x - a.x, b.y - a.y), m = F.at(0.9);
+  segment(a, m, 0.026 * F.sa, 0.023 * m.s, col('bat'));
+  atBatLocal(F, F.at(0.955, 0.012), (s) => {
+    ctx.fillStyle = col('bat'); ctx.beginPath(); ctx.ellipse(0, 0, 0.05 * s, 0.026 * s, 0.35, 0, Math.PI * 2); ctx.fill();
+    if (!detail || len < 0.5) return;
+    ctx.fillStyle = col('batEnd');   // 오므린 손가락 끝 넷
+    for (const k of [-0.75, -0.25, 0.25, 0.75]) { ctx.beginPath(); ctx.ellipse(0.042 * s + Math.abs(k) * -0.008 * s, 0.017 * s + k * 0.016 * s, 0.009 * s, 0.0075 * s, 0.35, 0, Math.PI * 2); ctx.fill(); }
+    ctx.strokeStyle = SCRATCHER.groove; ctx.lineWidth = Math.max(0.6, 0.0035 * s);
+    for (const k of [-0.5, 0, 0.5]) { ctx.beginPath(); ctx.moveTo(0.012 * s, 0.006 * s + k * 0.014 * s); ctx.lineTo(0.04 * s, 0.016 * s + k * 0.017 * s); ctx.stroke(); }
+  });
+  if (!detail || len < 0.5) return;
+  for (const u of [0.24, 0.48, 0.72]) { const p = F.at(u); ellipseAt(p, 0.008 * p.s, 0.008 * p.s, SCRATCHER.node); segment(F.at(u, 0.012), F.at(u, -0.012), 0.005 * p.s, 0.005 * p.s, SCRATCHER.node); }
+  segment(F.at(0.05, 0.006), F.at(0.88, 0.006), 0.005 * F.sa, 0.005 * m.s, SCRATCHER.shine);
+}
+// 물고기 배트(고등어·붕어빵): 손잡이 쪽이 꼬리지느러미(손이 꼬리를 쥔다)이고 끝이 머리다. 반폭은 꼬리 자루에서 6할쯤까지 굵어지고 머리 끝으로 둥글게 준다
+const FISH = {
+  mackerel: { w: 0.052, fin: '#5b7f96', back: '#2f5f7e', belly: '#e3e9ec', stripe: '#13283a', line: 'rgba(255,255,255,0.5)' },
+  bungeo: { w: 0.068, fin: '#c98535', crust: '#d9963f', dark: '#9a5a1c', light: 'rgba(250,214,150,0.6)', scale: 'rgba(140,78,24,0.55)' },
+};
+const fishHalf = (u, w) => { const t = (u - 0.13) / 0.87; return t <= 0 ? w * 0.2 : w * (t < 0.6 ? 0.2 + 0.8 * Math.sin(Math.PI / 2 * t / 0.6) : Math.sqrt(Math.max(0, 1 - ((t - 0.6) / 0.4) ** 2))); };
+function drawFishBat(a, b, wa, wb, col, detail, kind) {
+  const F = batFrame(a, b, wa, wb), len = Math.hypot(b.x - a.x, b.y - a.y), K = FISH[kind], W = K.w, h = (u) => fishHalf(u, W);
+  const poly = (pts, color) => { ctx.fillStyle = color; ctx.beginPath(); pts.forEach((q, i) => ctx[i ? 'lineTo' : 'moveTo'](q.x, q.y)); ctx.closePath(); ctx.fill(); };
+  poly([F.at(0.16, W * 0.2), F.at(0, W * 1.05), F.at(0.06, 0), F.at(0, -W * 1.05), F.at(0.16, -W * 0.2)], K.fin);   // 꼬리지느러미
+  if (detail && len > 0.5) for (const [u, hk] of [[0.4, 0.034], [0.55, 0.028]]) poly([F.at(u - 0.05, h(u - 0.05) * 0.9), F.at(u - 0.01, h(u) + hk), F.at(u + 0.04, h(u + 0.04) * 0.9)], K.fin);   // 등지느러미
+  batOutline(F, 0.13, 1, 20, h);
+  ctx.fillStyle = kind === 'bungeo' ? K.crust : K.belly; ctx.fill();
+  if (!detail || len < 0.5) return;
+  ctx.save(); batOutline(F, 0.13, 1, 20, h); ctx.clip();
+  if (kind === 'mackerel') {   // 등은 푸른 바탕에 검은 물결 줄, 배는 은빛, 옆줄 하나
+    batOutline(F, 0.1, 1.02, 20, (u) => h(u) * 1.1, (u) => h(u) * -0.12); ctx.fillStyle = K.back; ctx.fill();
+    ctx.strokeStyle = K.stripe; ctx.lineCap = 'round';
+    for (let i = 0; i < 9; i++) {
+      const u = 0.24 + i * 0.068, p0 = F.at(u, h(u) * 1.0), c1 = F.at(u - 0.025, h(u) * 0.6), p1 = F.at(u + 0.02, h(u) * 0.18);
+      ctx.lineWidth = Math.max(0.8, 0.006 * p0.s); ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.quadraticCurveTo(c1.x, c1.y, p1.x, p1.y); ctx.stroke();
+    }
+    segment(F.at(0.2, -W * 0.06), F.at(0.86, -W * 0.08), 0.003 * F.sa, 0.003 * F.sb, K.line);
+  } else {   // 붕어빵: 가운데가 밝게 구워진 빵, 비늘 줄, 가장자리는 조금 탄 색
+    batOutline(F, 0.2, 0.96, 16, (u) => h(u) * 0.62); ctx.fillStyle = K.light; ctx.fill();
+    ctx.strokeStyle = K.scale; ctx.lineWidth = Math.max(0.6, 0.0035 * F.sb);
+    const ang = Math.atan2(F.d.y, F.d.x);
+    for (let u = 0.3; u < 0.76; u += 0.065) for (const o of [-0.55, -0.18, 0.2, 0.56]) { const p = F.at(u, h(u) * o), r = 0.012 * p.s; ctx.beginPath(); ctx.arc(p.x, p.y, r, ang + Math.PI * 0.55, ang + Math.PI * 1.45); ctx.stroke(); }
+  }
+  ctx.restore();
+  const g = F.at(0.8);   // 아가미 선, 눈, 입
+  ctx.strokeStyle = kind === 'bungeo' ? K.dark : 'rgba(20,40,55,0.6)'; ctx.lineWidth = Math.max(0.7, 0.004 * g.s);
+  const g0 = F.at(0.8, h(0.8) * 0.8), g1 = F.at(0.8, -h(0.8) * 0.8), gc = F.at(0.845, 0);
+  ctx.beginPath(); ctx.moveTo(g0.x, g0.y); ctx.quadraticCurveTo(gc.x, gc.y, g1.x, g1.y); ctx.stroke();
+  const e = F.at(0.9, h(0.9) * 0.28), er = 0.011 * e.s;
+  if (kind === 'bungeo') { ctx.beginPath(); ctx.arc(e.x, e.y, er * 1.15, 0, Math.PI * 2); ctx.stroke(); ellipseAt(e, er * 0.45, er * 0.45, K.dark); }
+  else { ellipseAt(e, er, er, '#f4f1e6'); ellipseAt(e, er * 0.6, er * 0.6, '#111317'); ellipseAt({ x: e.x - er * 0.25, y: e.y - er * 0.3 }, er * 0.22, er * 0.22, '#ffffff'); }
+  const m0 = F.at(0.99, -W * 0.06), m1 = F.at(0.955, -W * 0.14);
+  ctx.beginPath(); ctx.moveTo(m0.x, m0.y); ctx.lineTo(m1.x, m1.y); ctx.stroke();
+  if (kind === 'bungeo') { batOutline(F, 0.13, 1, 20, h); ctx.strokeStyle = K.dark; ctx.lineWidth = Math.max(0.8, 0.006 * F.sb); ctx.stroke(); }
+}
+// 우산: 접힌 빨간 장우산. 손잡이는 손 뒤로 내려 굽은 J, 천은 주름 셋과 흰 끈·단추, 끝에 쇠 꼭지
+const UMBRELLA = { crease: 'rgba(120,20,16,0.55)', strap: '#f4f1ea', metal: '#9aa1ab', shine: 'rgba(255,210,200,0.45)' };
+const umbrellaHalf = (u) => (u < 0.16 ? 0.006 : u < 0.3 ? lerp(0.008, 0.036, smooth((u - 0.16) / 0.14)) : lerp(0.036, 0.007, (u - 0.3) / 0.64));
+function drawUmbrellaBat(a, b, wa, wb, col, detail) {
+  const F = batFrame(a, b, wa, wb), len = Math.hypot(b.x - a.x, b.y - a.y), s0 = F.sa;
+  const H = (x, y) => ({ x: a.x + (F.d.x * x + F.up.x * y) * s0, y: a.y + (F.d.y * x + F.up.y * y) * s0 });   // 손 자리에서 m(x는 끝 쪽, y는 위쪽)
+  const hook = [H(0.03, 0)];
+  for (let i = 0; i <= 10; i++) { const th = i / 10 * Math.PI; hook.push(H(-0.05 - 0.036 * Math.sin(th), -0.036 + 0.036 * Math.cos(th))); }
+  ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  strokePoly(hook, 0.024 * s0, col('batEnd'));
+  if (detail && len > 0.5) strokePoly(hook.slice(0, 7), 0.007 * s0, 'rgba(255,230,200,0.35)');
+  ctx.restore();
+  segment(F.at(0.9), b, 0.008 * F.at(0.9).s, 0.006 * F.sb, UMBRELLA.metal);
+  segment(a, F.at(0.2), 0.012 * F.sa, 0.012 * F.at(0.2).s, UMBRELLA.metal);
+  batOutline(F, 0.15, 0.94, 14, umbrellaHalf);
+  ctx.fillStyle = col('bat'); ctx.fill();
+  if (!detail || len < 0.5) return;
+  ctx.strokeStyle = UMBRELLA.crease; ctx.lineWidth = Math.max(0.6, 0.003 * F.sb);
+  for (const [k0, k1] of [[0.55, -0.15], [0.05, -0.65], [-0.45, 0.35]]) {   // 접힌 주름이 조금 꼬여 끝으로 모인다
+    ctx.beginPath();
+    for (let i = 0; i <= 8; i++) { const u = lerp(0.3, 0.92, i / 8), p = F.at(u, umbrellaHalf(u) * lerp(k0, k1, i / 8)); ctx[i ? 'lineTo' : 'moveTo'](p.x, p.y); }
+    ctx.stroke();
+  }
+  segment(F.at(0.32, 0.6 * umbrellaHalf(0.32)), F.at(0.88, 0.5 * umbrellaHalf(0.88)), 0.004 * F.sa, 0.003 * F.sb, UMBRELLA.shine);
+  const sp = F.at(0.52), sw = umbrellaHalf(0.52);
+  segment(F.at(0.52, sw * 1.08), F.at(0.53, -sw * 1.08), 0.011 * sp.s, 0.011 * sp.s, UMBRELLA.strap);
+  ellipseAt(F.at(0.525, sw * 0.35), 0.006 * sp.s, 0.006 * sp.s, '#c9c3b8');
+}
+// 기타: 손이 목(헤드 바로 아래)을 쥐고 휘두른다. 헤드(줄감개 여섯), 지판(프렛·줄), 위가 좁고 아래가 넓은 8자 몸통(가장자리가 짙은 선버스트), 울림구멍, 브리지.
+// 맞는 순간에는 음표가 사방으로 튄다(BAT_BURSTS.guitar)
+const GUITAR = { head: '#2b1a10', board: '#22160d', peg: '#d6d6d0', fret: 'rgba(225,222,210,0.7)', mid: '#f2b45c', edge: '#6b3410', bind: '#3a1d0a', hole: '#1a0f08', ring: '#f2d6a0', bridge: '#2a170c', string: 'rgba(248,244,230,0.85)' };
+const bout = (u, c, ru, rw) => (Math.abs(u - c) < ru ? rw * Math.sqrt(1 - ((u - c) / ru) ** 2) : 0);
+const guitarHalf = (u) => Math.max(bout(u, 0.6, 0.12, 0.085), bout(u, 0.83, 0.17, 0.115), 0.001);
+function drawGuitarBat(a, b, wa, wb, col, detail) {
+  const F = batFrame(a, b, wa, wb), len = Math.hypot(b.x - a.x, b.y - a.y), n5 = F.at(0.5);
+  batOutline(F, -0.03, 0.08, 2, () => 0.027); ctx.fillStyle = GUITAR.head; ctx.fill();   // 헤드
+  segment(F.at(0.07), n5, 0.03 * F.sa, 0.033 * n5.s, col('bat'));   // 목
+  batOutline(F, 0.48, 1, 24, guitarHalf);
+  const mid = F.at(0.78);
+  if (detail && len > 0.5) {
+    const g = ctx.createRadialGradient(mid.x, mid.y, 0, mid.x, mid.y, 0.16 * mid.s);
+    [[0, GUITAR.mid], [0.55, col('batEnd')], [1, GUITAR.edge]].forEach(([o, c]) => g.addColorStop(o, c));
+    ctx.fillStyle = g;
+  } else ctx.fillStyle = col('batEnd');
+  ctx.fill();
+  if (!detail || len < 0.5) return;
+  ctx.strokeStyle = GUITAR.bind; ctx.lineWidth = Math.max(0.8, 0.005 * mid.s); ctx.stroke();
+  for (const u of [-0.005, 0.025, 0.055]) for (const e of [-1, 1]) { const p = F.at(u, e * 0.03); ellipseAt(p, 0.0065 * p.s, 0.0065 * p.s, GUITAR.peg); }
+  const hole = F.at(0.64);
+  ctx.strokeStyle = GUITAR.ring; ctx.lineWidth = Math.max(0.8, 0.005 * hole.s); ctx.beginPath(); ctx.arc(hole.x, hole.y, 0.04 * hole.s, 0, Math.PI * 2); ctx.stroke();
+  ellipseAt(hole, 0.032 * hole.s, 0.032 * hole.s, GUITAR.hole);
+  segment(F.at(0.08, 0.012), F.at(0.47, 0.012), 0.002 * F.sa, 0.002 * n5.s, GUITAR.fret);   // 지판 가장자리
+  for (let i = 0; i < 7; i++) { const u = 0.1 + 0.38 * (1 - Math.pow(0.86, i + 1)) / (1 - Math.pow(0.86, 7)); segment(F.at(u, 0.014), F.at(u, -0.014), 0.0022 * F.at(u).s, 0.0022 * F.at(u).s, GUITAR.fret); }   // 프렛(헤드 쪽이 넓다)
+  const br = F.at(0.885);
+  segment(F.at(0.885, 0.04), F.at(0.885, -0.04), 0.013 * br.s, 0.013 * br.s, GUITAR.bridge);
+  ctx.strokeStyle = GUITAR.string; ctx.lineWidth = Math.max(0.5, 0.0014 * F.sb);
+  for (const o of [-0.009, -0.003, 0.003, 0.009]) { const p0 = F.at(0.04, o * 0.8), p1 = F.at(0.885, o); ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke(); }
+}
 function drawBat(a, b, wa, wb, s, col, fx, detail) {
+  if (fx === 'scratcher') { drawScratcherBat(a, b, wa, wb, col, detail); return; }
+  if (fx === 'mackerel' || fx === 'bungeo') { drawFishBat(a, b, wa, wb, col, detail, fx); return; }
+  if (fx === 'umbrella') { drawUmbrellaBat(a, b, wa, wb, col, detail); return; }
+  if (fx === 'guitar') { drawGuitarBat(a, b, wa, wb, col, detail); return; }
   if (fx === 'beam') { drawBeamBat(a, b, wa, wb, col, detail, fxTime()); return; }
   if (fx === 'diamond') { drawDiamondBat(a, b, wa, wb, col, detail, fxTime()); return; }
   if (fx === 'baguette') { drawBaguetteBat(a, b, wa, wb, col, detail); return; }
@@ -1460,6 +1595,7 @@ function drawAstroHelmet(h, s, face, fd, detail, side, t) {
 // face는 얼굴이 카메라를 보는 정도(1 정면, -1 뒤. 우주인 헬멧의 바이저만 쓴다). 상점 칸은 정면(1)
 function drawHelmet(h, s, brim, col, fx, detail, side = 1, face = 1) {
   if (fx === 'astro') { drawAstroHelmet(h, s, face, brim ? Math.sign(brim.x - h.x) || side : side, detail, side, fxTime()); return; }
+  if (fx === 'santa') { drawSantaHat(h, s, col('helmet'), detail, side); return; }
   const c = col('helmet'), rx = 0.13 * s, ry = 0.125 * s, deco = (color) => (detail ? color : c);
   if (fx === 'rabbit') for (const e of [-1, 1]) {   // 긴 귀
     ctx.save(); ctx.translate(h.x + e * 0.06 * s, h.y - 0.19 * s); ctx.rotate(e * 0.2);
@@ -1533,6 +1669,65 @@ function drawHelmet(h, s, brim, col, fx, detail, side = 1, face = 1) {
   if (fx === 'penguin') drawPenguinFace(h, s, rx, ry, brim ? Math.sign(brim.x - h.x) || side : side, face);
   if (fx === 'crown') drawCrown(h.x, h.y, rx, ry, detail, side);
   else if (fx === 'halo') drawHalo(h.x, h.y, rx, ry, detail);
+  else if (fx === 'rudolph') drawAntlers(h.x, h.y, rx, ry, detail, face);
+}
+// ===== 2026-11-23 더한 헬멧(겨울 한정): 산타 모자(800)·루돌프 뿔(800) =====
+// 산타 모자: 천 모자라 챙과 광택이 없다. 빨간 고깔이 정수리에서 타석 반대쪽으로 접혀 내려오고 끝에 흰 방울, 아래 둘레에 흰 털. 작게 보이면 바탕·고깔·방울만.
+// FUR(흰 털 색)는 산타 옷의 밑단·소매 끝·깃도 같이 쓴다
+const FUR = { fur: '#f6f4ee', furShade: 'rgba(150,145,140,0.35)', fold: 'rgba(70,0,10,0.24)' };
+function furArc(cx, cy, rx, ry, w, detail) {   // 아래로 처진 흰 털 띠(타원 아래 호), 크게 보이면 둘레를 보송한 알갱이로
+  ctx.save(); ctx.lineCap = 'round';
+  ctx.strokeStyle = FUR.fur; ctx.lineWidth = w; ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0.1 * Math.PI, 0.9 * Math.PI); ctx.stroke();
+  if (detail && w > 4) for (let i = 0; i <= 10; i++) {
+    const a = lerp(0.1, 0.9, i / 10) * Math.PI, e = i % 2 ? 1 : -1, p = { x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry + e * w * 0.38 };
+    ellipseAt(p, w * 0.24, w * 0.22, i % 3 ? FUR.fur : '#e9e6df');
+  }
+  ctx.restore();
+}
+function drawSantaHat(h, s, c, detail, side) {
+  const rx = 0.13 * s, ry = 0.125 * s, fl = -side, X = (k) => h.x + fl * k * rx, Y = (k) => h.y - k * ry;
+  ellipseAt(h, rx, ry, c);
+  ctx.fillStyle = c; ctx.beginPath();
+  ctx.moveTo(X(-0.95), Y(0.1)); ctx.quadraticCurveTo(X(-0.75), Y(1.35), X(0.15), Y(1.62));
+  ctx.quadraticCurveTo(X(0.95), Y(1.8), X(1.28), Y(0.95)); ctx.quadraticCurveTo(X(0.75), Y(1.05), X(0.95), Y(0.1));
+  ctx.closePath(); ctx.fill();
+  if (detail) { ctx.fillStyle = FUR.fold; ctx.beginPath(); ctx.moveTo(X(0.15), Y(1.62)); ctx.quadraticCurveTo(X(0.95), Y(1.8), X(1.28), Y(0.95)); ctx.quadraticCurveTo(X(0.72), Y(1.28), X(0.15), Y(1.62)); ctx.fill(); }
+  furArc(h.x, h.y + ry * 0.32, rx * 1.0, ry * 0.62, 0.06 * s, detail);
+  const pp = { x: X(1.28), y: Y(0.95) }, pr = 0.045 * s;
+  ellipseAt(pp, pr, pr, FUR.fur);
+  if (detail) { ellipseAt({ x: pp.x + pr * 0.25, y: pp.y + pr * 0.3 }, pr * 0.6, pr * 0.45, FUR.furShade); ellipseAt({ x: pp.x - pr * 0.3, y: pp.y - pr * 0.3 }, pr * 0.35, pr * 0.3, '#ffffff'); }
+}
+// 루돌프 뿔: 팀 색 헬멧은 그대로 두고 위로 갈색 뿔 둘(굵은 줄기에서 가지 셋)과 옆으로 누운 귀. 얼굴이 보이면(상점 칸, 앞에서 본 주자) 빨간 코가 숨 쉬듯 빛난다.
+// (cx, cy)·rx·ry는 헬멧 돔. 작게 보이면 줄기만
+const ANTLER = { horn: '#7b4d27', light: 'rgba(214,160,104,0.7)', ear: '#8a5a32', earIn: '#e8b48c', nose: '#e8232e' };
+function drawAntlers(cx, cy, rx, ry, detail, face = -1, t = fxTime()) {
+  ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const w = Math.max(1, rx * 0.15);
+  for (const e of [-1, 1]) {
+    const P = (u, v) => ({ x: cx + e * u * rx, y: cy - v * ry }), p0 = P(0.4, 0.78), p1 = P(0.5, 1.6), p2 = P(1.0, 2.05);
+    const B = (k) => ({ x: (1 - k) ** 2 * p0.x + 2 * (1 - k) * k * p1.x + k * k * p2.x, y: (1 - k) ** 2 * p0.y + 2 * (1 - k) * k * p1.y + k * k * p2.y });
+    if (detail) {   // 귀: 뿔 밑에서 옆으로 눕는다
+      ctx.save(); ctx.translate(cx + e * rx * 0.98, cy - ry * 0.4); ctx.rotate(-e * 0.45);
+      ctx.fillStyle = ANTLER.ear; ctx.beginPath(); ctx.ellipse(e * rx * 0.12, 0, rx * 0.3, ry * 0.13, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = ANTLER.earIn; ctx.beginPath(); ctx.ellipse(e * rx * 0.14, 0, rx * 0.18, ry * 0.06, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    ctx.strokeStyle = ANTLER.horn; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.quadraticCurveTo(p1.x, p1.y, p2.x, p2.y); ctx.stroke();
+    if (!detail) continue;
+    for (const [k, u, v, kw] of [[0.22, 0.95, 1.18, 0.75], [0.48, 0.25, 1.9, 0.8], [0.76, 0.62, 2.25, 0.7]]) { const q = B(k), tip = P(u, v); ctx.lineWidth = w * kw; ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(tip.x, tip.y); ctx.stroke(); }
+    ctx.strokeStyle = ANTLER.light; ctx.lineWidth = Math.max(0.6, w * 0.3);
+    ctx.beginPath(); ctx.moveTo(p0.x - e * w * 0.2, p0.y); ctx.quadraticCurveTo(p1.x - e * w * 0.2, p1.y, p2.x - e * w * 0.1, p2.y); ctx.stroke();
+  }
+  if (face > 0.35) {   // 빨간 코
+    const n = { x: cx, y: cy + ry * 0.92 }, r = rx * 0.17, glow = 0.5 + 0.5 * Math.sin(t * 3);
+    ctx.globalCompositeOperation = 'lighter';
+    radialGlow(n, r * 2.6, [[0, `rgba(255,70,60,${(0.35 + 0.3 * glow).toFixed(3)})`], [1, 'rgba(255,30,30,0)']]);
+    ctx.globalCompositeOperation = 'source-over';
+    ellipseAt(n, r, r, ANTLER.nose);
+    if (detail) ellipseAt({ x: n.x - r * 0.35, y: n.y - r * 0.35 }, r * 0.3, r * 0.25, 'rgba(255,255,255,0.85)');
+  }
+  ctx.restore();
 }
 // 천사 헬멧(7,000코인, 2026-11-10): 헬멧은 팀 색 그대로이고 머리 위에 금빛 후광 고리가 떠서 천천히 위아래로 흔들린다(왕관처럼 헬멧 위에 얹는다).
 // 고리는 조금 내려다본 납작한 타원이고, 둘레에 은은한 빛(더하기 합성)과 위 가장자리 밝은 줄, 빛 한 점이 고리를 따라 돈다. 작게 보이면(돔 반폭 7px 아래) 금 고리만
@@ -1600,6 +1795,19 @@ function drawShoe(f, s, front, col, fx, detail, act = null) {
     }
     return;
   }
+  if (fx === 'furboot') {   // 털부츠(2026-11-23, 겨울 한정): 발목을 덮는 갈색 부츠, 위 둘레에 흰 털, 짙은 고무창. 작게 보이면 몸통과 털 띠만
+    const bx = x - front * 0.05 * s, top = y - 0.135 * s, bw = 0.12 * s;
+    ellipseAt({ x, y: y + 0.022 * s }, 0.128 * s, 0.04 * s, '#3a2a1e');
+    roundRect(bx - bw / 2, top, bw, 0.13 * s, 0.03 * s); ctx.fillStyle = c; ctx.fill();
+    ellipseAt({ x, y }, 0.125 * s, 0.05 * s, c);
+    if (detail) {
+      segment({ x: bx - bw * 0.42, y: top + 0.08 * s }, { x: x + front * 0.1 * s, y: y - 0.01 * s }, 0.012 * s, 0.006 * s, 'rgba(255,235,205,0.22)');
+      ctx.strokeStyle = 'rgba(70,45,25,0.5)'; ctx.lineWidth = Math.max(0.6, 0.004 * s); ctx.setLineDash([0.008 * s, 0.006 * s]);
+      ctx.beginPath(); ctx.ellipse(x + front * 0.07 * s, y - 0.004 * s, 0.045 * s, 0.03 * s, 0, front > 0 ? -Math.PI / 2 : Math.PI / 2, front > 0 ? Math.PI / 2 : Math.PI * 1.5); ctx.stroke(); ctx.setLineDash([]);
+    }
+    for (let i = 0; i < 4; i++) ellipseAt({ x: bx - bw * 0.42 + i * bw * 0.28, y: top + 0.004 * s + (i % 2) * 0.006 * s }, 0.028 * s, 0.024 * s, i % 2 ? '#efebe3' : '#f8f6f1');
+    return;
+  }
   const rx = 0.13 * s, ry = (fx === 'rabbit' ? 0.06 : 0.055) * s;
   if (fx === 'rabbit') for (const [xo, tilt] of [[0.025, -0.15], [0.065, 0.25]]) {   // 발등에 선 작은 귀
     ctx.save(); ctx.translate(x + front * xo * s, y - ry * 1.2); ctx.rotate(front * tilt);
@@ -1636,6 +1844,11 @@ function drawShoe(f, s, front, col, fx, detail, act = null) {
     ctx.fillStyle = '#1c1c21'; ctx.beginPath(); ctx.ellipse(ex, ey, 0.026 * s, 0.018 * s, front * 0.5, 0, Math.PI * 2); ctx.fill();
     ellipseAt({ x: ex + front * 0.006 * s, y: ey - 0.003 * s }, 0.007 * s, 0.007 * s, '#ffffff');
     ellipseAt({ x: x + front * rx * 0.93, y: y - 0.006 * s }, 0.012 * s, 0.01 * s, '#1c1c21');
+  } else if (fx === 'penguin') {   // 펭귄(2026-11-23): 까만 신발 옆에 흰 배, 발끝 쪽 위에 눈, 발끝에 노란 부리
+    ellipseAt({ x: x - front * 0.012 * s, y: y + ry * 0.2 }, rx * 0.66, ry * 0.58, '#f6f6f1');
+    const ex = x + front * rx * 0.55, ey = y - ry * 0.42;
+    ellipseAt({ x: ex, y: ey }, 0.012 * s, 0.012 * s, '#ffffff'); ellipseAt({ x: ex + front * 0.003 * s, y: ey }, 0.0065 * s, 0.0065 * s, '#16171b');
+    ctx.fillStyle = '#f5b31c'; ctx.beginPath(); ctx.moveTo(x + front * rx * 0.86, y - 0.016 * s); ctx.lineTo(x + front * (rx + 0.042 * s), y - 0.002 * s); ctx.lineTo(x + front * rx * 0.86, y + 0.014 * s); ctx.closePath(); ctx.fill();
   }
 }
 
@@ -1892,7 +2105,7 @@ function leopardSpots(x, y, rx, ry, fine) {
 }
 // 고양이 발·곰 발바닥 장갑(2026-11-12): 손 가운데 아래쪽에 큰 발바닥 하나, 그 위로 둥글게 놓인 발가락 젤리 넷(작으면 셋). 호피 무늬처럼 손을 돌린 좌표에서 부른다.
 // 같은 그림에 발바닥 색만 다르다(고양이는 분홍 젤리, 곰은 밝은 갈색)
-const PAW_PADS = { catpaw: '#ff9fb6', bearpaw: '#e7bd8f' };
+const PAW_PADS = { catpaw: '#ff9fb6', bearpaw: '#e7bd8f', pandapaw: '#24242a', rabbitpaw: '#f7a3b7' };   // 판다 발·토끼 발은 2026-11-23
 function pawPads(x, y, rx, ry, pad, fine) {
   const n = fine ? 4 : 3, gap = fine ? 0.62 : 0.8;
   ctx.fillStyle = pad; ctx.beginPath();
@@ -1902,6 +2115,24 @@ function pawPads(x, y, rx, ry, pad, fine) {
     ctx.moveTo(px + rx * 0.16, py); ctx.ellipse(px, py, rx * 0.16, ry * 0.19, 0, 0, Math.PI * 2);
   }
   ctx.fill();
+}
+// 장갑 무늬(손을 돌린 좌표에서 부른다, fine은 크게 보일 때): 호피·발바닥 젤리, 2026-11-23 더한 호랑이 발(양옆에서 들어오는 검은 줄)·공룡 발톱(밝은 점과 흰 발톱 셋),
+// 겨울 한정 벙어리장갑(빨간 바탕에 흰 띠와 흰 손목 단, 띠 위 빨간 마름모)
+function gloveMarks(fx, x, y, rx, ry, fine) {
+  if (fx === 'leopard') leopardSpots(x, y, rx, ry, fine);
+  else if (PAW_PADS[fx]) pawPads(x, y, rx, ry, PAW_PADS[fx], fine);
+  else if (fx === 'tigerpaw') { for (const e of [-1, 1]) for (const v of fine ? [-0.45, 0, 0.45] : [-0.28, 0.32]) segment({ x: x + e * rx * 0.98, y: y + v * ry }, { x: x + e * rx * 0.36, y: y + (v + 0.1) * ry }, 0.26 * rx, 0.05 * rx, '#1d1410'); }
+  else if (fx === 'dinoclaw') {
+    if (fine) for (const [u, v, r] of [[-0.35, 0.28, 0.2], [0.32, 0.42, 0.16], [0.08, -0.02, 0.13]]) ellipseAt({ x: x + u * rx, y: y + v * ry }, r * rx, r * rx, '#8fd27a');
+    ctx.fillStyle = '#f4f1e6'; ctx.beginPath();
+    for (const u of [-0.5, 0, 0.5]) { const bx = x + u * rx, by = y - ry * 0.7; ctx.moveTo(bx - rx * 0.14, by + ry * 0.12); ctx.lineTo(bx + u * rx * 0.12, by - ry * 0.42); ctx.lineTo(bx + rx * 0.14, by + ry * 0.12); ctx.closePath(); }
+    ctx.fill();
+  } else if (fx === 'mitten') {
+    ctx.save(); ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = '#f6f2ea'; ctx.fillRect(x - rx, y + ry * 0.55, rx * 2, ry * 0.6); ctx.fillRect(x - rx, y - ry * 0.22, rx * 2, ry * 0.36);
+    if (fine) { ctx.fillStyle = '#c8242f'; for (const u of [-0.6, -0.2, 0.2, 0.6]) { const cx = x + u * rx, cy = y - ry * 0.04, w = rx * 0.11, hh = ry * 0.13; ctx.beginPath(); ctx.moveTo(cx, cy - hh); ctx.lineTo(cx + w, cy); ctx.lineTo(cx, cy + hh); ctx.lineTo(cx - w, cy); ctx.closePath(); ctx.fill(); } }
+    ctx.restore();
+  }
 }
 // 불꽃 장갑: 손 둘레가 숨 쉬듯 주황으로 빛나고(더하기 합성) 손등 위로 작은 불길 둘이 흔들린다. 폰을 생각해 번짐 하나와 손마다 불길 둘만 그린다
 function gloveGlow(p, R, t) {
@@ -2211,6 +2442,10 @@ function drawBatterFigure(k, col, dy = 0) {
           const d = n2(s0.x - s1.x, s0.y - s1.y), w = Math.max(0.8, 0.009 * c0.s), cut = ufx === 'neon' ? 0.22 : 0.14;
           const cuff = [cut, 1 - cut].map((u) => ({ x: lerp(m.L[e].x, m.R[e].x, u) + d.x * w * 0.8, y: lerp(m.L[e].y, m.R[e].y, u) + d.y * w * 0.8 }));
           if (ufx === 'legend') goldCord(cuff, w, side === 'l' ? 2.1 : 0.9, lod === 2); else neonLine(cuff, NEON.pink, w * 0.85, neonBreath(0.6), null, lod === 2);
+        } else if (ufx === 'santa') {   // 산타 옷 소매 끝: 흰 털 단
+          const cap = ctx.lineCap; ctx.lineCap = 'round';
+          ctx.strokeStyle = FUR.fur; ctx.lineWidth = Math.max(1, 0.028 * c0.s);
+          ctx.beginPath(); ctx.moveTo(m.L[e].x, m.L[e].y); ctx.lineTo(m.R[e].x, m.R[e].y); ctx.stroke(); ctx.lineCap = cap;
         } else {
           ctx.strokeStyle = col('accent'); ctx.lineWidth = Math.max(0.6, 0.008 * c0.s);
           ctx.beginPath(); ctx.moveTo(m.L[e].x, m.L[e].y); ctx.lineTo(m.R[e].x, m.R[e].y); ctx.stroke();
@@ -2229,8 +2464,7 @@ function drawBatterFigure(k, col, dy = 0) {
     } else {
       if (gfx === 'fire' && !k.bare && lod >= 1) gloveGlow(hp, 0.08 * hp.s, fxTime());   // 친 뒤 뛰는 주자의 불꽃 장갑은 번짐만
       ellipseAt(hp, 0.036 * hp.s, 0.04 * hp.s, col(k.bare ? 'skin' : 'glove'));
-      if (gfx === 'leopard' && !k.bare && lod >= 1) leopardSpots(hp.x, hp.y, 0.036 * hp.s, 0.04 * hp.s, false);
-      else if (PAW_PADS[gfx] && !k.bare && lod >= 1) pawPads(hp.x, hp.y, 0.036 * hp.s, 0.04 * hp.s, PAW_PADS[gfx], false);
+      if (!k.bare && lod >= 1) gloveMarks(gfx, hp.x, hp.y, 0.036 * hp.s, 0.04 * hp.s, false);
       if (k.ball === side) ellipseAt({ x: hp.x, y: hp.y - 0.03 * hp.s }, 0.037 * hp.s, 0.037 * hp.s, '#ffffff');
     }
   }
@@ -2305,6 +2539,7 @@ function drawBatterFigure(k, col, dy = 0) {
       ctx.fillStyle = col('belt'); ctx.beginPath(); ctx.moveTo(b1.lo.x, b1.lo.y); ctx.lineTo(b1.hi.x, b1.hi.y); ctx.lineTo(b2.hi.x, b2.hi.y); ctx.lineTo(b2.lo.x, b2.lo.y); ctx.closePath(); ctx.fill();
       if (ufx === 'neon') neonLine([0.16, 0.84].map((u) => ({ x: lerp(lerp(b1.lo.x, b2.lo.x, 0.5), lerp(b1.hi.x, b2.hi.x, 0.5), u), y: lerp(lerp(b1.lo.y, b2.lo.y, 0.5), lerp(b1.hi.y, b2.hi.y, 0.5), u) })), NEON.pink, Math.max(0.7, 0.007 * c0.s), neonBreath(0.6), null, lod === 2);   // 빛나는 허리띠
     }
+    if (ufx === 'santa' && lod >= 1) santaHem();
     if (!k.plain && lod >= 1) drawBackNumber(k, P, col, jersey);   // 등번호는 새 상의 윤곽 안으로 자른다
     if (k.world && lod >= 1 && V.dot(ax.fc, unit3(V.sub([cam.x, cam.y, cam.z], k.chest))) > 0.25) {   // 앞이 보이면 단추선(보조색). 높이마다 그 높이의 앞면을 따라가서 몸이 꼬이면 같이 휜다
       const line = frontLine([[1.1, 0.09], [0.86, 0.128], [0.66, 0.12], [0.42, 0.108], [0.24, 0.114]], 1);
@@ -2312,7 +2547,12 @@ function drawBatterFigure(k, col, dy = 0) {
         goldCord(line, Math.max(0.8, 0.01 * c0.s), 1.7, lod === 2);
         for (const u of [0.18, 0.4, 0.62, 0.84]) { const b = polyPart(line, 0, u).pop(); if (b) ellipseAt(b, 0.011 * c0.s, 0.011 * c0.s, GOLD.light); }
       } else if (line.length > 2 && ufx === 'neon') neonLine(line, NEON.cyan, Math.max(0.8, 0.008 * c0.s), neonBreath(), lod === 2 ? 0.5 : null, lod === 2);
-      else if (line.length > 2) {
+      else if (line.length > 2 && ufx === 'santa') {   // 산타 옷 앞: 흰 털 여밈과 벨트의 금 버클
+        const cap = ctx.lineCap; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        strokePoly(line.slice(0, -1), Math.max(1, 0.03 * c0.s), FUR.fur); ctx.lineCap = cap;
+        const bk = line[line.length - 1], r = 0.022 * c0.s;
+        ctx.strokeStyle = GOLD.mid; ctx.lineWidth = Math.max(0.8, 0.008 * c0.s); ctx.strokeRect(bk.x - r, bk.y - r * 0.8, r * 2, r * 1.6);
+      } else if (line.length > 2) {
         ctx.strokeStyle = col('accent'); ctx.lineWidth = Math.max(0.6, 0.012 * c0.s); ctx.lineJoin = 'round';
         ctx.beginPath(); line.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.stroke();
       }
@@ -2371,6 +2611,23 @@ function drawBatterFigure(k, col, dy = 0) {
     const cap = ctx.lineCap;
     ctx.lineCap = 'round';   // 마디 사이가 벌어지지 않게(한 경로라 겹친 끝이 더 검어지지는 않는다)
     strokeTiers(tiers, CHECK.ink, CHECK.al, Math.max(0.5, 0.03 * c0.s));
+    ctx.lineCap = cap;
+  }
+  // 몸통 높이 v를 두르는 고리를 보이는 정도 3단계로 나눠 out에 담는다(체크 가로띠와 같은 셈). lv는 [높이, 반폭, 반두께] 단면 목록, grow는 단면을 키우는 m
+  function ringTiers(v, out, lv, grow) {
+    const n = 20, i = Math.max(1, lv.findIndex((l) => l[0] >= v)), [v0, w0, d0] = lv[i - 1], [v1, w1, d1] = lv[i], u = clamp((v - v0) / (v1 - v0), 0, 1);
+    const F = { ...frameAt(v), w: lerp(w0, w1, u) + grow, d: lerp(d0, d1, u) + grow }, ring = [];
+    for (let j = 0; j < n; j++) { const th = j / n * Math.PI * 2, cs = Math.cos(th), sn = Math.sin(th), p = surfAt(F, cs, sn); ring.push({ q: P(p), vis: surfSee(F, cs, sn, p) }); }
+    ring.forEach((a, j) => { const b = ring[(j + 1) % n], vis = Math.min(a.vis, b.vis); if (vis > 0.3 && a.q && b.q) out[vis > 0.6 ? 2 : vis > 0.45 ? 1 : 0].push([a.q, b.q]); });
+    return ring;
+  }
+  // 산타 옷(2026-11-23, 겨울 한정): 벨트 아래로 내려온 웃옷 밑단의 흰 털(바지 위, 단면을 조금 키워 몸 둘레에 얹는다)
+  const SANTA_PANTS = [[-0.16, 0.15, 0.11], [-0.04, 0.172, 0.125], [0.1, 0.168, 0.118], [0.24, 0.162, 0.114]];
+  function santaHem() {
+    const fur = [[], [], []], ring = ringTiers(0.1, fur, SANTA_PANTS, 0.006), cap = ctx.lineCap;
+    ctx.lineCap = 'round';
+    strokeTiers(fur, '246,244,238', [0.75, 0.9, 1], Math.max(0.8, 0.055 * c0.s));
+    if (lod === 2) ring.forEach((a, j) => { if (a.q && a.vis > 0.45) ellipseAt({ x: a.q.x, y: a.q.y + (j % 2 ? 1 : -1) * 0.022 * c0.s }, 0.016 * c0.s, 0.013 * c0.s, j % 3 ? FUR.fur : '#e9e6df'); });
     ctx.lineCap = cap;
   }
   // 꽃무늬(800코인, 2026-11-12): 하와이 셔츠처럼 청록 바탕에 큰 꽃(다섯 잎, 빨강·노랑·흰색·분홍)과 초록 잎 둘. 몸통 둘레 정해 둔 자리(FLOWERS)에 놓고
@@ -2459,7 +2716,7 @@ function drawBatterFigure(k, col, dy = 0) {
     for (let j = 0; j <= n; j++) { const i = (s + j) % n; if (vis[i] <= 0) break; const q = P(pts[i]); if (q) ring.push(q); }
     if (ufx === 'legend') goldCord(ring, Math.max(0.8, 0.012 * c0.s), 0.2, lod === 2);
     else if (ufx === 'neon') neonLine(ring, NEON.pink, Math.max(0.8, 0.009 * c0.s), neonBreath(0.6), null, lod === 2);
-    else { const cap = ctx.lineCap; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; strokePoly(ring, Math.max(0.8, 0.014 * c0.s), col('accent')); ctx.lineCap = cap; }   // 올드: 팀 색 깃
+    else { const cap = ctx.lineCap; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; strokePoly(ring, Math.max(0.8, (ufx === 'santa' ? 0.03 : 0.014) * c0.s), ufx === 'santa' ? FUR.fur : col('accent')); ctx.lineCap = cap; }   // 올드: 팀 색 깃, 산타 옷: 흰 털 깃
   }
 
   function drawNeckHead() {
@@ -2467,7 +2724,7 @@ function drawBatterFigure(k, col, dy = 0) {
     const neck = limb(samples(V.add(k.chest, V.mul(up, 0.1)), V.add(k.head, V.mul(up, -0.07)), 2, (t) => ({ r: lerp(0.06, 0.053, t) })), null);
     fill(neck.outline, col('skin'));
     shadeLimb(neck);
-    if (fancyU || ufx === 'retro') collar();
+    if (fancyU || ufx === 'retro' || ufx === 'santa') collar();
     if (k.cap) capHead(); else helmet();
   }
   // 투수·수비수: 얼굴(폭 0.15m), 야구 모자, 이마 높이의 챙. 얼굴이 카메라 반대쪽이면 챙을 먼저, 뒷머리를 그린다
@@ -2502,7 +2759,7 @@ function drawBatterFigure(k, col, dy = 0) {
     // 우주인 바이저·판다 눈 둘레·펭귄 얼굴 쪽을 정하려고 얼굴이 카메라를 보는 정도를 3D로 잰다(타자는 타자 뼈대 좌표의 카메라)
     const face = () => { const camL = k.world ? [cam.x, cam.y, cam.z] : [-batterShift(), cam.y, cam.z]; return V.dot(unit3(V.sub(brim3, k.head)), unit3(V.sub(camL, k.head))); };
     if (fx === 'astro') { drawHelmet(h, s * 0.86, b, col, fx, lod >= 1, side, face()); return; }
-    if (fx && fx !== 'crown' && fx !== 'halo') { drawHelmet(h, s * 0.86, b, col, fx, true, side, fx === 'panda' || fx === 'penguin' ? face() : 1); return; }   // 왕관·천사는 타격 헬멧 그대로 그리고 위에 얹는다
+    if (fx && fx !== 'crown' && fx !== 'halo' && fx !== 'rudolph') { drawHelmet(h, s * 0.86, b, col, fx, true, side, fx === 'panda' || fx === 'penguin' ? face() : 1); return; }   // 왕관·천사·루돌프 뿔은 타격 헬멧 그대로 그리고 위에 얹는다
     const c = col('helmet'), bd = b ? Math.sign(b.x - h.x) || side : side, rx = 0.106 * s, ry = 0.112 * s, cy = h.y - 0.012 * s;
     if (lod >= 1) {
       ellipseAt({ x: h.x - bd * 0.012 * s, y: h.y + 0.08 * s }, 0.062 * s, 0.032 * s, FIG_HAIR);
@@ -2519,6 +2776,7 @@ function drawBatterFigure(k, col, dy = 0) {
     ellipseAt({ x: h.x + Ls.x * rx * 0.4, y: cy - ry * 0.5 }, rx * 0.38, ry * 0.2, 'rgba(255,255,255,0.35)');
     if (fx === 'crown') drawCrown(h.x, cy, rx, ry, lod >= 1, side);
     else if (fx === 'halo') drawHalo(h.x, cy, rx, ry, lod >= 1);
+    else if (fx === 'rudolph') drawAntlers(h.x, cy, rx, ry, lod >= 1, face());
   }
 
   const parts = [];
@@ -2539,8 +2797,7 @@ function drawBatterFigure(k, col, dy = 0) {
       ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(ang);
       ctx.fillStyle = col('glove'); ctx.beginPath(); ctx.ellipse(0, 0, 0.047 * q.s, 0.042 * q.s, 0, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = FIG_LINE; ctx.lineWidth = lw; ctx.stroke();
-      if (gfx === 'leopard' && lod >= 1) leopardSpots(0, 0, 0.047 * q.s, 0.042 * q.s, lod === 2);
-      else if (PAW_PADS[gfx] && lod >= 1) pawPads(0, 0, 0.047 * q.s, 0.042 * q.s, PAW_PADS[gfx], lod === 2);
+      if (lod >= 1) gloveMarks(gfx, 0, 0, 0.047 * q.s, 0.042 * q.s, lod === 2);
       if (lod === 2) { ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = Math.max(1, 0.005 * q.s); for (const o of [-0.015, 0.015]) { ctx.beginPath(); ctx.moveTo(o * q.s, -0.035 * q.s); ctx.lineTo(o * q.s, 0.035 * q.s); ctx.stroke(); } }
       ctx.restore();
     }
@@ -2858,6 +3115,19 @@ const BAT_BURSTS = {
       const p = flyAt(c, ang, v, a, 0.25, -2), q = flyAt(c, ang, v, Math.max(0, a - 0.035), 0.25, -2);
       ctx.strokeStyle = `rgba(255,215,110,${(1 - kk).toFixed(3)})`; ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(p.x, p.y); ctx.stroke();
     }
+  },
+  // 기타(2026-11-23): '쾅' 울리는 고리 하나가 번지고, 음표 여덟이 사방으로 튀어 흔들리며 떠올라 사라진다
+  guitar(c, a, k, seed) {
+    const U = c.s, r = mulberry32(seed + 9), kr = Math.min(1, k * 2);
+    if (kr < 1) { ctx.strokeStyle = `rgba(255,228,170,${(0.8 * (1 - kr)).toFixed(3)})`; ctx.lineWidth = Math.max(1, U * 0.014 * (1 - kr)); ctx.beginPath(); ctx.arc(c.x, c.y, U * 0.36 * easeOut(kr), 0, Math.PI * 2); ctx.stroke(); }
+    for (let i = 0; i < 8; i++) {
+      const ang = i / 8 * Math.PI * 2 + r() * 0.5, v = 1.6 + 1.4 * r(), p = flyAt(c, ang, v, a, 0.3, -1.2), R = U * (0.045 + 0.02 * r()), col = NOTE_COLORS[i % 3], x = p.x + Math.sin(a * 14 + i) * R * 0.3, y = p.y - R * 0.2;
+      ctx.globalAlpha = Math.max(0, 1 - k * k);
+      ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x - R * 0.32, y + R * 0.55, R * 0.42, R * 0.3, -0.45, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, R * 0.16);
+      ctx.beginPath(); ctx.moveTo(x + R * 0.06, y + R * 0.5); ctx.lineTo(x + R * 0.06, y - R * 0.9); ctx.quadraticCurveTo(x + R * 0.8, y - R * 0.55, x + R * 0.62, y - R * 0.05); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   },
 };
 // 효과 하나: b는 { fx, t, seed }, c는 맞은 자리(화면), a는 맞은 뒤 지난 초
@@ -4918,6 +5188,33 @@ const ITEM_LOOKS = {
   'sound-8bit': { name: "8비트 '띠링'" },
   'sound-duck': { name: "오리 '꽥'" },
   'sound-cat': { name: "고양이 '냥'" },
+  // 2026-11-23 더한 물건(사용자가 F 칸 시안에서 고름): 잘 팔리는 종류 보강·세트 채우기·겨울 한정(산타 썰매는 겨울 레전드)
+  'bat-scratcher': { name: '효자손', colors: { bat: '#d8b27a', batEnd: '#b08446' }, fx: 'scratcher' },
+  'bat-mackerel': { name: '고등어', colors: { bat: '#2f5f7e', batEnd: '#dfe6ea' }, fx: 'mackerel' },
+  'bat-umbrella': { name: '우산', colors: { bat: '#e8443a', batEnd: '#3a2a20' }, fx: 'umbrella' },
+  'bat-guitar': { name: '기타', colors: { bat: '#2a1a10', batEnd: '#e0913c' }, fx: 'guitar' },
+  'trail-paw': { name: '고양이 발자국' },
+  'trail-coin': { name: '코인 비' },
+  'trail-bubble': { name: '비눗방울' },
+  'trail-plane': { name: '종이비행기' },
+  'sound-dog': { name: "강아지 '멍'" },
+  'sound-frog': { name: "개구리 '개굴'" },
+  'sound-gong': { name: "징 '지잉'" },
+  'sound-clap': { name: "박수 '짝짝'" },
+  'glove-pandapaw': { name: '판다 발', colors: { glove: '#f3f2ee' }, fx: 'pandapaw' },
+  'glove-rabbitpaw': { name: '토끼 발', colors: { glove: '#f6eef0' }, fx: 'rabbitpaw' },
+  'glove-dinoclaw': { name: '공룡 발톱', colors: { glove: '#5fae4e' }, fx: 'dinoclaw' },
+  'glove-tigerpaw': { name: '호랑이 발', colors: { glove: '#e8892b' }, fx: 'tigerpaw' },
+  'shoe-penguin': { name: '펭귄', colors: { shoe: '#23262d' }, fx: 'penguin' },
+  'helmet-santa': { name: '산타 모자', colors: { helmet: '#d42a32' }, fx: 'santa' },
+  'helmet-rudolph': { name: '루돌프 뿔', fx: 'rudolph' },
+  'bat-bungeo': { name: '붕어빵', colors: { bat: '#d9963f', batEnd: '#b86f24' }, fx: 'bungeo' },
+  'glove-mitten': { name: '벙어리장갑', colors: { glove: '#c8242f' }, fx: 'mitten' },
+  'shoe-furboot': { name: '털부츠', colors: { shoe: '#b98a5a' }, fx: 'furboot' },
+  'uniform-santa': { name: '산타 옷', colors: { jersey: '#cf2430', shade: '#951820', pants: '#cf2430', pantsShade: '#951820', belt: '#17181c' }, fx: 'santa' },
+  'trail-gift': { name: '선물 상자' },
+  'sound-jingle': { name: "징글벨 '찰랑'" },
+  'trail-sleigh': { name: '산타 썰매' },
 };
 const SHOP_ITEMS = ITEMS.map((it) => ({ ...it, ...ITEM_LOOKS[it.id] }));
 const shopItem = (id) => SHOP_ITEMS.find((i) => i.id === id) ?? null;
@@ -5051,7 +5348,55 @@ function petalPath(x, y, r, rot, w = 1) {   // 끝이 살짝 파인 둥근 꽃�
 }
 // 단풍·눈송이 꼬리(2026-11-12): 단풍은 빨강·주황·노랑 잎(다섯 갈래와 꼭지)이 둘에 하나는 돌며 남고, 나머지는 벚꽃 잎처럼 뒤집히듯 팔랑이며 흩어져 떨어진다.
 // 눈송이는 둘에 하나는 여섯 갈래 눈송이(크게 보이면 갈래마다 잔가지)가 천천히 돌며 남고, 나머지는 작은 눈가루가 흔들리며 내린다
-const PRETTY_TRAILS = ['trail-note', 'trail-blossom', 'trail-maple', 'trail-snow'];
+// 2026-11-23 더한 꼬리: 고양이 발자국(분홍·흰 발자국이 좌우로 번갈아 공을 따라 찍힌다), 코인 비(금화가 뒤집히며 떨어지고 가끔 반짝), 비눗방울(무지갯빛 테두리가 흔들리며 떠오른다),
+// 종이비행기(흰 종이비행기가 공을 따라 출렁이며 난다), 겨울 한정 선물 상자(리본을 맨 상자가 돌며 떨어진다)
+const SHAPE_TRAILS = ['trail-paw', 'trail-coin', 'trail-bubble', 'trail-plane', 'trail-gift'];
+const PRETTY_TRAILS = ['trail-note', 'trail-blossom', 'trail-maple', 'trail-snow', ...SHAPE_TRAILS];
+const PAW_PRINT = ['#ff9fb6', '#ffffff'], GIFT_BOX = [['#e0283a', '#ffd34a'], ['#2f9e5b', '#f6f2ea'], ['#2f6cf0', '#ffd34a'], ['#f2c230', '#e0283a']];
+const trailDir = (pts, i) => { const p = pts[i ? i - 1 : 0], q = pts[i ? i : 1] ?? p; return n2(p.x - q.x, p.y - q.y); };   // i번째 자리에서 공 쪽
+function drawShapeTrail(kind, pts, i, q, r0, t) {
+  if (kind === 'trail-paw') {
+    if (i % 2) return;
+    const d = trailDir(pts, i), e = (i / 2) % 2 ? 1 : -1, r = r0 * 0.95, c = { x: q.x - d.y * e * r * 0.9, y: q.y + d.x * e * r * 0.9 };
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(Math.atan2(d.y, d.x));
+    ctx.fillStyle = PAW_PRINT[(i / 2) % 2]; ctx.beginPath(); ctx.ellipse(-r * 0.25, 0, r * 0.5, r * 0.58, 0, 0, Math.PI * 2);
+    for (const [u, v] of [[0.42, -0.62], [0.66, -0.22], [0.66, 0.22], [0.42, 0.62]]) { ctx.moveTo(u * r + r * 0.22, v * r); ctx.ellipse(u * r, v * r, r * 0.22, r * 0.25, 0, 0, Math.PI * 2); }
+    ctx.fill(); ctx.restore();
+    return;
+  }
+  if (kind === 'trail-coin') {
+    const r = r0 * 0.9, flip = Math.abs(Math.cos(t * 6 + i * 1.3)), x = q.x + Math.sin(i * 2.1) * r0 * 0.5, y = q.y + i * r0 * 0.32 + i * i * r0 * 0.02;
+    ctx.fillStyle = '#b8860b'; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0.6, r * flip), r, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f5c842'; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0.4, r * 0.76 * flip), r * 0.76, 0, 0, Math.PI * 2); ctx.fill();
+    if (flip > 0.45 && r > 3) ellipseAt({ x: x - r * 0.25 * flip, y: y - r * 0.3 }, r * 0.22 * flip, r * 0.16, '#fff3b0');
+    if (i % 4 === 1 && flip > 0.85) drawSparkle({ x: x + r * 0.6, y: y - r * 0.6 }, r * 0.9, '#fffbe0');
+    return;
+  }
+  if (kind === 'trail-bubble') {
+    if (i % 2) return;
+    const r = r0 * (0.75 + 0.6 * hash01(i * 3.7)), x = q.x + Math.sin(t * 3 + i) * r0 * 0.6, y = q.y - i * r0 * 0.14;
+    ctx.fillStyle = 'rgba(190,235,255,0.14)'; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `hsla(${Math.round(t * 60 + i * 40) % 360},90%,80%,0.85)`; ctx.lineWidth = Math.max(0.8, r * 0.12); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.beginPath(); ctx.ellipse(x - r * 0.35, y - r * 0.38, r * 0.22, r * 0.13, -0.6, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
+  if (kind === 'trail-plane') {
+    if (i % 4) return;
+    const d = trailDir(pts, i), r = r0 * 1.5, bob = Math.sin(t * 5 + i * 0.9) * r0 * 0.5;
+    ctx.save(); ctx.translate(q.x - d.y * bob, q.y + d.x * bob); ctx.rotate(Math.atan2(d.y, d.x) + Math.sin(t * 4 + i) * 0.15);
+    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.moveTo(r, 0); ctx.lineTo(-r * 0.75, -r * 0.62); ctx.lineTo(-r * 0.45, 0); ctx.lineTo(-r * 0.75, r * 0.62); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#c3d2e4'; ctx.beginPath(); ctx.moveTo(r, 0); ctx.lineTo(-r * 0.45, 0); ctx.lineTo(-r * 0.62, r * 0.22); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    return;
+  }
+  if (i % 2) return;   // 선물 상자
+  const [box, rib] = GIFT_BOX[(i / 2) % 4], r = r0 * 0.95;
+  ctx.save(); ctx.translate(q.x + Math.sin(i * 1.7 + t * 2) * r0 * 0.4, q.y + i * r0 * 0.18); ctx.rotate(t * 2.4 + i * 0.8);
+  ctx.fillStyle = box; ctx.fillRect(-r, -r, 2 * r, 2 * r);
+  ctx.fillStyle = rib; ctx.fillRect(-r * 0.2, -r, r * 0.4, 2 * r); ctx.fillRect(-r, -r * 0.2, 2 * r, r * 0.4);
+  for (const e of [-1, 1]) { ctx.beginPath(); ctx.ellipse(e * r * 0.3, -r * 1.12, r * 0.32, r * 0.2, e * 0.5, 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore();
+}
 const MAPLE = ['#e8432c', '#f37a24', '#f5b52a', '#d1302a'], SNOW = ['#ffffff', '#d7f0ff'];
 const MAPLE_TIPS = [[180, 0.52], [170, 0.2], [118, 0.64], [95, 0.34], [58, 0.94], [32, 0.42], [0, 1], [-32, 0.42], [-58, 0.94], [-95, 0.34], [-118, 0.64], [-170, 0.2]].map(([a, k]) => [a * DEG, k]);   // [잎끝에서 잰 각, 반지름 비율]. 180도는 꼭지
 function maplePath(x, y, r, rot, w = 1) {   // 단풍잎 하나를 지금 경로에 더한다(잎끝이 rot 쪽, w는 폭 비율)
@@ -5072,6 +5417,7 @@ function drawPrettyTrail(pts, kind, radiusOf, t) {
   pts.forEach((q, i) => {
     const k = 1 - i / pts.length, r0 = radiusOf(q) * (0.4 + 0.6 * k);
     ctx.globalAlpha = 0.95 * k;
+    if (SHAPE_TRAILS.includes(kind)) { drawShapeTrail(kind, pts, i, q, r0, t); return; }
     if (kind === 'trail-maple') {
       if (i % 2 === 0) { ctx.fillStyle = MAPLE[(i / 2) % 4]; ctx.beginPath(); maplePath(q.x, q.y, r0 * 1.2, t * 2.2 + i * 0.9); ctx.fill(); return; }
       const x = q.x + Math.sin(i * 1.7 + t * 2.2) * r0 * (0.4 + i * 0.12), y = q.y + i * r0 * 0.22;
@@ -5134,7 +5480,7 @@ function drawBallTrail(r, t) {
 // 지난 자리는 화면에서 꼬리 길이(FANCY.len × 화면 높이)가 될 때까지 거슬러 모은다(최대 1.6초). 따라가는 카메라는 공을 바로 뒤에서 봐서
 // 0.26초 자리가 공 둘레 몇 px에 몰렸다. 카메라 FANCY.near m 안의 자리는 쓰지 않는다(바로 앞을 지나는 큰 덩어리가 되지 않게)
 const FANCY = { dt: 1 / 45, win: 1.6, len: 0.26, near: 2.5, maxPts: 80 };
-const fancyTrail = (kind) => kind === 'trail-comet' || kind === 'trail-dragon' || kind === 'trail-golddragon';
+const fancyTrail = (kind) => kind === 'trail-comet' || kind === 'trail-dragon' || kind === 'trail-golddragon' || kind === 'trail-sleigh';   // 산타 썰매는 2026-11-23 겨울 레전드
 const dragonPal = (kind) => (kind === 'trail-dragon' ? DRAGON : kind === 'trail-golddragon' ? GOLD_DRAGON : null);   // 용 꼬리의 색(황금 용은 더 길다)
 const hash01 = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };   // 0~1 고정 난수(가루마다 늘 같은 값)
 
@@ -5205,15 +5551,15 @@ function drawFancyBallTrail(r, t, kind) {
   const at = (tt) => { const f = drawnFlight(r, tt); return project(f.x, f.y, f.z); }, c = at(t);
   if (!c) return;
   const ball = camMoved() ? Math.max(BALL_R * 1.2 * c.s, view.h * CHASE.ballMin) : Math.max(2.5, BALL_R * 2 * c.s);
-  const pal = dragonPal(kind), dragon = !!pal, U = Math.max(ball, view.mobile ? 3 : 3.5) * (dragon ? 1.15 : 1);
-  const P = resampleTrail(trailPath(at, t, view.h * FANCY.len * (pal?.len ?? 1), FANCY.win), Math.max(2.2, U * 0.7), dragon ? 1.5 : 2);   // 용은 덜 굵어진다(뒤에서 볼 때 가까운 몸이 머리를 덮었다)
+  const pal = dragonPal(kind), dragon = !!pal, sleigh = kind === 'trail-sleigh', U = Math.max(ball, view.mobile ? 3 : 3.5) * (dragon ? 1.15 : sleigh ? 1.4 : 1);   // 썰매 행렬은 조금 크게
+  const P = resampleTrail(trailPath(at, t, view.h * FANCY.len * (pal?.len ?? (sleigh ? SLEIGH.len : 1)), FANCY.win), Math.max(2.2, U * 0.7), dragon || sleigh ? 1.5 : 2);   // 용은 덜 굵어진다(뒤에서 볼 때 가까운 몸이 머리를 덮었다)
   const place = (ts, age, k) => {   // 0.8~3m/s로 아무 쪽으로나 퍼지고 조금씩 가라앉는다
     const f = drawnFlight(r, ts), sp = (0.8 + 2.2 * hash01(k + 0.75)) * age, a = hash01(k + 0.125) * Math.PI * 2, b = hash01(k + 0.375) * 2 - 1, cb = Math.sqrt(1 - b * b);
     const q = project(f.x + Math.cos(a) * cb * sp, Math.max(0.03, f.y + b * sp - 1.2 * age * age), f.z + Math.sin(a) * cb * sp);
     return q && q.s < view.f / FANCY.near ? { x: q.x, y: q.y, k: clamp(q.s / c.s, 1, 2) } : null;
   };
-  const dust = (each) => trailDust(t, dragon ? 0.7 : 0.9, dragon ? 0.04 : 0.018, place, each);
-  if (dragon) drawDragon(P, c, U, t, dust, r, pal); else drawComet(P, c, U, t, dust);
+  const dust = (each) => trailDust(t, dragon ? 0.7 : sleigh ? 0.8 : 0.9, dragon ? 0.04 : sleigh ? 0.03 : 0.018, place, each);
+  if (dragon) drawDragon(P, c, U, t, dust, r, pal); else if (sleigh) drawSleigh(P, c, U, t, dust, r); else drawComet(P, c, U, t, dust);
 }
 
 // 혜성: 공 둘레의 밝은 머리(빛 무리와 천천히 도는 네 갈래 빛살), 길게 가늘어지는 꼬리(흰빛 → 푸른빛 → 투명, 겹친 띠 둘)와 옆으로 갈라지는 금빛 먼지 꼬리, 꼬리를 따라 흘러가는
@@ -5421,23 +5767,125 @@ function drawDragonHead(o, f, v, H, t, pal) {
   ctx.restore();
 }
 
+// ===== 겨울 레전드: 산타 썰매 꼬리(10,000코인, 겨울 한정. 2026-11-23 사용자 '레전드 상품 하나') =====
+// 친 공이 루돌프의 빨간 코가 된다: 공 둘레가 빨갛게 숨 쉬고, 루돌프가 코끝에 공을 달고 달린다. 그 뒤로 순록 한 쌍, 금빛 고삐로 이은
+// 빨간 썰매(금 썰매날·산타·선물 자루)가 따라오고, 썰매 뒤로 금빛 빛 띠와 별가루가 남는다. 지난 길(P)에서 공으로부터 정해 둔 거리마다 놓고,
+// 길이 짧게 보이면(따라가는 카메라가 뒤에서 볼 때) 간격을 줄인다. 그림은 진행 방향을 +x, 아래를 +y로 둔 U 단위 좌표에서 그리고(sleighAxes),
+// 왼쪽으로 날면 좌우를 뒤집어 늘 바로 선다. 작게 보이면(상점 칸) 몸통·뿔·썰매 윤곽만
+const SLEIGH = { len: 1.3, fur: '#8a5a32', far: '#6a4224', belly: '#d8b48a', antler: '#d2aa72', red: '#d0202c', redDark: '#8e1219', gold: '#f2c14e', beard: '#f6f4ee', skin: '#f2c29b', sack: '#7a5230' };
+const sleighState = { owner: null, face: 1, dir: { x: 1, y: 0 } };
+const sleighAxes = (f, face) => ({ x: f, y: face > 0 ? { x: -f.y, y: f.x } : { x: f.y, y: -f.x } });   // 그림 좌표의 +x·+y가 화면에서 가리키는 쪽
+const oval = (x, y, rx, ry, color) => { ctx.fillStyle = color; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); };   // 그림 좌표용(ellipseAt은 px로 0.5 아래를 막는다)
+function inSleighFrame(o, ax, s, draw) {   // o(화면)를 원점으로, ax 축, 1단위 s px
+  ctx.save(); ctx.transform(ax.x.x * s, ax.x.y * s, ax.y.x * s, ax.y.y * s, o.x, o.y);
+  draw();
+  ctx.restore();
+}
+function drawReindeer(t, phase, body, small) {   // 순록 한 마리(코끝 (2.35, -0.88)). body는 털빛(먼 쪽은 어둡게)
+  ctx.lineCap = 'round';
+  const leg = (x, ph, col) => { const sw = Math.sin(t * 14 + phase + ph) * 0.42; segment({ x, y: 0.3 }, { x: x + sw, y: 1.4 }, 0.26, 0.16, col); };
+  if (!small) { leg(0.75, 1.6, SLEIGH.far); leg(-1.05, 0, SLEIGH.far); }
+  oval(0, 0, 1.5, 0.62, body);
+  if (!small) { leg(1.0, 0.4, body); leg(-0.8, 2.8, body); oval(0.1, 0.28, 1.05, 0.26, SLEIGH.belly); oval(-1.52, -0.28, 0.24, 0.18, SLEIGH.beard); }
+  segment({ x: 1.0, y: -0.15 }, { x: 1.62, y: -0.88 }, 0.62, 0.42, body);   // 목
+  ctx.save(); ctx.translate(1.92, -0.98); ctx.rotate(0.35); ctx.fillStyle = body; ctx.beginPath(); ctx.ellipse(0, 0, 0.52, 0.3, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  ctx.strokeStyle = SLEIGH.antler; ctx.lineWidth = small ? 0.22 : 0.14;   // 뿔: 줄기 둘에 가지
+  ctx.beginPath();
+  for (const [bx, tx] of [[1.62, 1.2], [1.86, 1.62]]) {
+    ctx.moveTo(bx, -1.18); ctx.quadraticCurveTo(bx - 0.1, -1.9, tx, -2.25);
+    if (!small) { ctx.moveTo(bx - 0.06, -1.6); ctx.lineTo(bx + 0.3, -1.95); ctx.moveTo(bx - 0.14, -1.9); ctx.lineTo(bx - 0.5, -2.05); }
+  }
+  ctx.stroke();
+  if (small) return;
+  oval(1.55, -1.12, 0.2, 0.11, SLEIGH.far);   // 귀
+  oval(2.02, -1.1, 0.07, 0.07, '#1a1210');   // 눈
+  segment({ x: 0.55, y: -0.6 }, { x: 0.62, y: 0.58 }, 0.24, 0.24, SLEIGH.red);   // 붉은 가슴띠와 금방울
+  oval(0.68, 0.62, 0.17, 0.17, SLEIGH.gold);
+}
+function drawSantaSleigh(small) {   // 썰매(앞이 +x): 금 썰매날, 빨간 몸통과 금 테, 산타, 선물 자루
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (!small) {
+    ctx.fillStyle = SLEIGH.sack; ctx.beginPath(); ctx.ellipse(-1.05, -0.75, 0.62, 0.55, -0.2, 0, Math.PI * 2); ctx.fill();   // 선물 자루와 삐져나온 상자
+    [['#2f9e5b', -1.35, -1.35], ['#2f6cf0', -0.95, -1.42]].forEach(([c, x, y]) => { ctx.fillStyle = c; ctx.fillRect(x - 0.2, y - 0.2, 0.4, 0.4); ctx.fillStyle = SLEIGH.gold; ctx.fillRect(x - 0.05, y - 0.2, 0.1, 0.4); });
+    oval(0.05, -0.7, 0.58, 0.62, SLEIGH.red);   // 산타: 몸, 흰 털 띠, 얼굴, 수염, 고깔과 방울, 고삐 쥔 팔
+    oval(0.05, -0.22, 0.6, 0.14, SLEIGH.beard);
+    oval(0.2, -1.42, 0.27, 0.27, SLEIGH.skin);
+    oval(0.3, -1.2, 0.3, 0.24, SLEIGH.beard);
+    ctx.fillStyle = SLEIGH.red; ctx.beginPath(); ctx.moveTo(-0.08, -1.55); ctx.lineTo(0.48, -1.55); ctx.quadraticCurveTo(0.1, -2.2, -0.42, -1.95); ctx.closePath(); ctx.fill();
+    oval(-0.45, -1.95, 0.14, 0.14, SLEIGH.beard);
+    segment({ x: 0.1, y: -1.56 }, { x: 0.46, y: -1.56 }, 0.14, 0.14, SLEIGH.beard);
+    segment({ x: 0.3, y: -0.82 }, { x: 0.95, y: -0.62 }, 0.26, 0.24, SLEIGH.redDark);
+    oval(0.98, -0.6, 0.13, 0.13, '#1c1c21');
+  }
+  ctx.fillStyle = SLEIGH.red; ctx.beginPath();   // 몸통: 뒤가 높고 앞이 말려 올라간다
+  ctx.moveTo(-1.75, -0.95); ctx.lineTo(-1.6, 0.55); ctx.quadraticCurveTo(0.2, 0.75, 1.35, 0.45); ctx.quadraticCurveTo(1.95, -0.1, 1.7, -0.62);
+  ctx.quadraticCurveTo(1.35, -0.2, 0.9, -0.25); ctx.lineTo(-1.2, -0.25); ctx.quadraticCurveTo(-1.35, -0.85, -1.75, -0.95); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = SLEIGH.gold; ctx.lineWidth = small ? 0.2 : 0.12;
+  ctx.beginPath(); ctx.moveTo(-1.6, 0.25); ctx.quadraticCurveTo(0.2, 0.45, 1.45, 0.15); ctx.stroke();   // 금 테
+  ctx.lineWidth = small ? 0.22 : 0.15; ctx.beginPath();   // 썰매날: 앞에서 말려 올라간다
+  ctx.moveTo(-1.85, 1.05); ctx.lineTo(1.5, 1.05); ctx.quadraticCurveTo(2.25, 0.95, 2.15, 0.35); ctx.quadraticCurveTo(2.05, 0.1, 1.85, 0.3);
+  if (!small) for (const x of [-1.1, 0.9]) { ctx.moveTo(x, 0.6); ctx.lineTo(x, 1.05); }
+  ctx.stroke();
+}
+function drawSleigh(P, c, U, t, dust, owner) {
+  const st = sleighState, L = P.length > 1 ? P[P.length - 1].d : 0, small = U < 3;
+  if (st.owner !== owner) Object.assign(st, { owner, face: 1, dir: { x: 1, y: 0 } });
+  if (L > U * 2) { const b = trailAt(P, Math.min(L, U * 4)), dx = c.x - b.x, dy = c.y - b.y, dl = Math.hypot(dx, dy); if (dl > 1.5) st.dir = { x: dx / dl, y: dy / dl }; }   // 공 바로 앞 방향은 조금 먼 자리에서
+  if (Math.abs(st.dir.x) > 0.2) st.face = Math.sign(st.dir.x);
+  // 행렬은 공의 진행 방향으로 곧게 늘어서되 기울기는 ±43°까지(따라가는 카메라에서 공이 화면 위로 곧게 오를 때 세로로 쌓이지 않게)
+  const ang = clamp(Math.atan2(st.dir.y, st.dir.x * st.face), -0.75, 0.75), f = { x: Math.cos(ang) * st.face, y: Math.sin(ang) }, ax = sleighAxes(f, st.face);
+  const s = U * (P.length ? P[Math.min(P.length - 1, 2)].k : 1);
+  const at = (back) => ({ x: c.x + (-f.x * back + ax.y.x * 0.88) * s, y: c.y + (-f.y * back + ax.y.y * 0.88) * s });   // 공에서 back단위 뒤, 루돌프 코 높이에 맞춘 자리
+  const leadO = at(2.35 + 1.05), pairO = at(3.4 + 3.6), sledO = at(3.4 + 3.6 + 4.3);   // 루돌프 코끝은 공 가장자리(1.05단위 앞)에 닿는다
+  const local = (o, x, y) => ({ x: o.x + (ax.x.x * x + ax.y.x * y) * s, y: o.y + (ax.x.y * x + ax.y.y * y) * s });
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const r0 = local(sledO, -1.6, 0), r1 = local(sledO, -10, 0.4), g = ctx.createLinearGradient(r0.x, r0.y, r1.x, r1.y);   // 썰매 뒤 금빛 빛 띠
+  g.addColorStop(0, 'rgba(255,214,110,0.5)'); g.addColorStop(0.5, 'rgba(255,190,80,0.2)'); g.addColorStop(1, 'rgba(255,170,60,0)');
+  ctx.fillStyle = g; ctx.beginPath();
+  for (const [x, y] of [[-1.6, -0.75], [-10, 0.25], [-10, 0.55], [-1.6, 0.95]]) { const q = local(sledO, x, y); ctx.lineTo(q.x, q.y); }
+  ctx.closePath(); ctx.fill();
+  dust((q, fr, h) => {   // 공이 지나온 길의 금빛 별가루
+    const r = Math.max(0.6, U * (0.12 + 0.18 * h) * q.k * (0.5 + 0.5 * fr));
+    ctx.globalAlpha = Math.min(1, 1.3 * fr);
+    if (h > 0.6 && r > 1) drawSparkle(q, r * 2.4 * (0.6 + 0.4 * Math.sin(t * 20 + h * 40)), '#fff2c0'); else { ctx.fillStyle = h > 0.3 ? '#ffd76a' : '#fff6d8'; ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2); ctx.fill(); }
+  });
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  if (!small) {   // 금빛 고삐: 썰매 앞 → 한 쌍의 가슴 → 루돌프 가슴(조금 처진다)
+    ctx.save(); ctx.strokeStyle = SLEIGH.gold; ctx.lineWidth = Math.max(0.8, s * 0.1); ctx.lineCap = 'round';
+    for (const [a, b] of [[local(sledO, 1.0, -0.65), local(pairO, 0.6, 0)], [local(pairO, 1.3, -0.2), local(leadO, 0.6, 0)]]) {
+      const m = { x: (a.x + b.x) / 2 + ax.y.x * s * 0.6, y: (a.y + b.y) / 2 + ax.y.y * s * 0.6 };
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(m.x, m.y, b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  inSleighFrame(sledO, ax, s, () => drawSantaSleigh(small));
+  if (!small) inSleighFrame(local(pairO, 0.35, -0.55), ax, s, () => drawReindeer(t, 1.1, SLEIGH.far, small));   // 한 쌍의 먼 쪽(조금 위·앞, 어둡게)
+  inSleighFrame(pairO, ax, s, () => drawReindeer(t, 0, SLEIGH.fur, small));
+  inSleighFrame(leadO, ax, s, () => drawReindeer(t, 2.2, SLEIGH.fur, small));
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';   // 루돌프 코(공): 빨갛게 숨 쉬는 빛
+  ctx.fillStyle = radialFrom(c, U * 3, [[0, `rgba(255,60,50,${(0.7 + 0.25 * Math.sin(t * 6)).toFixed(3)})`], [0.4, 'rgba(255,40,40,0.32)'], [1, 'rgba(255,20,20,0)']]);
+  ctx.beginPath(); ctx.arc(c.x, c.y, U * 3, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
 // 상점 칸 견본: 칸의 네 점(공 → 꼬리)을 지난 길로 쓴다. 칸이 작아서 단위를 줄인다
 function drawFancyIcon(pts, kind, radiusOf) {
   const c = pts[0], e = pts[pts.length - 1], sw = radiusOf(c) / 0.55, L = Math.hypot(e.x - c.x, e.y - c.y), t = fxTime();
   const P = resampleTrail([{ x: c.x, y: c.y, s: 1, d: 0 }, { x: e.x, y: e.y, s: 1, d: L }], 1.5), none = () => {};
-  if (dragonPal(kind)) drawDragon(P, c, sw * 0.16, t, none, 'icon', dragonPal(kind)); else drawComet(P, c, sw * 0.24, t, none);
+  if (dragonPal(kind)) drawDragon(P, c, sw * 0.16, t, none, 'icon', dragonPal(kind)); else if (kind === 'trail-sleigh') drawSleigh(P, c, sw * 0.12, t, none, 'icon'); else drawComet(P, c, sw * 0.24, t, none);
   ellipseAt(c, sw * 0.13, sw * 0.13, '#ffffff');
 }
 // 상점 큰 미리 보기: 공이 at(0~1)을 따라 날아간다(u초, 1.1초에 끝). 가루는 화면에서 퍼진다
 function drawFancyPreview(kind, at, u, ballR, box) {
-  const path = (tt) => at(tt / 1.1), c = path(u), t = fxTime(), pal = dragonPal(kind), dragon = !!pal, U = ballR * (dragon ? 1.1 : 1);
-  const P = resampleTrail(trailPath(path, u, box.w * (dragon ? 0.55 * (pal.len ?? 1) : 0.5), 0.8), U * 0.6);
+  const path = (tt) => at(tt / 1.1), c = path(u), t = fxTime(), pal = dragonPal(kind), dragon = !!pal, sleigh = kind === 'trail-sleigh', U = ballR * (dragon ? 1.1 : sleigh ? 1.15 : 1);
+  const P = resampleTrail(trailPath(path, u, box.w * (dragon ? 0.55 * (pal.len ?? 1) : sleigh ? 0.6 : 0.5), 0.8), U * 0.6);
   const place = (ts, age, k) => {
     const q = path(ts), sp = (25 + 45 * hash01(k + 0.75)) * age, a = hash01(k + 0.125) * Math.PI * 2;
     return { x: q.x + Math.cos(a) * sp, y: q.y + Math.sin(a) * sp + 30 * age * age, k: 1 };
   };
   const dust = (each) => trailDust(u, dragon ? 0.7 : 0.9, dragon ? 0.04 : 0.018, place, each);
-  if (dragon) drawDragon(P, c, U, t, dust, 'preview', pal); else drawComet(P, c, U, t, dust);
+  if (dragon) drawDragon(P, c, U, t, dust, 'preview', pal); else if (sleigh) drawSleigh(P, c, U, t, dust, 'preview'); else drawComet(P, c, U, t, dust);
 }
 
 // 상점 화면(state 'shop'). view: 'shop'(파는 것 전부) | 'inventory'(내 물건: 가진 것만, 입기·기본으로 되돌리기)
@@ -5492,7 +5940,7 @@ async function buyItem(it) {
   sh.busy = true;
   try {
     const { ok, data } = await shopRequest('/shop/buy', { item: it.id });
-    if (!ok) { toast(data.error === 'not_enough_coins' ? '코인이 모자라요' : data.error === 'already_owned' ? '이미 가진 물건이에요' : '사지 못했어요. 잠시 뒤 다시 해 주세요'); return; }
+    if (!ok) { toast(data.error === 'not_enough_coins' ? '코인이 모자라요' : data.error === 'already_owned' ? '이미 가진 물건이에요' : data.error === 'not_on_sale' ? '지금은 살 수 없는 물건이에요' : '사지 못했어요. 잠시 뒤 다시 해 주세요'); return; }
     if (it.id === 'number-on') { toast('샀어요. 번호를 골라 달아 주세요'); return; }   // 등번호는 번호를 고른 뒤에 단다
     if (await equipItem(it, null, true)) toast(`샀어요 · ${it.name} 바로 입었어요`);
   } catch { toast('사지 못했어요. 잠시 뒤 다시 해 주세요'); } finally { sh.busy = false; }
@@ -5527,15 +5975,14 @@ function drawItemCard(r, it, on, gift = null) {
   } else if (it.slot === 'glove') {   // 호피는 반점, 고양이 발·곰 발바닥은 발바닥, 불꽃은 둘레 빛과 위로 솟는 불길(손 반지름 4.7cm를 칸 동그라미로 본다)
     if (it.fx === 'fire') gloveGlow({ x: sx, y: sy }, sw * 1.6, fxTime());
     dot(c.glove, 'rgba(0,0,0,0.25)');
-    if (it.fx === 'leopard') leopardSpots(sx, sy, sw * 0.9, sw * 0.9, true);
-    if (PAW_PADS[it.fx]) pawPads(sx, sy, sw * 0.9, sw * 0.9, PAW_PADS[it.fx], true);
+    gloveMarks(it.fx, sx, sy, sw * 0.9, sw * 0.9, true);
     if (it.fx === 'fire') gloveFlames({ x: sx, y: sy - sw * 0.45 }, sw / 0.047 * 0.7, fxTime(), 0);
   } else if (it.slot === 'shoe') {   // 로켓 부츠 견본은 아래로 짧게 뿜고(칸 밖으로 안 나가게), 번개 운동화는 가끔 불꽃이 튄다
     dot('rgba(255,255,255,0.1)');
     const rocket = it.fx === 'rocket', act = rocket ? { v: 2.5, back: { x: -0.3, y: 0.95 }, fore: 1, seed: 0 } : it.fx === 'bolt' ? { v: 0, seed: 1 } : null;
     drawShoe({ x: sx - sw * (rocket ? 0.1 : 0.33), y: sy + sw * (rocket ? -0.05 : 0.1) }, sw * 5.5, 1, col, it.fx, true, act);
   } else if (it.slot === 'uniform') {
-    const ring = it.fx === 'legend' ? GOLD.mid : it.fx === 'neon' ? 'rgba(40,238,255,0.95)' : it.fx === 'rainbow' ? '#ffffff' : it.fx === 'galaxy' ? '#a99bff' : t ? (c.jersey ? t.main : t.accent) : BATTER_COLOR.accent;
+    const ring = it.fx === 'legend' ? GOLD.mid : it.fx === 'neon' ? 'rgba(40,238,255,0.95)' : it.fx === 'rainbow' ? '#ffffff' : it.fx === 'galaxy' ? '#a99bff' : it.fx === 'santa' ? FUR.fur : t ? (c.jersey ? t.main : t.accent) : BATTER_COLOR.accent;
     const fill = it.fx === 'rainbow' ? rainbowColors(() => null, { x: sx - sw * 0.2, y: sy - sw * 0.45, s: sw * 1.1 }, fxTime())('jersey')
       : it.fx === 'galaxy' ? galaxyColors(() => null, { x: sx + sw * 0.04, y: sy - sw * 0.18, s: sw * 0.8 }, fxTime())('jersey') : c.jersey ?? (t ? t.main : BATTER_COLOR.jersey);   // 은하수 띠가 칸 가운데를 지나게
     dot(fill, ring);
@@ -5563,6 +6010,13 @@ function drawItemCard(r, it, on, gift = null) {
       });
       ctx.globalAlpha = 1;
     }
+    if (it.fx === 'santa') {   // 산타 옷(2026-11-23): 검은 벨트·금 버클과 아래 흰 털
+      ctx.save(); ctx.beginPath(); ctx.arc(sx, sy, sw * 0.96, 0, Math.PI * 2); ctx.clip();
+      ctx.fillStyle = '#17181c'; ctx.fillRect(sx - sw, sy + sw * 0.02, sw * 2, sw * 0.28);
+      ctx.strokeStyle = GOLD.mid; ctx.lineWidth = Math.max(1, sw * 0.07); ctx.strokeRect(sx - sw * 0.17, sy + sw * 0.03, sw * 0.34, sw * 0.26);
+      ctx.fillStyle = FUR.fur; ctx.fillRect(sx - sw, sy + sw * 0.5, sw * 2, sw * 0.3);
+      ctx.restore();
+    }
     if (it.fx === 'legend') {   // 금 줄무늬와 가끔 반짝임
       for (const u of [-0.56, -0.19, 0.19, 0.56]) { const h = Math.sqrt(1 - u * u) * sw * 0.84; segment({ x: sx + u * sw, y: sy - h }, { x: sx + u * sw, y: sy + h }, 1.2, 1.2, 'rgba(226,186,80,0.5)'); }
       const sp = (fxTime() / 2.3) % 1;
@@ -5585,10 +6039,16 @@ function drawItemCard(r, it, on, gift = null) {
   ctx.font = font(size, 700);
   const fit = Math.min(1, (r.x + r.w - 5 - tx) / ctx.measureText(it.name).width);   // 폰은 한 줄에 셋이라 긴 이름('토끼 슬리퍼')은 글자를 줄인다
   text(it.name, tx, sy - (m ? 8 : 9), { size: size * fit, weight: 700, align: 'left' });
-  const status = gift ? (gift.look[it.slot] === it.id ? ['입고 있음', 'rgba(255,255,255,0.6)'] : it.price ? [`${it.price.toLocaleString()}코인`, '#f2c94c'] : ['기본', 'rgba(255,255,255,0.6)'])
-    : wearing(it) ? ['착용 중', '#8ef0a8'] : owns(it.id) ? [it.price ? '보유' : '기본', 'rgba(255,255,255,0.6)'] : [`${it.price.toLocaleString()}코인`, '#f2c94c'];
+  const soon = saleNow(it) === 'soon' ? [saleFrom(it), '#a8dcff'] : null;   // 겨울 한정: 기간 전에는 값 대신 여는 날
+  const status = gift ? (gift.look[it.slot] === it.id ? ['입고 있음', 'rgba(255,255,255,0.6)'] : soon ?? (it.price ? [`${it.price.toLocaleString()}코인`, '#f2c94c'] : ['기본', 'rgba(255,255,255,0.6)']))
+    : wearing(it) ? ['착용 중', '#8ef0a8'] : owns(it.id) ? [it.price ? '보유' : '기본', 'rgba(255,255,255,0.6)'] : soon ?? [`${it.price.toLocaleString()}코인`, '#f2c94c'];
   text(status[0], tx, sy + (m ? 10 : 12), { size: m ? 11 : 13, weight: 700, color: status[1], align: 'left' });
+  if (it.sale) { ctx.strokeStyle = '#bfe6ff'; ctx.lineWidth = 1.2; ctx.beginPath(); snowPath(r.x + r.w - (m ? 8 : 10), r.y + (m ? 8 : 10), m ? 4 : 5, 0, false); ctx.stroke(); }   // 기간 한정 표시(눈송이)
 }
+// 기간 한정 물건(core catalog SALES): 오늘(한국 시간) 살 수 있는지, 여는 날·마지막 날 글('12월 1일부터'·'12월 31일까지')
+const saleNow = (it) => saleOn(it, today());
+const saleDay = (day) => { const [, m, d] = day.split('-').map(Number); return `${m}월 ${d}일`; };
+const saleFrom = (it) => `${saleDay(SALES[it.sale].from)}부터`, saleUntil = (it) => `${saleDay(SALES[it.sale].to)}까지`;
 
 // 미리 보기 칸: 같은 타자 그림을 칸에 맞춰 줄여 그린다(모바일에서는 뒤의 타자가 화면 끝에 걸려 잘 안 보여서).
 // 등번호를 고를 때는 스윙을 마친 자세로 등을 보여 주고, 공 꼬리를 고를 때는 공 하나가 꼬리를 달고 날아간다.
@@ -5716,7 +6176,7 @@ function drawShop() {
     addButton(r, label, sh.tab === slot ? 'chipOn' : 'chip', () => { sh.tab = slot; sh.sel = null; sh.demo = performance.now(); });
   });
   y += Math.ceil(SHOP_SLOTS.length / tcols) * (th + 6) + (m ? 6 : 10);
-  const list = SHOP_ITEMS.filter((it) => it.slot === sh.tab && (sh.view === 'shop' || owns(it.id)));
+  const list = SHOP_ITEMS.filter((it) => it.slot === sh.tab && (owns(it.id) || (sh.view === 'shop' && saleNow(it) !== 'over')));   // 기간이 끝난 한정 물건은 가진 사람에게만
   const full = Math.ceil(list.length / icols) * (ih + 8), room = Math.max(ih + 8, view.h - y - (m ? 6 : 10) - 114 - 8), scroll = full - 8 > room;
   const y0 = scroll ? beginScroll(shopList, `${sh.view}-${sh.tab}`, y, y + room) : y;
   if (!scroll) shopList.max = 0;
@@ -5735,20 +6195,25 @@ function drawShop() {
 function drawShopAction(y) {
   const m = view.mobile, cx = view.w / 2, sh = game.shop, sel = shopItem(sh.sel), bw = m ? view.w - 64 : 320, note = (s) => text(s, cx, y + 10, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.7)' });
   const btn = { x: cx - bw / 2, y: y + 24, w: bw, h: 46 }, to = sh.giftTo;
-  const canGift = !to && loggedIn() && sh.view === 'shop' && giftable(sel), gw = m ? 100 : 110, main = canGift ? { ...btn, w: bw - gw - 8 } : btn;
+  const canGift = !to && loggedIn() && sh.view === 'shop' && giftable(sel) && saleNow(sel) === 'on', gw = m ? 100 : 110, main = canGift ? { ...btn, w: bw - gw - 8 } : btn;
   let showNo = false;
   if (to) {
     if (!sel) note('보낼 물건을 골라요 · 위는 받는 사람 모습이에요');
     else if (!giftable(sel)) note('기본 물건은 선물할 수 없어요');
+    else if (saleNow(sel) !== 'on') note(saleNow(sel) === 'soon' ? `${sel.name} · 겨울 한정 · ${saleFrom(sel)} 보낼 수 있어요` : `${sel.name} · 판매가 끝났어요`);
     else if (to.look[sel.slot] === sel.id) { note(`${sel.name} · 이미 입고 있어요`); addButton(btn, '이미 가진 물건이에요', 'secondary', () => toast('이미 가진 물건이에요')); }
     else { note(`${sel.name} · ${sel.price.toLocaleString()}코인`); addButton(btn, `선물하기 · ${sel.price.toLocaleString()}코인`, 'primary', () => giftPicked(sel)); }
   } else if (!loggedIn()) {
     note('카카오로 로그인하면 코인을 모아 꾸밀 수 있어요');
     addButton(btn, '카카오로 로그인', 'kakao', startKakaoLogin);
   } else if (!sel) note(sh.view === 'shop' ? '고르면 위에서 미리 입어 봐요 · 코인은 점수의 1/100' : '가진 물건을 골라 입어요');
-  else if (!owns(sel.id)) {
+  else if (!owns(sel.id) && saleNow(sel) !== 'on') {   // 겨울 한정: 기간 전에는 미리 입어 보기만 한다
+    const soon = saleNow(sel) === 'soon';
+    note(soon ? `${sel.name} · 겨울 한정 · ${saleUntil(sel)}` : `${sel.name} · 판매가 끝났어요`);
+    addButton(main, soon ? `${saleFrom(sel)} 살 수 있어요` : '판매가 끝났어요', 'secondary', () => toast(soon ? `${saleFrom(sel)} 살 수 있어요` : '판매가 끝났어요'));
+  } else if (!owns(sel.id)) {
     const can = (wallet.coins ?? 0) >= sel.price;
-    note(can ? `${sel.name} · ${sel.price.toLocaleString()}코인` : `코인이 ${(sel.price - (wallet.coins ?? 0)).toLocaleString()}개 모자라요`);
+    note(can ? `${sel.name} · ${sel.price.toLocaleString()}코인${sel.sale ? ` · ${saleUntil(sel)}` : ''}` : `코인이 ${(sel.price - (wallet.coins ?? 0)).toLocaleString()}개 모자라요`);
     addButton(main, can ? `사기 · ${sel.price.toLocaleString()}코인` : '코인이 모자라요', can ? 'primary' : 'secondary', () => (can ? buyItem(sel) : toast('판을 더 쳐서 코인을 모아 보세요')));
   } else if (sel.id === 'number-on') {   // 번호 입력칸 + 달기
     showNo = true;
@@ -5806,12 +6271,14 @@ const GIFT_ERRORS = {
   no_player: () => '찾는 사람이 없어요',
   free_item: () => '기본 물건은 선물할 수 없어요',
   hidden: () => '랭킹에서 숨긴 계정은 선물할 수 없어요',   // 운영 명령으로 숨긴 계정(2026-11-19)
+  not_on_sale: () => '지금은 보낼 수 없는 물건이에요',   // 겨울 한정 같은 기간 한정 물건(2026-11-23)
 };
 // 보내기 전에 막히는 까닭(알고 있는 값으로만, 서버가 다시 본다). 없으면 null
 function giftBlock(it) {
   if (!loggedIn()) return '카카오로 로그인하면 선물할 수 있어요';
   if (giftBox.games != null && giftBox.games <= GIFT_MIN_GAMES) return GIFT_ERRORS.not_enough_games({ games: giftBox.games });
   if (giftBox.left === 0) return GIFT_ERRORS.daily_limit();
+  if (saleNow(it) !== 'on') return GIFT_ERRORS.not_on_sale();
   if ((wallet.coins ?? 0) < it.price) return `코인이 ${(it.price - (wallet.coins ?? 0)).toLocaleString()}개 모자라요`;
   return null;
 }

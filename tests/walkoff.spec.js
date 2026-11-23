@@ -1633,7 +1633,7 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  test('상점: 물건을 하나씩 골라 미리 입혀 봐도 오류가 없고, 물건이 가장 많은 탭도 닫기까지 화면에 들어간다(폰은 키가 작은 360×640. 2026-11-10부터 배트·헬멧은 물건 칸만 끌어 넘긴다)', { tag: '@min' }, async ({ page, isMobile }) => {
+  test('상점: 물건을 하나씩 골라 미리 입혀 봐도 오류가 없고, 물건이 가장 많은 탭도 닫기까지 화면에 들어간다(폰은 키가 작은 360×640. 2026-11-10부터 넘치는 탭은 물건 칸만 끌어 넘긴다)', { tag: '@min' }, async ({ page, isMobile }) => {
     if (isMobile) await page.setViewportSize({ width: 360, height: 640 });
     const errors = await open(page);
     await page.evaluate(() => walkoff.openShop('shop'));
@@ -1644,7 +1644,7 @@ test.describe('화면', () => {
       await expect.poll(() => page.evaluate((names) => walkoff.ui.buttons.filter((b) => names.includes(b.label)).length, names)).toBeGreaterThan(0);
       const scrolls = await page.evaluate(() => walkoff.shopList.max > 0);
       if (!scrolls) expect(await page.evaluate((names) => walkoff.ui.buttons.filter((b) => names.includes(b.label)).length, names)).toBe(names.length);
-      expect(scrolls, label).toBe(!!isMobile && (slot === 'bat' || slot === 'helmet'));   // 360×640의 여섯째 줄만 넘친다(PC 1440×900은 다 들어간다)
+      expect(scrolls, label).toBe(!!isMobile && names.length > 15);   // 360×640은 한 줄에 셋, 다섯 줄(15개)까지 들어간다(2026-11-23 물건이 늘어 배트·헬멧·장갑·신발·꼬리·타격음이 넘친다. PC 1440×900은 다 들어간다)
       for (const name of names) {   // 누른 칸의 물건이 골라져야 한다(칸 자리가 맞는지). 안 보이는 칸은 끌어 넘겨 보이게 한다
         if (!(await page.evaluate((name) => walkoff.ui.buttons.some((b) => b.label === name), name))) {
           await page.evaluate(() => document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel', { deltaY: 5000, cancelable: true })));
@@ -3681,10 +3681,10 @@ test.describe('결과 공유', () => {
 test.describe('랭킹 규칙', () => {
   test.skip(({ isMobile }) => isMobile, '계산은 화면 크기와 상관없어서 PC에서만 본다');
 
-  test('게임과 서버가 같은 상점 목록(id·종류·가격)을 쓴다', async ({ page }) => {
+  test('게임과 서버가 같은 상점 목록(id·종류·가격·판매 기간)을 쓴다', async ({ page }) => {
     const shop = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
     await open(page);
-    const game = await page.evaluate(() => ({ items: walkoff.SHOP_ITEMS.map(({ id, slot, price }) => ({ id, slot, price })), slots: walkoff.SHOP_SLOTS.map(([s]) => s) }));
+    const game = await page.evaluate(() => ({ items: walkoff.SHOP_ITEMS.map(({ id, slot, price, sale }) => ({ id, slot, price, ...(sale ? { sale } : {}) })), slots: walkoff.SHOP_SLOTS.map(([s]) => s) }));   // sale: 겨울 한정 같은 기간(2026-11-23)
     expect(game.items).toEqual(shop.ITEMS);
     expect(game.slots).toEqual(shop.SLOTS);
   });
@@ -4655,7 +4655,7 @@ test.describe('상점 물건 16개(2026-11-10)', () => {
       performance.now = realNow; w.paused = false;
       return { same, count: w.SHOP_ITEMS.length, names: NEW.map((id) => w.SHOP_ITEMS.find((i) => i.id === id)?.name ?? null) };
     });
-    expect(r.count).toBe(98);   // 85개에 2026-11-12 13개를 더했다
+    expect(r.count).toBe(124);   // 85개에 2026-11-12 13개, 2026-11-23 26개를 더했다
     expect(r.names.every(Boolean)).toBe(true);   // 이름·모양(ITEM_LOOKS)이 모두 있다
     expect(r.same).toEqual(['sound-duck']);      // 소리만 그림이 같다
     expect(errors).toEqual([]);
@@ -4703,7 +4703,7 @@ test.describe('상점 물건 13개(2026-11-12)', () => {
       performance.now = realNow; w.paused = false;
       return { thrown, same, count: w.SHOP_ITEMS.length, names: NEW.map((id) => w.SHOP_ITEMS.find((i) => i.id === id)?.name ?? null) };
     }, NEW13);
-    expect(r.count).toBe(98);
+    expect(r.count).toBe(124);   // 2026-11-23 26개를 더했다
     expect(r.names.every(Boolean)).toBe(true);   // 이름·모양(ITEM_LOOKS)이 모두 있다
     expect(r.thrown).toEqual([]);
     expect(r.same).toEqual(['sound-cat']);       // 소리만 그림이 같다
@@ -4774,6 +4774,134 @@ test.describe('상점 물건 13개(2026-11-12)', () => {
     for (const trail of ['trail-maple', 'trail-snow']) expect(reach[trail], trail).toBeGreaterThan(reach['trail-blossom'] * 0.6);
     expect(reach['trail-blossom']).toBeGreaterThan(0.03);
     await page.waitForFunction(() => walkoff.game.flightT > walkoff.chaseEnd(walkoff.game.outcome) + 0.05, null, { timeout: 20_000 });   // 끝까지 오류 없이
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('상점 물건 26개·겨울 한정·겨울 레전드(2026-11-23)', () => {
+  const NEW26 = ['bat-scratcher', 'bat-mackerel', 'bat-umbrella', 'bat-guitar', 'trail-paw', 'trail-coin', 'trail-bubble', 'trail-plane', 'sound-dog', 'sound-frog', 'sound-gong', 'sound-clap',
+    'glove-pandapaw', 'glove-rabbitpaw', 'glove-dinoclaw', 'glove-tigerpaw', 'shoe-penguin',
+    'helmet-santa', 'helmet-rudolph', 'bat-bungeo', 'glove-mitten', 'shoe-furboot', 'uniform-santa', 'trail-gift', 'sound-jingle', 'trail-sleigh'];
+  const SOUNDS = ['sound-dog', 'sound-frog', 'sound-gong', 'sound-clap', 'sound-jingle'];
+
+  test('새 물건은 상점 미리 보기에서 2.4초 동안 어느 장면에서도 오류 없이 그리고, 소리를 빼면 그 칸의 기본 물건과 다르게 그린다. 겨울 한정은 9개(PC·폰)', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    const r = await page.evaluate((NEW) => {
+      const w = walkoff, c = document.querySelector('canvas'), x2d = c.getContext('2d'), now = performance.now(), realNow = performance.now, thrown = [], same = [];
+      w.paused = true; performance.now = () => now;   // 시계를 멈춰 같은 장면을 견준다
+      w.openShop('shop');
+      const draw = (id, dt) => { const it = w.SHOP_ITEMS.find((i) => i.id === id); Object.assign(w.game.shop, { tab: it.slot, sel: id, demo: now - dt }); w.render(now / 1000); };
+      const shot = (id) => {   // 미리 보기 칸(종류 탭 위)만 해시한다
+        draw(id, 1050);
+        const bottom = Math.floor(w.ui.buttons.find((b) => b.label === '배트').r.y * w.view.dpr) - 4, d = x2d.getImageData(0, 0, c.width, bottom).data;
+        let h = 0; for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] + d[i + 1] * 7 + d[i + 2] * 13) >>> 0; return h;
+      };
+      for (const id of NEW) {
+        for (let dt = 0; dt <= 2400; dt += 50) { try { draw(id, dt); } catch (e) { thrown.push(`${id} ${dt}ms ${e.message}`); break; } }   // 배트는 1초에 맞히고, 꼬리는 1.4초마다 다시 난다
+        const it = w.SHOP_ITEMS.find((i) => i.id === id), base = w.SHOP_ITEMS.find((i) => i.slot === it.slot && i.price === 0).id;
+        if (shot(id) === shot(base)) same.push(id);
+      }
+      performance.now = realNow; w.paused = false;
+      return { thrown, same, count: w.SHOP_ITEMS.length, names: NEW.map((id) => w.SHOP_ITEMS.find((i) => i.id === id)?.name ?? null), winter: w.SHOP_ITEMS.filter((i) => i.sale === 'winter').map((i) => i.id) };
+    }, NEW26);
+    expect(r.count).toBe(124);
+    expect(r.names.every(Boolean)).toBe(true);   // 이름·모양(ITEM_LOOKS)이 모두 있다
+    expect(r.thrown).toEqual([]);
+    expect(r.same).toEqual(SOUNDS);   // 소리만 그림이 같다
+    expect(r.winter).toEqual(['helmet-santa', 'helmet-rudolph', 'bat-bungeo', 'glove-mitten', 'shoe-furboot', 'uniform-santa', 'trail-gift', 'sound-jingle', 'trail-sleigh']);
+    expect(errors).toEqual([]);
+  });
+
+  test("새 타격음 다섯(멍·개굴·징·박수·징글벨)은 폭탄보다 크지 않고 들리며, 징만 0.6초 넘게 울리고 나머지는 짧게 끝난다", async ({ page }) => {
+    await page.addInitScript(() => {   // 게임 소리를 그대로 미리 녹음한다(2.4초)
+      window.AudioContext = function () { window.__ac = new OfflineAudioContext(1, 44100 * 2.4, 44100); return window.__ac; };
+    });
+    const errors = await open(page);
+    const record = async (style) => {   // 50ms 창 크기(RMS)의 최댓값과, 최댓값의 3% 넘게 들리는 마지막 시각
+      await page.reload();
+      await page.waitForFunction(() => !!window.walkoff);
+      return page.evaluate(async (style) => {
+        walkoff.Sound.init(); walkoff.Sound.crack(0.8, style);
+        const d = (await window.__ac.startRendering()).getChannelData(0), win = 2205;
+        const rms = (i) => { let s = 0; for (let k = i; k < i + win; k++) s += d[k] * d[k]; return Math.sqrt(s / win); };
+        let max = 0, last = 0;
+        for (let i = 0; i + win <= d.length; i += 441) max = Math.max(max, rms(i));
+        for (let i = 0; i + win <= d.length; i += 441) if (rms(i) > max * 0.03) last = (i + win) / 44100;
+        return { max, last };
+      }, style);
+    };
+    const bomb = await record('sound-bomb');
+    for (const [style, longest] of [['sound-dog', 0.4], ['sound-frog', 0.5], ['sound-clap', 0.6], ['sound-jingle', 0.7]]) {
+      const s = await record(style);
+      expect(s.max, style).toBeLessThanOrEqual(bomb.max);
+      expect(s.max, style).toBeGreaterThan(0.03);   // 들리기는 한다
+      expect(s.last, style).toBeLessThan(longest);
+    }
+    const gong = await record('sound-gong');
+    expect(gong.max).toBeLessThanOrEqual(bomb.max);
+    expect(gong.max).toBeGreaterThan(0.03);
+    expect(gong.last).toBeGreaterThan(0.6);   // 지잉 울린다
+    expect(gong.last).toBeLessThan(1.4);
+    expect(errors).toEqual([]);
+  });
+
+  test('산타 썰매 꼬리: 홈런을 뒤에서 따라가는 화면에서도 공 둘레에 썰매 행렬이 남고, 끝까지 오류가 없다', async ({ page }) => {
+    const errors = await open(page, '?seed=42');
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);   // seed 42 첫 공은 홈런
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.flightT > 1.2 && walkoff.cam.z > walkoff.CAM_HOME.z + 5, null, { timeout: 10_000 });
+    // 멈춘 장면을 썰매 꼬리로 다시 그려, 꼬리 없이 그린 것과 달라진 픽셀 가운데 공에서 가장 먼 거리(화면 높이 비율)
+    const reach = await page.evaluate(() => {
+      walkoff.paused = true;
+      const now = performance.now(), { now: realNow } = performance, realRandom = Math.random;
+      performance.now = () => now; Math.random = () => 0.5;
+      const g = walkoff.game, c = document.querySelector('canvas'), x2d = c.getContext('2d'), d = c.width / walkoff.view.w;
+      const fp = walkoff.fieldPlay(g.outcome).ball(g.flightT), b = walkoff.project(fp.x, fp.y, fp.z);
+      const shot = (trail) => { walkoff.wallet.look.trail = trail; walkoff.render(now / 1000); return x2d.getImageData(0, 0, c.width, c.height).data; };
+      const base = shot('trail-none'), img = shot('trail-sleigh');
+      let far = 0;
+      for (let i = 0; i < img.length; i += 12) {
+        if (Math.abs(img[i] - base[i]) + Math.abs(img[i + 1] - base[i + 1]) + Math.abs(img[i + 2] - base[i + 2]) < 40) continue;
+        const p = i / 4; far = Math.max(far, Math.hypot((p % c.width) / d - b.x, Math.floor(p / c.width) / d - b.y));
+      }
+      performance.now = realNow; Math.random = realRandom; walkoff.paused = false;
+      return far / walkoff.view.h;
+    });
+    expect(reach).toBeGreaterThan(0.1);
+    await page.waitForFunction(() => walkoff.game.flightT > walkoff.chaseEnd(walkoff.game.outcome) + 0.05, null, { timeout: 20_000 });   // 끝까지 오류 없이(썰매를 단 채로)
+    expect(errors).toEqual([]);
+  });
+
+  test('겨울 한정: 12월 전에는 칸에 12월 1일부터가 보이고 사거나 선물하지 못하며(입어 보기는 된다), 12월에는 산다. 1월에는 못 가진 사람의 상점에서 숨고 산 사람은 그대로 입는다', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-11-25T03:00:00Z'));   // 한국 시간 11-25 12시
+    const errors = await open(page, '?seed=42', { login: true, api: { account: { coins: 5000, games: 20 } } });
+    await page.waitForFunction(() => walkoff.wallet.coins === 5000);
+    await page.evaluate(() => walkoff.openShop('shop'));
+    const pick = (id) => page.evaluate((id) => Object.assign(walkoff.game.shop, { tab: walkoff.SHOP_ITEMS.find((i) => i.id === id).slot, sel: id }), id);
+    const labels = () => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok(walkoff.ui.buttons.map((b) => b.label))))));
+    await pick('helmet-santa');
+    await expect.poll(labels).toContain('12월 1일부터 살 수 있어요');
+    expect(await labels()).not.toContain('선물하기');
+    expect(await drawnTexts(page)).toContain('12월 1일부터');   // 칸의 값 자리
+    expect(await page.evaluate(() => walkoff.currentLook().helmet)).toBe('helmet-santa');   // 입어 보기는 된다
+    await tap(page, '12월 1일부터 살 수 있어요');
+    expect(errors.calls.filter((c) => c.path === '/shop/buy')).toEqual([]);   // 서버에 보내지 않는다
+
+    await page.clock.setFixedTime(new Date('2026-12-05T03:00:00Z'));   // 12-05
+    await expect.poll(labels).toContain('사기 · 800코인');
+    expect(await labels()).toContain('선물하기');
+    await tap(page, '사기 · 800코인');
+    await expect.poll(() => page.evaluate(() => ({ coins: walkoff.wallet.coins, helmet: walkoff.wallet.look.helmet }))).toEqual({ coins: 4200, helmet: 'helmet-santa' });
+
+    await page.clock.setFixedTime(new Date('2027-01-05T03:00:00Z'));   // 기간이 끝난 뒤
+    await page.evaluate(() => Object.assign(walkoff.game.shop, { tab: 'helmet', sel: null }));
+    const helmets = () => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => {   // 넘치는 목록은 끝까지 내려 마지막 칸까지 본다
+      walkoff.shopList.scroll = walkoff.shopList.max;
+      requestAnimationFrame(() => requestAnimationFrame(() => ok(walkoff.ui.buttons.map((b) => b.label).filter((l) => ['산타 모자', '루돌프 뿔'].includes(l)))));
+    })));
+    await expect.poll(helmets).toEqual(['산타 모자']);   // 산 것은 보이고 못 가진 루돌프 뿔은 숨는다
+    expect(await page.evaluate(() => walkoff.wallet.look.helmet)).toBe('helmet-santa');   // 그대로 입는다
     expect(errors).toEqual([]);
   });
 });

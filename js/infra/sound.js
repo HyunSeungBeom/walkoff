@@ -122,6 +122,65 @@ export const Sound = (() => {
     g.connect(master);
     o.start(t0); lfo.start(t0); o.stop(t0 + dur + 0.05); lfo.stop(t0 + dur + 0.05);
   }
+  // ===== 2026-11-23 더한 타격음(사용자가 F 칸 시안에서 고름). 오리·고양이처럼 낮은 울림은 넣지 않는다 =====
+  // 강아지 '멍': 톱니파(300 → 520 → 330Hz)를 입 모양 대역 셋으로 거르고 60Hz로 떨어 거칠게, 시작에 숨 섞인 잡음. 세게 칠수록 조금 높고 길다
+  function bark(power) {
+    if (!ac || !on) return;
+    const t0 = ac.currentTime, dur = 0.17 + 0.04 * power, o = ac.createOscillator(), lfo = ac.createOscillator(), depth = ac.createGain(), rasp = ac.createGain(), g = ac.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(300 + 40 * power, t0); o.frequency.linearRampToValueAtTime(520 + 50 * power, t0 + 0.035); o.frequency.exponentialRampToValueAtTime(330, t0 + dur);
+    lfo.type = 'triangle'; lfo.frequency.value = 60; depth.gain.value = 0.3; rasp.gain.value = 0.7;
+    lfo.connect(depth).connect(rasp.gain);
+    env(g, t0, 0.008, dur, 0.85);
+    o.connect(rasp);
+    for (const [f, q, k] of [[700, 3, 2.2], [1500, 4, 1.5], [2700, 6, 0.6]]) { const bp = ac.createBiquadFilter(), lv = ac.createGain(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q; lv.gain.value = k; rasp.connect(bp).connect(lv).connect(g); }
+    g.connect(master);
+    o.start(t0); lfo.start(t0); o.stop(t0 + dur + 0.05); lfo.stop(t0 + dur + 0.05);
+    noise({ dur: 0.05, freq: 1300, q: 1.2, peak: 0.35 + 0.15 * power });
+  }
+  // 개구리 '개굴': 사각파를 30Hz로 끊어 '그르르' 떨게 하고, '개'(높은 대역 1.1kHz, 0.11초)와 '굴'(낮은 대역 650Hz, 0.15초, 음이 내려간다)을 잇는다
+  function croak(power) {
+    if (!ac || !on) return;
+    for (const [d, dur, f0, f1, bf, peak] of [[0, 0.11, 190, 175, 1100, 1.5], [0.15, 0.15, 175, 140, 650, 1.8]]) {
+      const t0 = ac.currentTime + d, o = ac.createOscillator(), gate = ac.createOscillator(), gd = ac.createGain(), am = ac.createGain(), bp = ac.createBiquadFilter(), g = ac.createGain();
+      o.type = 'square'; o.frequency.setValueAtTime(f0 + 15 * power, t0); o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+      gate.type = 'square'; gate.frequency.value = 30; gd.gain.value = 0.5; am.gain.value = 0.5;   // 크기를 0~1로 끊는다
+      gate.connect(gd).connect(am.gain);
+      bp.type = 'bandpass'; bp.frequency.value = bf; bp.Q.value = 3;
+      env(g, t0, 0.01, dur, peak * (0.85 + 0.15 * power));
+      o.connect(am).connect(bp).connect(g).connect(master);
+      o.start(t0); gate.start(t0); o.stop(t0 + dur + 0.05); gate.stop(t0 + dur + 0.05);
+    }
+  }
+  // 징 '지잉': 채가 닿는 '둥'에 이어 조금씩 어긋난 배음 짝이 맥놀이하며 1.6초 울리고, 처음 0.4초에 음이 조금 올라간다(징 특유의 '지잉').
+  // 폰 스피커에서도 들리게 가운데 대역(470·705Hz) 배음을 같이 울린다
+  function gong(power) {
+    if (!ac || !on) return;
+    noise({ dur: 0.06, type: 'lowpass', freq: 600, peak: 0.3 + 0.1 * power });
+    for (const [f, k, dur] of [[220, 0.18, 1.6], [224, 0.14, 1.6], [470, 0.11, 1.2], [476, 0.08, 1.2], [705, 0.06, 0.8], [1030, 0.03, 0.5]]) {
+      const t0 = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.setValueAtTime(f * 0.97, t0); o.frequency.linearRampToValueAtTime(f, t0 + 0.4);
+      env(g, t0, 0.01, dur, k * (0.8 + 0.3 * power)); o.connect(g).connect(master); o.start(t0); o.stop(t0 + dur + 0.05);
+    }
+  }
+  // 박수 '짝짝': 손뼉 세 번(0.13초 간격). 한 번은 짧은 잡음 셋을 몇 ms 어긋나게 겹쳐 두툼하게 하고, 마지막이 조금 크다
+  function clap(power) {
+    for (const [d, k] of [[0, 0.8], [0.13, 0.85], [0.26, 1]]) {
+      noise({ dur: 0.04, freq: 1500, q: 1.1, peak: (1.8 + 0.8 * power) * k, delay: d });
+      noise({ dur: 0.06, freq: 1050, q: 0.9, peak: (1.2 + 0.4 * power) * k, delay: d + 0.006 });
+      noise({ dur: 0.02, type: 'highpass', freq: 3000, peak: 0.6 * k, delay: d + 0.002 });
+    }
+  }
+  // 징글벨 '찰랑'(겨울 한정): 방울 여럿을 흔드는 소리(어긋난 높은 배음 둘이 짧게, 0.3초 동안 일곱 번)에 '딩딩딩'(미6) 세 음
+  function jingle(power) {
+    if (!ac || !on) return;
+    for (let i = 0; i < 7; i++) {
+      const d = i * 0.045 + Math.random() * 0.012, k = (1 - i / 10) * (0.8 + 0.3 * power);
+      for (const [f, p] of [[4180, 0.12], [5530, 0.08]]) tone({ freq: f * (0.98 + Math.random() * 0.04), dur: 0.12, peak: p * k, delay: d });
+      noise({ dur: 0.03, type: 'highpass', freq: 6000, peak: 0.14 * k, delay: d });
+    }
+    for (const d of [0.02, 0.17, 0.32]) tone({ freq: 1319, dur: 0.22, peak: 0.26, delay: d });
+  }
   function loadCrowd() {
     fetch(CROWD_URL).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
       .then((b) => new Promise((ok, no) => ac.decodeAudioData(b, ok, no)))   // 옛 사파리는 콜백 방식만 된다
@@ -256,6 +315,11 @@ export const Sound = (() => {
       if (style === 'sound-thunder') { thunder(power); return; }
       if (style === 'sound-duck') { quack(power); return; }
       if (style === 'sound-cat') { meow(power); return; }
+      if (style === 'sound-dog') { bark(power); return; }
+      if (style === 'sound-frog') { croak(power); return; }
+      if (style === 'sound-gong') { gong(power); return; }
+      if (style === 'sound-clap') { clap(power); return; }
+      if (style === 'sound-jingle') { jingle(power); return; }
       if (style === 'sound-8bit') {   // 8비트 '띠링': 옛 게임기 동전 소리(사각파 B5 → E6). 세게 칠수록 한 음씩 높게(온음 하나까지)
         const k = Math.pow(2, Math.round(power * 2) / 12);
         chip(988 * k, 0, 0.065, CHIP_GAIN);
