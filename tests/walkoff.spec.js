@@ -46,6 +46,9 @@ async function rankingOf(rows, mine = null) {
 // 선물하기(2026-11-10): account.tag(내 #번호, 없으면 /me에 안 준다)·games(10구 랭킹 판 수)·gifts(안 본 받은 선물), players(다른 계정 [{ nick, tag, team, title, look, owned }]).
 // /players는 실제 서버의 찾기 글 읽기(worker/src/gifts.js parseFind)로 같은 닉네임(번호까지 적으면 그 한 명, 나는 빼고)을, /shop/gift는 실제 서버처럼
 // 자기 자신·랭킹 판 GIFT_MIN_GAMES판 이하·하루 GIFTS_PER_DAY번·코인·받는 사람이 가진 물건을 보고 코인을 빼 받는 사람 물건에 넣는다. /gifts/seen은 본 선물을 지운다
+// 오늘의 미션(2026-11-23): account.missions는 계정의 그날 진행({ day, n, paid }). 실제 서버처럼 /scores가 표의 공 순서와 보낸 타이밍(moves)을 core로 판정해
+// 그날 미션을 세고 채운 미션의 코인을 지갑에 더해 missions로 주고, /me에도 그날 진행을 준다. 그날은 day(테스트가 시계를 고정한 날) 또는 보낸 판의 날짜.
+// noMissions: 미션이 생기기 전 서버처럼 /scores·/me에 missions가 없다(요청 때 읽는다)
 async function mockApi(page, opts = {}) {
   const { rankings = EMPTY_RANKING, fail = false, account = {} } = opts;
   const { ITEMS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'shop.js')).href);
@@ -53,10 +56,13 @@ async function mockApi(page, opts = {}) {
   const { TITLE_IDS, countsOf, addCounts, titlesFor } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'titles.js')).href);
   const { makeSequence, pitcherHand } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'pitches.js')).href);
   const { parseFind, GIFTS_PER_DAY, GIFT_MIN_GAMES } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'gifts.js')).href);
+  const { advanceMissions, cleanMissionState, gameFacts, missionGain, missionsOn } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'missions.js')).href);
+  const { judgeSwing, judgeTake } = await import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', 'judge.js')).href);
+  const kstToday = () => opts.day ?? new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
   const players = (opts.players ?? []).map((p) => ({ ...p, owned: [...(p.owned ?? [])] })), inbox = [...(account.gifts ?? [])], sent = [];
   const shop = { coins: account.coins ?? 0, owned: [...(account.owned ?? [])], look: { ...(account.look ?? {}) } };
   const wallet = () => ({ coins: shop.coins, owned: [...shop.owned], look: { ...shop.look } });
-  const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null, titles: [...(account.titles ?? [])], counts: { ...(account.counts ?? {}) }, title: account.title ?? null };
+  const calls = [], tickets = [], heldSeeds = [], record = { allTime: account.allTime ?? null, titles: [...(account.titles ?? [])], counts: { ...(account.counts ?? {}) }, title: account.title ?? null, missions: account.missions ?? null };
   await page.route(`${API}/**`, (route) => {
     const req = route.request(), url = new URL(req.url()), auth = req.headers().authorization ?? null;
     const reply = (body, status = 200) => route.fulfill({ status, headers: CORS, contentType: 'application/json', body: JSON.stringify(body) });
@@ -93,7 +99,7 @@ async function mockApi(page, opts = {}) {
     if (url.pathname === '/me' && req.method() === 'PUT' && rejected()) return reply({ ok: false, error: 'bad_nick' }, 400);
     if (url.pathname === '/me') {
       return reply(req.method() === 'GET' ? { ok: true, playerId: ACCOUNT_ID, nick: account.nick ?? null, team: account.team ?? null, ...wallet(), titles: [...record.titles], counts: { ...record.counts }, title: record.title,
-        ...(account.tag != null ? { tag: account.tag } : {}), games: account.games ?? 0, giftsLeft: Math.max(0, GIFTS_PER_DAY - sent.length), gifts: inbox.map((g) => ({ ...g })) } : { ok: true });
+        ...(account.tag != null ? { tag: account.tag } : {}), games: account.games ?? 0, giftsLeft: Math.max(0, GIFTS_PER_DAY - sent.length), gifts: inbox.map((g) => ({ ...g })), ...(opts.noMissions ? {} : { missions: cleanMissionState(record.missions, kstToday()) }) } : { ok: true });
     }
     if (url.pathname === '/players') {
       const q = parseFind(url.searchParams.get('nick'));
@@ -124,7 +130,7 @@ async function mockApi(page, opts = {}) {
       if (opts.scoreFail) return reply({ ok: false, error: 'server_error' }, 500);
       if (opts.hidden) return reply({ ok: false, error: 'hidden' }, 400);   // 운영 명령으로 랭킹에서 숨긴 계정
       if (rejected()) return reply({ ok: false, error: 'bad_nick' }, 400);
-      const { score, mode, token, lights } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
+      const { score, mode, token, lights, moves, bats, day: sentDay } = JSON.parse(req.postData() || '{}'), lower = opts.scoreReply === 'lower';
       const ticket = tickets.find((t) => t.token === token);
       if (mode === 'challenge' && !token) return reply({ ok: false, error: 'seed_required' }, 400);
       if (mode === 'challenge' && (!ticket || ticket.used)) return reply({ ok: false, error: ticket ? 'seed_used' : 'bad_seed' }, 400);
@@ -136,7 +142,11 @@ async function mockApi(page, opts = {}) {
       record.counts = addCounts(record.counts, countsOf(lights, seq, lefty, score));
       const newTitles = titlesFor(record.counts).filter((id) => !record.titles.includes(id));
       record.titles = TITLE_IDS.filter((id) => record.titles.includes(id) || newTitles.includes(id));
-      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: 'myTeam' in opts ? opts.myTeam : { rank: 2, total: 9000, team: 'lg' }, ...(opts.near ? { near: opts.near(best) } : {}), count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles], counts: { ...record.counts } });
+      const mday = opts.day ?? sentDay, results = Array.isArray(moves) ? moves.map((mv, i) => (mv === null ? judgeTake(seq[i]) : judgeSwing(seq[i], mv, bats))) : null;
+      const mission = ticket && results ? advanceMissions(record.missions, mday, missionGain(missionsOn(mday), gameFacts(results, seq, score))) : null;
+      if (mission) { record.missions = mission.state; shop.coins += mission.coins; }
+      const missions = mission ? { ...mission.state, done: mission.done, earned: mission.coins, bonus: mission.bonus } : { ...cleanMissionState(record.missions, mday), done: [], earned: 0, bonus: 0 };
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: 'myTeam' in opts ? opts.myTeam : { rank: 2, total: 9000, team: 'lg' }, ...(opts.near ? { near: opts.near(best) } : {}), count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles], counts: { ...record.counts }, ...(opts.noMissions ? {} : { missions }) });
     }
     if (url.pathname === '/shop/buy') {
       const it = ITEMS.find((i) => i.id === JSON.parse(req.postData() || '{}').item);
@@ -605,16 +615,17 @@ test.describe('한 판 끝까지', () => {
 });
 
 test.describe('화면', () => {
-  test('시작 화면은 좌타·우타·메뉴만 있고, 빈 곳을 누르면 시작한다. 나머지는 메뉴 안에 있다', async ({ page }) => {
+  test('시작 화면은 좌타·우타·메뉴와 오늘의 미션 한 줄만 있고, 빈 곳을 누르면 시작한다. 나머지는 메뉴 안에 있다', async ({ page }) => {
     const errors = await open(page);
     const labels = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
-    expect(labels.sort()).toEqual(['메뉴', '우타', '좌타'].sort());
+    expect(labels.filter((l) => !l.startsWith('오늘의 미션 ')).sort()).toEqual(['메뉴', '우타', '좌타'].sort());
+    expect(labels.filter((l) => l.startsWith('오늘의 미션 ')).length).toBe(1);   // 2026-11-23 오늘의 미션: 누르면 미션 화면
     const menu = await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '메뉴').r);
     await page.mouse.click(menu.x + menu.w / 2, menu.y + menu.h / 2);
     await page.waitForFunction(() => walkoff.game.state === 'menu');
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '기록'));
     const items = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
-    for (const want of [/^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^이번 주 랭킹$/, /^팀·닉네임$/, /^카카오 로그인$/, /^닫기$/]) {
+    for (const want of [/^오늘의 미션$/, /^끝내기 상황$/, /^연습$/, /^타이밍 보정/, /^기록$/, /^이번 주 랭킹$/, /^팀·닉네임$/, /^카카오 로그인$/, /^닫기$/]) {
       expect(items.some((l) => want.test(l)), String(want)).toBe(true);
     }
     await page.keyboard.press('Escape');
@@ -1382,7 +1393,7 @@ test.describe('화면', () => {
       expect(list.filter((b) => b.r.x < 0 || b.r.y < 0 || b.r.x + b.r.w > w || b.r.y + b.r.h > h).map((b) => b.label), `${w}×${h}`).toEqual([]);
       expect(overlaps(list), `${w}×${h}`).toEqual([]);
       expect(await page.evaluate(() => walkoff.menu.max), `${w}×${h}`).toBe(0);   // 넘기지 않아도 다 들어간다
-      expect(list.filter((b) => !['닫기', '새 소식', '의견 보내기'].includes(b.label)).every((b) => b.r.h >= (w < 640 ? 44 : 34)), `${w}×${h}`).toBe(true);   // 폰은 줄을 44px 아래로 줄이지 않는다
+      expect(list.filter((b) => !['닫기', '새 소식', '의견 보내기', '오늘의 미션'].includes(b.label)).every((b) => b.r.h >= (w < 640 ? 44 : 34)), `${w}×${h}`).toBe(true);   // 폰은 줄을 44px 아래로 줄이지 않는다(띠는 빼고)
     }
     // 작은 폰(실제 브라우저 높이): 줄은 44px 그대로 두고 넘치면 끌어 넘긴다. 아래에 더 있으면 아래, 위로 넘겼으면 위 가장자리가 흐리다
     for (const [w, h] of [[320, 460], [360, 560], [375, 548], [360, 640], [390, 664]]) {
@@ -1390,7 +1401,7 @@ test.describe('화면', () => {
       await page.evaluate(() => { walkoff.goTitle(); walkoff.openMenu(); });
       await page.waitForFunction((w) => walkoff.view.w === w && walkoff.ui.buttons.some((b) => b.label === '새 소식'), w);
       await page.waitForTimeout(50);
-      const list = await buttons(), rows = list.filter((b) => !['닫기', '새 소식', '의견 보내기'].includes(b.label)), fb = list.find((b) => b.label === '의견 보내기').r;
+      const list = await buttons(), rows = list.filter((b) => !['닫기', '새 소식', '의견 보내기', '오늘의 미션'].includes(b.label)), fb = list.find((b) => b.label === '의견 보내기').r;
       expect(rows.every((b) => b.r.h >= 44), `${w}×${h}`).toBe(true);
       expect(fb.y >= 0 && fb.y + fb.h <= h - 40, `${w}×${h} 의견 보내기 띠는 끌지 않아도 다 보인다(아래 흐림 위)`).toBe(true);
       if (w >= 360) expect(noteShown(await drawnTexts(page)), `${w}×${h} 만든 사람 한마디가 두 줄에 다 들어간다`).toBe(true);   // 320은 글꼴(CI 우분투)에 따라 끝이 줄어들 수 있다
@@ -1404,7 +1415,8 @@ test.describe('화면', () => {
       expect(end.fade, `${w}×${h} 끝`).toEqual({ top: true, bottom: false });
       expect(end.last.y + end.last.h, `${w}×${h} 마지막 줄이 화면 안`).toBeLessThanOrEqual(h);
     }
-    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max])).toEqual([390, 108]);   // 390×664(아이폰 사파리)는 의견 보내기 띠·칭호 줄(2026-11-05)·소리 줄(2026-11-12)을 더해 두 줄쯤 넘친다(PC라 진동 줄이 없어 11줄)
+    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max])).toEqual([390, 111]);   // 390×664(아이폰 사파리)는 의견 보내기 띠·칭호 줄(2026-11-05)·소리 줄(2026-11-12)을 더해 두 줄쯤 넘친다(PC라 진동 줄이 없어 11줄).
+    // 오늘의 미션 띠(2026-11-23)로 34px 늘고 더 좁게(MENU_SIZE.tight)로 31px 줄어 108 → 111px
     await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 11줄)
     await expect.poll(() => page.evaluate(() => walkoff.menu.max)).toBeGreaterThan(0);
     const box = await page.locator('canvas').boundingBox(), row = (await buttons()).find((b) => b.label === '연습').r;
@@ -2268,7 +2280,7 @@ test.describe('화면', () => {
     });
     expect(rows.map((r) => r.s).join(' ')).toBe([
       '카카오에서는 회원번호만 받아 비밀 키로 바꾼 값만 저장해요.',
-      '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인 같은 내 기록에만 써요.',
+      '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인·미션 같은 내 기록에만 써요.',
       '판 수·스윙 수, 오류 종류, 처음 온 날 들어온 길과 어디까지 쳤는지(11월 30일부터) 같은 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
       '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
       '랭킹 기록 지우기를 누르면 서버의 계정과 기록을 바로 지워요. 복구용 기록은 7일 뒤 사라져요.',
@@ -6333,6 +6345,103 @@ test.describe('느린 폰 자동 품질(2026-11-17)', () => {
     await roundsAtLeast(page, 2);
     expect(await quality(page)).toMatchObject({ level: 1 });
     expect(await page.evaluate(() => window.__levels)).toEqual([1]);
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('오늘의 미션(2026-11-23)', () => {
+  // 시계는 날짜만 고정한다. 한국 시간 2026-11-24의 미션은 10구 2판 끝까지 치기(쉬움 50)·홈런 3개(보통 80)·한 판에 5연속 안타(어려움 120)
+  const DAY = '2026-11-24', AT = new Date(`${DAY}T12:00:00+09:00`);
+  const line = (page) => page.evaluate(() => walkoff.ui.buttons.find((b) => b.label.startsWith('오늘의 미션'))?.label ?? null);
+  const missionTexts = (texts) => texts.filter((t) => /^(미션|오늘의 미션 )/.test(t));
+  // 첫 공(지켜본 스트라이크)으로 끝나는 10구. 로그인했으면 서버 시드 42로, 안 했으면 ?seed=42 공을 랭킹 판처럼(fixedSeed 끔, ranked) 친다
+  const endOne = async (page, { ranked = true } = {}) => {
+    const login = await page.evaluate(() => walkoff.loggedIn());
+    if (login) await seedReady(page);
+    await page.evaluate((ranked) => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); if (ranked) walkoff.game.fixedSeed = false; }, ranked);
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.ui.buttons.some((b) => b.label === '다시 하기'));
+    if (login) await page.waitForFunction(() => ['ok', 'error', 'rejected'].includes(walkoff.game.rankInfo?.status));
+    return drawnTexts(page);
+  };
+
+  test('로그인 안 함: 시작 화면 한 줄과 메뉴 카드는 이 기기에서 센 그날 진행이고, 판을 끝내면 오른 미션이 끝 화면 한 줄로 나온다. 코인 대신 로그인 안내, 주소로 정한 공은 안 센다', async ({ page }) => {
+    await page.clock.setFixedTime(AT);
+    const errors = await open(page);
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    expect(await page.evaluate((d) => walkoff.missionsOn(d).map((m) => m.id), DAY)).toEqual(['play2', 'hr3', 'run5']);
+    await page.evaluate(() => walkoff.store.set('missions', { day: '2026-11-23', n: [9, 9, 9], paid: 15 }));   // 어제 진행은 이어지지 않는다
+    await expect.poll(() => line(page)).toBe('오늘의 미션 0/3 · 10구 끝까지 치기 0/2 ›');
+    await tap(page, '오늘의 미션 0/3 · 10구 끝까지 치기 0/2 ›');   // 누르면 오늘의 미션 화면(카드)
+    await page.waitForFunction(() => walkoff.game.state === 'missions');
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['오늘의 미션', '11월 24일 · 한국 시간 0시에 새 미션으로 바뀌어요', '로그인하면 코인 보상', '쉬움', '보통', '어려움',
+      '10구 2판 끝까지 치기', '홈런 3개', '한 판에 5연속 안타', '0/2', '0/3', '0/1', '+50', '+80', '+120', '셋 다 하면 100코인을 더 받아요.']));
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toEqual(expect.arrayContaining(['카카오로 로그인하면 미션마다 코인을 받아요 ›', '닫기']));
+    await tap(page, '닫기');
+    await page.waitForFunction(() => walkoff.game.state === 'title');
+    await page.evaluate(() => walkoff.openMenu());   // 메뉴 맨 위 띠도 같은 화면을 열고, 닫으면 메뉴로
+    await tap(page, '오늘의 미션');
+    await page.waitForFunction(() => walkoff.game.state === 'missions');
+    await tap(page, '메뉴로');
+    await page.waitForFunction(() => walkoff.game.state === 'menu');
+    await page.evaluate(() => walkoff.goTitle());
+    expect(missionTexts(await endOne(page))).toEqual(['미션 · 10구 끝까지 치기 1/2']);
+    expect(await page.evaluate(() => walkoff.store.get('missions'))).toEqual({ day: DAY, n: [1, 0, 0], paid: 0 });
+    expect(missionTexts(await endOne(page))).toEqual(['미션 완료! 10구 2판 끝까지 치기 · 로그인하면 +50코인']);
+    expect(missionTexts(await endOne(page))).toEqual(['오늘의 미션 1/3 완료']);   // 이 판으로 오른 것이 없으면 그날 몇 개 했는지
+    expect(missionTexts(await endOne(page, { ranked: false }))).toEqual([]);     // ?seed= 판은 안 세고 줄도 없다
+    expect(await page.evaluate(() => walkoff.store.get('missions'))).toEqual({ day: DAY, n: [2, 0, 0], paid: 1 });
+    await page.evaluate(() => walkoff.goTitle());
+    await expect.poll(() => line(page)).toBe('오늘의 미션 1/3 · 홈런 0/3 ›');
+    expect(await page.evaluate(() => walkoff.wallet.coins)).toBe(null);   // 로그인 안 하면 코인이 없다
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인함: 서버가 센 그날 진행과 받은 코인이 카드에 나오고, 미션을 채운 판은 끝 화면에 받은 코인 줄이 나오며 지갑에 더해진다', async ({ page }) => {
+    await page.clock.setFixedTime(AT);
+    const api = { day: DAY, account: { coins: 100, missions: { day: DAY, n: [1, 2, 0], paid: 0 } } };
+    const errors = await open(page, '', { login: true, api });
+    await page.waitForFunction(() => walkoff.game.state === 'title' && walkoff.wallet.coins === 100);
+    await expect.poll(() => line(page)).toBe('오늘의 미션 0/3 · 10구 끝까지 치기 1/2 ›');
+    await page.evaluate(() => walkoff.openMissions());
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['오늘의 미션', '받은 코인 0 / 350', '1/2', '2/3', '0/1']));
+    expect(await page.evaluate(() => walkoff.ui.buttons.some((b) => b.label.startsWith('카카오로 로그인')))).toBe(false);   // 로그인했으면 안내가 없다
+    await page.evaluate(() => walkoff.goTitle());
+    expect(missionTexts(await endOne(page))).toEqual(['미션 완료! 10구 2판 끝까지 치기 +50코인']);
+    expect(sentScores(errors).at(-1).body.moves).toEqual([null]);   // 서버는 보낸 타이밍으로 다시 센다
+    expect(await page.evaluate(() => walkoff.wallet.coins)).toBe(150);   // 점수 0점 판이라 판 코인 0 + 미션 50
+    await page.evaluate(() => walkoff.goTitle());
+    await expect.poll(() => line(page)).toBe('오늘의 미션 1/3 · 홈런 2/3 ›');
+    await page.evaluate(() => walkoff.openMenu());
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['오늘의 미션', '1/3 · 홈런 2/3']));   // 메뉴 띠
+    await page.evaluate(() => walkoff.openMissions('menu'));
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['받은 코인 50 / 350', '완료']));
+    expect(errors).toEqual([]);
+  });
+
+  test('로그인함: 미션이 없는 옛 서버·서버 오류면 줄은 비고 자리만 남아 단추가 밀리지 않는다. 낮은 폰(375×548)에서도 단추가 화면 안이다', async ({ page, isMobile }) => {
+    await page.clock.setFixedTime(AT);
+    const api = { day: DAY, account: { missions: { day: DAY, n: [1, 0, 0], paid: 0 } } };
+    const errors = await open(page, '', { login: true, api });
+    const retry = () => page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '다시 하기').r.y);
+    expect(missionTexts(await endOne(page))).toEqual(['미션 완료! 10구 2판 끝까지 치기 +50코인']);
+    const y0 = await retry();
+    api.noMissions = true;
+    expect(missionTexts(await endOne(page))).toEqual([]);
+    expect(await retry()).toBe(y0);
+    api.noMissions = false; api.scoreFail = true;
+    expect(missionTexts(await endOne(page))).toEqual([]);
+    expect(await retry()).toBe(y0);
+    if (isMobile) {
+      api.scoreFail = false;
+      await page.setViewportSize({ width: 375, height: 548 });
+      await page.waitForFunction(() => walkoff.view.h === 548);
+      await endOne(page);
+      const edge = await page.evaluate(() => ({ top: Math.min(...walkoff.ui.buttons.map((b) => b.r.y)), bottom: Math.max(...walkoff.ui.buttons.map((b) => b.r.y + b.r.h)) }));
+      expect(edge.top).toBeGreaterThanOrEqual(0);
+      expect(edge.bottom).toBeLessThanOrEqual(548);
+    }
     expect(errors).toEqual([]);
   });
 });

@@ -3,6 +3,7 @@
 import { REACH_M, zoneMiss, zoneOff } from '../core/pitches.js';
 import { AIM, PERFECT_MS } from '../core/judge.js';
 import { hrExtra } from '../core/flight.js';
+import { LONG_HR_M } from '../core/missions.js';
 
 export const PITCH_NAMES = { fastball: '직구', slider: '슬라이더', curve: '커브', change: '체인지업', fork: '포크' };
 export const PITCH_COLORS = { fastball: '#ffffff', slider: '#7fd1ff', curve: '#c49bff', change: '#8ef0a8', fork: '#ffb86b' };
@@ -142,4 +143,40 @@ export function scenarioMessage(s, { runs, pa, play }) {
   if (OUT_PLAY[play]) return msg;
   if (pa === 'G') return `${play === 'hold' ? '3루에서 멈춤' : '출루'} · ${basesLabel(s.bases)}`;
   return msg;
+}
+
+// ===== 오늘의 미션(2026-11-23 사용자 '오늘의 미션', 규칙은 core/missions.js) =====
+// 미션 이름. 카드에는 목표까지 쓴 이름('홈런 3개'), 끝 화면 진행에는 목표를 뺀 이름('홈런' → '홈런 2/3')을 쓴다. 한 판 미션(목표 1)은 진행 없이 이름만
+const ro = (word) => word + (hasBatchim(word) && (word.charCodeAt(word.length - 1) - 0xac00) % 28 !== 8 ? '으로' : '로');
+const MISSION_TEXT = {
+  play2: (m) => ['10구 끝까지 치기', `10구 ${m.need}판 끝까지 치기`],
+  hit10: (m) => ['안타', `안타 ${m.need}개`],
+  perfect3: (m) => ['정타', `정타 ${m.need}개`],
+  run3: () => [null, '한 판에 3연속 안타'],
+  clutch: () => [null, '끝내기 찬스에서 안타'],
+  ball4: (m) => ['볼 골라내기', `볼 ${m.need}개 골라내기`],
+  oppo2: (m) => ['밀어 친 안타', `밀어 친 안타 ${m.need}개`],
+  hr3: (m) => ['홈런', `홈런 ${m.need}개`],
+  main: (m) => [`${ro(PITCH_NAMES[m.pitch])} 안타`, `${ro(PITCH_NAMES[m.pitch])} 안타 ${m.need}개`],
+  score6k: () => [null, '한 판에 6,000점 이상'],
+  perfect5: (m) => ['정타', `정타 ${m.need}개`],
+  longHr2: (m) => [`비거리 ${LONG_HR_M}m 홈런`, `비거리 ${LONG_HR_M}m 이상 홈런 ${m.need}개`],
+  breakHr: () => [null, '변화구로 홈런'],
+  score8k: () => [null, '한 판에 8,000점 이상'],
+  run5: () => [null, '한 판에 5연속 안타'],
+};
+export const missionName = (m) => MISSION_TEXT[m.id](m)[1];
+export const missionShort = (m) => MISSION_TEXT[m.id](m)[0] ?? missionName(m);
+// 끝 화면 미션 줄. note는 이 판의 미션 { list: 그날 미션, state: 그날 진행, gain: 이 판으로 오른 수, done: 이 판으로 채운 미션 차례, earned: 받은(로그인 안 했으면
+// 받을 수 있던) 코인, bonus: 셋 다 채운 보너스 }(main.js startMissions·settleMissions). 이 판으로 채운 미션이 있으면 그것과 코인, 없으면 이 판으로 오른 진행
+// 두 개까지, 그것도 없으면 그날 몇 개 했는지. win은 채운 미션이 있는지(끝 화면이 금색으로 쓰고 좁으면 '한 판 더' 줄보다 남긴다)
+export function missionLine(note, loggedIn) {
+  if (!note) return null;
+  const { list, state, gain = [], done = [], earned = 0, bonus = 0 } = note;
+  const coins = earned > 0 ? (loggedIn ? ` +${earned.toLocaleString()}코인` : ` · 로그인하면 +${earned.toLocaleString()}코인`) : '';
+  if (bonus > 0) return { text: `오늘의 미션 셋 다 완료!${coins}`, win: true };
+  if (done.length) return { text: `${done.length > 1 ? `미션 ${done.length}개 완료!` : `미션 완료! ${missionName(list[done[0]])}`}${coins}`, win: true };
+  const up = list.map((m, i) => ({ m, n: state.n[i], g: gain[i] ?? 0 })).filter(({ m, n, g }) => g > 0 && m.need > 1 && n < m.need);
+  if (up.length) return { text: `미션 · ${up.slice(0, 2).map(({ m, n }) => `${missionShort(m)} ${n}/${m.need}`).join(' · ')}`, win: false };
+  return { text: `오늘의 미션 ${state.n.filter((n, i) => n >= list[i].need).length}/${list.length} 완료`, win: false };
 }

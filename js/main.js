@@ -14,6 +14,7 @@ import { applyScenario as applyScenarioIn, leadAt, makeScenario as makeScenarioI
 import { carryOf, catchTime, flightDuration, flightPos } from './core/flight.js';
 import { GIFT_MIN_GAMES, GIFTS_PER_DAY, ITEMS, SALES, SLOTS, TEAM_IDS, TEAM_TOP, saleOn } from './core/catalog.js';
 import { TITLES, TIERS, titleById, countsOf, addCounts, cleanCounts, titlesFor, topTitle } from './core/titles.js';
+import { ALL_BONUS, advanceMissions, cleanMissionState, gameFacts, missionGain, missionsOn, TIER_COINS } from './core/missions.js';
 import { checkNick } from './core/nick.js';
 import { connect } from './sim/port.js';
 import { bendJoint, smooth, unit3, V } from './sim/geom.js';
@@ -24,7 +25,7 @@ import { plantDist, runnerSkeleton, runStep } from './sim/runpose.js';
 import { actorSkeleton, actorState, CATCHER_F, DEFENSE, FIELDERS, fieldersAt, fieldPlay, homeOf, PITCHER_F, pitcherFielding } from './sim/fielding.js';
 import { baseRunnersAt, DUGOUT, runnerAt, scenarioRuns as scenarioRunsIn, walkoffTime as walkoffTimeIn } from './sim/runner.js';
 import { faceMood, facesFor } from './sim/faces.js';
-import { addTiming, labelSwing, labelTake, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, STYLE_NAMES, STYLE_TIPS, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
+import { addTiming, labelSwing, labelTake, missionLine, missionName, missionShort, PITCH_COLORS, PITCH_NAMES, scenarioLabel, scenarioMessage, STYLE_NAMES, STYLE_TIPS, suggestCalib, timingOf, timingText, zoneOffText } from './view/text.js';
 import { nextQuality, QUALITY, QUALITY_MIN_FRAMES, QUALITY_TOP, QUALITY_WINDOW_MS, qualityStart, qualityStats } from './view/quality.js';
 import { game, settings } from './game/state.js';
 import { cleanNick, duelCode, duelEntry, duelLog, parseDuel } from './game/duel.js';
@@ -4330,6 +4331,88 @@ function settleTitles(s, data) {   // /scores·/me 답(옛 서버는 칭호가 �
   if (data?.counts && typeof data.counts === 'object') store.set('accountCounts', cleanCounts(data.counts));
   if (s && game.summary === s && Array.isArray(data?.newTitles)) game.newTitles = data.newTitles.filter((id) => titleById(id));
 }
+
+// ===== 오늘의 미션(2026-11-23 사용자 '오늘의 미션', 작업 글 ~/.claude/plans/walkoff-missions.md, 규칙은 core/missions.js) =====
+// 한국 시간 날마다 모두 같은 세 개(쉬움·보통·어려움). 로그인했으면 서버(/scores)가 다시 돌린 판으로 세어 코인을 주고, 그 답과 /me의 그날 진행을
+// walkoff.accountMissions에 남긴다. 로그인 안 했으면 이 기기에서 같은 함수로 세어 walkoff.missions에 남기고 보이기만 한다(보상 없음. 로그인하면 서버의
+// 그날 진행으로 바뀐다). 10구 랭킹 판(조준·도전장·연습·끝내기 상황·?seed= 판 빼고)만 센다
+const missionState = (day = today()) => cleanMissionState(store.get(loggedIn() ? 'accountMissions' : 'missions', null), day);
+function startMissions() {   // recordGame. 로그인했으면 이 판으로 오른 수만 적어 두고 서버 답(settleMissions)을 기다린다
+  game.missionNote = null; game.missionGain = null;
+  if (game.fixedSeed) return;
+  const day = today(), list = missionsOn(day), gain = missionGain(list, gameFacts(game.results, game.seq, game.score));
+  if (loggedIn()) { game.missionGain = { day, gain }; return; }
+  const r = advanceMissions(store.get('missions', null), day, gain);
+  store.set('missions', r.state);
+  game.missionNote = { list, state: r.state, gain, done: r.done, earned: r.coins, bonus: r.bonus };
+}
+function settleMissions(s, data) {   // /scores·/me 답. 옛 서버는 missions가 없어 그대로
+  const m = data?.missions;
+  if (!m || typeof m !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(String(m.day))) return;
+  const state = cleanMissionState(m, m.day), list = missionsOn(state.day), int = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
+  store.set('accountMissions', state);
+  if (!s || game.summary !== s) return;
+  const gain = game.missionGain?.day === state.day ? game.missionGain.gain : list.map(() => 0);
+  game.missionNote = { list, state, gain, done: Array.isArray(m.done) ? m.done.filter((i) => Number.isInteger(i) && i >= 0 && i < list.length) : [], earned: int(m.earned), bonus: int(m.bonus) };
+}
+// 자리(2026-11-23 사용자가 시안 C를 고르고, 폰 메뉴에 카드가 안 들어가 '메뉴는 한 줄 띠, 누르면 카드 화면'으로 바꿈): 시작 화면 한 줄과
+// 메뉴 맨 위 띠(missionSummary)를 누르면 오늘의 미션 화면(drawMissions)에 카드가 뜬다
+const MISSION_TIER = ['쉬움', '보통', '어려움'], MISSION_MAX = TIER_COINS.reduce((s, x) => s + x, 0) + ALL_BONUS;
+const missionCardH = () => (view.mobile ? 20 + 24 + 3 * 24 : 24 + 28 + 3 * 28);
+const missionCard = { r: null };   // 마지막으로 그린 카드 자리(테스트·비교 그림이 본다)
+// 오늘의 미션 카드: 머리(오늘의 미션 · 받은 코인 또는 로그인 안내)와 미션 세 줄(칸, 이름, 진행 n/목표나 완료, 칸 코인). 높이를 돌려준다
+function drawMissionCard(x, y, w) {
+  const m = view.mobile, day = today(), list = missionsOn(day), st = missionState(day), gold = '#f2c94c', pad = m ? 10 : 12, head = m ? 24 : 28, row = m ? 24 : 28, h = missionCardH();
+  missionCard.r = { x, y, w, h };
+  roundRect(x, y, w, h, 14); ctx.fillStyle = 'rgba(10,16,28,0.84)'; ctx.fill(); ctx.strokeStyle = 'rgba(242,201,76,0.4)'; ctx.lineWidth = 1; ctx.stroke();
+  const got = list.reduce((sum, mm, i) => sum + (st.paid & (1 << i) ? TIER_COINS[mm.tier] : 0), 0) + (st.paid & 8 ? ALL_BONUS : 0);
+  let ly = y + pad + head / 2;
+  text('오늘의 미션', x + pad + 2, ly, { size: m ? 14 : 16, weight: 800, color: gold, align: 'left' });
+  text(loggedIn() ? `받은 코인 ${got} / ${MISSION_MAX}` : '로그인하면 코인 보상', x + w - pad - 2, ly, { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.7)', align: 'right' });
+  ly += head / 2 + row / 2;
+  list.forEach((mm, i) => {
+    const done = st.n[i] >= mm.need, chipW = m ? 38 : 44, nx = x + pad + chipW + 8, right = x + w - pad - 2;
+    roundRect(x + pad, ly - (m ? 9 : 10), chipW, m ? 18 : 20, 9); ctx.fillStyle = done ? 'rgba(242,201,76,0.22)' : 'rgba(255,255,255,0.08)'; ctx.fill();
+    text(MISSION_TIER[mm.tier], x + pad + chipW / 2, ly + 0.5, { size: m ? 10 : 11, weight: 700, color: done ? gold : 'rgba(255,255,255,0.7)' });
+    const coin = `+${TIER_COINS[mm.tier]}`, prog = done ? '완료' : `${st.n[i]}/${mm.need}`;
+    ctx.font = font(m ? 12 : 14, 800);
+    const coinW = ctx.measureText('+120').width, progW = ctx.measureText('10/10').width;
+    text(coin, right, ly, { size: m ? 12 : 14, weight: 800, color: done ? gold : 'rgba(242,201,76,0.55)', align: 'right' });
+    text(prog, right - coinW - 10, ly, { size: m ? 12 : 14, weight: 800, color: done ? gold : '#ffffff', align: 'right' });
+    ctx.font = font(m ? 13 : 15, 600);
+    text(fitText(missionName(mm), right - coinW - 10 - progW - 10 - nx), nx, ly, { size: m ? 13 : 15, weight: 600, color: done ? 'rgba(255,255,255,0.6)' : '#ffffff', align: 'left' });
+    ly += row;
+  });
+  return h;
+}
+// 한 줄 요약: ['1/3', 안 채운 첫 미션의 진행('홈런 2/3', 한 판 미션은 이름) 또는 '다 했어요']. 시작 화면은 '오늘의 미션 1/3 · 홈런 2/3 ›', 메뉴 띠는 그 뒤 두 칸
+function missionBrief() {
+  const day = today(), list = missionsOn(day), st = missionState(day), left = list.findIndex((mm, i) => st.n[i] < mm.need);
+  return [`${st.n.filter((n, i) => n >= list[i].need).length}/${list.length}`, left < 0 ? '다 했어요' : list[left].need > 1 ? `${missionShort(list[left])} ${st.n[left]}/${list[left].need}` : missionName(list[left])];
+}
+const missionSummary = () => `오늘의 미션 ${missionBrief().join(' · ')}`;
+// 오늘의 미션 화면: 날짜, 카드, 세는 판 안내, 로그인 안 했으면 로그인 안내(내 계정 화면, 14세 안내가 있다). 메뉴 띠에서 왔으면 메뉴로, 시작 화면에서 왔으면 시작 화면으로
+function openMissions(from = 'title') { game.state = 'missions'; game.missionsFrom = from; }
+const closeMissions = () => (game.missionsFrom === 'menu' ? openMenu() : goTitle());
+function drawMissions() {
+  dim(0.88);
+  const m = view.mobile, cx = view.w / 2, w = Math.min(view.w - 32, 480), top = view.h * (m ? 0.1 : 0.14), [, mo, d] = today().split('-').map(Number), lh = m ? 19 : 22;
+  text('오늘의 미션', cx, top, { size: m ? 22 : 28, weight: 800 });
+  text(`${mo}월 ${d}일 · 한국 시간 0시에 새 미션으로 바뀌어요`, cx, top + (m ? 30 : 38), { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.7)' });
+  let y = top + (m ? 50 : 62);
+  y += drawMissionCard(cx - w / 2, y, w) + (m ? 22 : 28);
+  ctx.font = font(m ? 12 : 14, 500);
+  const notes = ['10구 랭킹 판으로 세요. 연습·끝내기 상황·조준 타격·도전장·주소로 정한 공은 안 세요.', `셋 다 하면 ${ALL_BONUS}코인을 더 받아요.`];
+  for (const ln of notes.flatMap((l) => wrapWords(l, w))) { text(ln, cx, y, { size: m ? 12 : 14, weight: 500, color: 'rgba(255,255,255,0.72)' }); y += lh; }
+  if (!loggedIn()) {
+    const label = '카카오로 로그인하면 미션마다 코인을 받아요 ›';
+    ctx.font = font(m ? 13 : 15, 700);
+    const lw = Math.min(view.w - 32, ctx.measureText(label).width + 28);
+    addButton({ x: cx - lw / 2, y: y + 4, w: lw, h: 30 }, label, 'link', openAccount);
+    y += 40;
+  }
+  addButton({ x: cx - 80, y: Math.max(y + 12, view.h - (m ? 96 : 104)), w: 160, h: 46 }, game.missionsFrom === 'menu' ? '메뉴로' : '닫기', 'primary', closeMissions);
+}
 // 칭호 화면(메뉴 '기록' 묶음): 등급(전설·희귀·보통·웃음)마다 칭호와 조건, 쌓은 수(12 / 30)를 보이고 받은 것은 등급 색이다. 50개라 넘치면 끌어 넘긴다(titleList)
 function drawTitles() {
   dim(0.84);
@@ -4601,6 +4684,7 @@ async function submitScore(s, mode) {
       near: data.near ?? null, counts: data.counts ?? null, titles: data.titles ?? null };   // near·셈: 끝 화면 '한 판 더' 줄(goalLine)
     settleBest(s, data);   // 끝 화면 '최고 기록'도 계정 역대 최고로
     settleTitles(s, data);   // 이 판으로 처음 받은 칭호(서버가 정한다)
+    settleMissions(s, data);   // 이 판으로 오른 오늘의 미션과 받은 코인(서버가 정한다)
   } else { game.rankInfo = { status: status === 400 ? 'rejected' : 'error', error: data.error }; settleBest(s, null); }
 }
 
@@ -4987,11 +5071,12 @@ async function syncAccount() {
     if (res.status === 401) { logout('expired'); return; }
     if (!res.ok) return;
     const acct = await res.json();
-    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); store.remove('accountTag'); store.remove('giftRecent'); resetGiftInfo(); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
+    if (settings.playerId !== acct.playerId) { store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); store.remove('accountTag'); store.remove('accountMissions'); store.remove('giftRecent'); resetGiftInfo(); accountBestAt = 0; }   // 다른 계정의 값을 보이지 않게
     settings.playerId = acct.playerId; store.set('playerId', acct.playerId);
     setWallet(acct);
     setGiftInfo(acct);
     settleTitles(null, acct);
+    settleMissions(null, acct);
     let msg = '카카오로 로그인했어요';
     if (store.get('profileDirty', 0) && teamById(settings.team)) await pushProfile();   // 지난번에 바꾼 팀을 못 적었으면 서버의 옛 팀으로 덮지 않고 다시 보낸다
     else if (teamById(acct.team)) {
@@ -5030,7 +5115,7 @@ async function pushProfile() {
 function logout(reason) {
   Object.assign(auth, { token: null, fresh: false });
   seedTicket.ready = null;   // 받아 둔 시드는 그 계정 것이다
-  store.remove('session'); store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); store.remove('accountTag'); store.remove('giftRecent'); accountBestAt = 0;   // 메뉴 최고 기록·칭호는 다시 이 기기 값으로
+  store.remove('session'); store.remove('accountBest'); store.remove('accountTitles'); store.remove('accountTitle'); store.remove('accountCounts'); store.remove('accountTag'); store.remove('accountMissions'); store.remove('giftRecent'); accountBestAt = 0;   // 메뉴 최고 기록·칭호는 다시 이 기기 값으로
   resetGiftInfo();
   resetWallet();   // 코인과 꾸미기는 계정에 남는다. 이 브라우저는 기본 모습으로
   toast(reason === 'expired' ? '로그인이 풀렸어요. 메뉴에서 다시 로그인해 주세요' : '로그아웃했어요');
@@ -5044,7 +5129,7 @@ async function deleteAccount() {
     if (!res.ok && res.status !== 401) throw new Error(`delete ${res.status}`);
     Object.assign(auth, { token: null, fresh: false });
     seedTicket.ready = null;
-    ['session', 'pending', 'playerId', 'accountBest', 'accountTitles', 'accountTitle', 'accountCounts', 'accountTag', 'giftRecent'].forEach((k) => store.remove(k));
+    ['session', 'pending', 'playerId', 'accountBest', 'accountTitles', 'accountTitle', 'accountCounts', 'accountTag', 'accountMissions', 'giftRecent'].forEach((k) => store.remove(k));
     resetWallet(); resetGiftInfo();
     settings.playerId = ensurePlayerId();
     goTitle();
@@ -5082,7 +5167,7 @@ function drawLoginPrompt() {
 // 2026-11-23 사용자: 첫 주 숫자(infra/stats.js, 11-30부터)를 3줄에 줄여 더했다. 다 적은 목록은 아래 처리방침 링크에 있고, 줄이 늘면 320×460에서 닫기가 밀린다)
 const PRIVACY = [
   '카카오에서는 회원번호만 받아 비밀 키로 바꾼 값만 저장해요.',
-  '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인 같은 내 기록에만 써요.',
+  '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인·미션 같은 내 기록에만 써요.',
   '판 수·스윙 수, 오류 종류, 처음 온 날 들어온 길과 어디까지 쳤는지(11월 30일부터) 같은 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
   '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
   '랭킹 기록 지우기를 누르면 서버의 계정과 기록을 바로 지워요. 복구용 기록은 7일 뒤 사라져요.',
@@ -5949,7 +6034,7 @@ noInput.addEventListener('input', () => {
 
 async function refreshWallet() {
   if (!loggedIn()) return;
-  try { const res = await api('/me'); if (res.ok) { const d = await res.json(); setWallet(d); setGiftInfo(d); } else if (res.status === 401) logout('expired'); } catch { /* 이 브라우저에 남은 값으로 그린다 */ }
+  try { const res = await api('/me'); if (res.ok) { const d = await res.json(); setWallet(d); setGiftInfo(d); settleMissions(null, d); } else if (res.status === 401) logout('expired'); } catch { /* 이 브라우저에 남은 값으로 그린다 */ }
 }
 function openShop(view = 'shop') {
   game.shop = { view, tab: game.shop?.tab ?? 'bat', sel: null, no: Number.isInteger(wallet.look.no) ? wallet.look.no : 7, demo: performance.now(), busy: false };
@@ -6580,6 +6665,12 @@ function drawTitle(time) {
     const line = hot ? (streak >= 2 ? `${streak}일 연속 중 · 오늘 치면 ${streak + 1}일` : '오늘 치면 2일 연속')
       : `${streak >= 2 ? `${streak}일 연속 · ` : ''}주간 랭킹은 이번 주 최고 기록이에요`;
     text(line, cx, cy + (m ? 196 : 250) + below, { size: m ? 11 : 13, weight: hot ? 600 : 500, color: hot ? 'rgba(242,201,76,0.9)' : 'rgba(255,255,255,0.6)' });
+    if (!OG_SHOT) {   // 오늘의 미션 한 줄(2026-11-23). 누르면 오늘의 미션 화면. 링크 미리보기 그림에는 날마다 바뀌는 것을 넣지 않는다
+      const my = cy + (m ? 196 : 250) + below + (m ? 22 : 28), label = `${missionSummary()} ›`;
+      ctx.font = font(m ? 12 : 14, 700);
+      const lw = Math.min(view.w - 32, ctx.measureText(label).width + 28);
+      addButton({ x: cx - lw / 2, y: my - 14, w: lw, h: 28 }, label, 'link', () => openMissions('title'));
+    }
   }
   const mb = menuButtonRect();   // 오른쪽 위 '≡ 메뉴'(안 읽은 새 소식이나 안 본 받은 선물은 NEW), 메뉴를 한 번도 안 연 사람에게는 아래 말풍선
   drawMenuButton(mb, newsUnread() || (loggedIn() && giftBox.inbox.length > 0));
@@ -6765,6 +6856,7 @@ const MENU_ICONS = Object.fromEntries(Object.entries({
   titles: `M8 3l3.5 7M16 3l-3.5 7${circlePath(12, 15, 5)}`,   // 메달
   team: 'M8 4l-5 3 2 4 3-1v10h8V10l3 1 2-4-5-3a4 4 0 0 1-8 0z',
   shop: circlePath(12, 12, 8) + circlePath(12, 12, 4.5),
+  mission: 'M6 21V4M6 4h11l-2.5 4 2.5 4H6',   // 깃발(오늘의 미션 띠)
   me: `${circlePath(12, 8, 4)}M4 21a8 8 0 0 1 16 0`,
   calib: `${circlePath(12, 13, 7)}M12 13V9M10 3h4M18 6l1.5-1.5`,
   vib: 'M10 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM4 9v6M20 9v6',
@@ -6830,21 +6922,26 @@ const MENU_SIZE = {
   mo: { w: Infinity, top: 12, bottom: 12, side: 12, colGap: 0, headPad: 10, headPadX: 12, badge: 44, badgeFont: 16, nick: 17, chip: 11, newsGap: 8, newsH: 34, newsFont: 13,
     h3Top: 9, h3Bottom: 5, h3Font: 11, row: 44, gap: 5, rowPad: 12, icon: 30, label: 15, value: 12, foot: 24, footFont: 11, minRow: 44 },
   compact: { top: 8, bottom: 8, headPad: 8, badge: 40, badgeFont: 15, nick: 16, newsGap: 6, newsH: 30, h3Top: 6, h3Bottom: 3, gap: 4, foot: 20, minRow: 34 },
+  // 더 좁게(2026-11-23 오늘의 미션 띠를 더하며): 좁게로도 줄 높이를 못 지키면 위아래 여백·띠 사이·묶음 제목 위·줄 사이를 몇 px 더 줄이고, 그래도 넘치면
+  // 끌어 넘긴다. 진동 줄까지 12줄인 안드로이드 384×832·390×844가 전처럼 한 화면에 들고, 360×780은 띠가 늘기 전과 비슷하게(40 → 42px) 넘긴다
+  tight: { top: 4, bottom: 4, newsGap: 4, h3Top: 4, gap: 3 },
 };
 // 메뉴 자리: 묶음을 PC는 두 칸(놀기·기록 | 내 것·설정), 폰은 한 칸에 놓고 줄 높이를 남는 높이에 맞춘다. max는 넘쳐서 끌어 넘길 길이.
 // bands는 카드 아래 띠 수(새 소식·의견 보내기, 받은 선물이 있으면 '선물이 왔어요'까지 셋)
 function menuLayout(groups, bands = 2) {
   const m = view.mobile, cols = m ? [groups] : [groups.slice(0, 2), groups.slice(2)];
   const heads = Math.max(...cols.map((c) => c.length)), rows = Math.max(...cols.map((c) => c.reduce((n, g) => n + g[1].length, 0)));
-  const size = (compact) => {
-    const c = { ...MENU_SIZE[m ? 'mo' : 'pc'], ...(compact ? MENU_SIZE.compact : {}) };
+  const size = (level) => {   // 0 보통, 1 좁게(compact), 2 더 좁게(compact + tight)
+    const c = { ...MENU_SIZE[m ? 'mo' : 'pc'], ...(level >= 1 ? MENU_SIZE.compact : {}), ...(level >= 2 ? MENU_SIZE.tight : {}) };
     if (m) c.minRow = c.row;   // 폰은 줄을 44px 아래로 줄이지 않는다(카드·제목 여백만 줄이고 넘치면 끌어 넘긴다, 2026-11-05 사용자 결정)
-    if (!m && !compact) c.top = clamp(view.h * 0.07, 12, c.top);
+    if (!m && !level) c.top = clamp(view.h * 0.07, 12, c.top);
     const fixed = c.top + c.headPad * 2 + c.badge + bands * (c.newsGap + c.newsH) + heads * (c.h3Top + c.h3Font + c.h3Bottom) + c.foot + c.bottom;
     return { c, fixed, rowH: clamp((view.h - fixed) / rows - c.gap, c.minRow, c.row) };
   };
-  let L = size(false);
-  if ((view.h - L.fixed) / rows - L.c.gap < L.c.minRow) L = size(true);   // 보통 크기로는 minRow를 못 지키면
+  const fits = (l) => (view.h - l.fixed) / rows - l.c.gap >= l.c.minRow;
+  let L = size(0);
+  if (!fits(L)) L = size(1);   // 보통 크기로는 minRow를 못 지키면
+  if (!fits(L)) L = size(2);
   const W = Math.min(L.c.w, view.w - 2 * L.c.side), height = L.fixed + rows * (L.rowH + L.c.gap);
   return { ...L, cols, W, x0: (view.w - W) / 2, max: Math.max(0, height - view.h) };
 }
@@ -6892,7 +6989,7 @@ function drawMenu() {
       [settings.sound ? 'sound' : 'mute', '소리', settings.sound ? '켜짐' : '꺼짐', toggleSound, settings.sound ? '소리 켜짐' : '소리 꺼짐'],
       ...(canVibrate ? [['vib', '진동', settings.vibrate ? '켜짐' : '꺼짐', toggleVibrate, settings.vibrate ? '진동 켜짐' : '진동 꺼짐']] : [])]],
   ];
-  const gifts = loggedIn() ? giftBox.inbox : [], L = menuLayout(groups, gifts.length ? 3 : 2), c = L.c, { x0, W } = L;
+  const gifts = loggedIn() ? giftBox.inbox : [], L = menuLayout(groups, gifts.length ? 4 : 3), c = L.c, { x0, W } = L;   // 띠: 미션·(선물)·새 소식·의견
   menu.max = L.max; menu.scroll = clamp(menu.scroll, 0, menu.max);
   let y = c.top - menu.scroll;
   // 내 정보 카드: 팀 배지(팀 색), 닉네임, 칩(최고 기록·연속 기록 2일부터·코인), 오른쪽 닫기
@@ -6934,6 +7031,20 @@ function drawMenu() {
   menuIcon('close', close.x + 10, close.y + 10, 20, '#ffffff');
   ui.buttons.push({ r: close, label: '닫기', onTap: goTitle });
   y += hh + c.newsGap;
+  {   // 오늘의 미션 띠(2026-11-23): 깃발·이름·채운 수와 안 채운 첫 미션의 진행. 누르면 오늘의 미션 화면
+    const mr = { x: x0, y, w: W, h: c.newsH }, my = mr.y + mr.h / 2, mx0 = mr.x + (m ? 12 : 14), mEnd = mr.x + mr.w - (m ? 12 : 14), mis = c.newsFont + 4, mg = ctx.createLinearGradient(mr.x, 0, mr.x + mr.w, 0);
+    mg.addColorStop(0, 'rgba(98,210,140,0.26)'); mg.addColorStop(1, 'rgba(98,210,140,0.05)');
+    roundRect(mr.x, mr.y, mr.w, mr.h, 12); ctx.fillStyle = mg; ctx.fill(); ctx.strokeStyle = 'rgba(120,220,160,0.55)'; ctx.lineWidth = 1; ctx.stroke();
+    menuIcon('mission', mx0, my - mis / 2, mis, '#8fe3b0');
+    let mx = mx0 + mis + 8;
+    text('오늘의 미션', mx, my + 0.5, { size: c.newsFont, weight: 800, align: 'left' });
+    mx += ctx.measureText('오늘의 미션').width + 10;
+    text('›', mEnd, my, { size: c.newsFont + 6, weight: 700, color: 'rgba(255,255,255,0.5)', align: 'right' });
+    ctx.font = font(c.newsFont, 500);
+    text(fitText(missionBrief().join(' · '), mEnd - 16 - mx), mx, my + 0.5, { size: c.newsFont, weight: 500, color: 'rgba(255,255,255,0.78)', align: 'left' });
+    ui.buttons.push({ r: mr, label: '오늘의 미션', onTap: () => openMissions('menu') });
+    y += mr.h + c.newsGap;
+  }
   if (gifts.length) {   // '선물이 왔어요' 띠(안 본 선물만): 맨 위 선물의 보낸 사람·물건, 여럿이면 외 N개. 누르면 내 물건에서 그 물건
     const gr = { x: x0, y, w: W, h: c.newsH }, gy = gr.y + gr.h / 2, gx0 = gr.x + (m ? 12 : 14), gEnd = gr.x + gr.w - (m ? 12 : 14), gis = c.newsFont + 4, gg = ctx.createLinearGradient(gr.x, 0, gr.x + gr.w, 0);
     gg.addColorStop(0, 'rgba(242,201,76,0.3)'); gg.addColorStop(1, 'rgba(242,201,76,0.06)');
@@ -7059,22 +7170,29 @@ function drawGameOver() {
   // 한 판 더 줄(goalLine)은 팀을 고르고 로그인한 랭킹 판(도전장 판 빼고)이면 서버 답을 기다리는 동안에도 자리를 잡아 둔다(답이 온 뒤 단추가 밀려 잘못 누르지 않게).
   // 답에 줄이 없으면 빈 자리
   let y = view.h * 0.19, tm = game.aim || duel ? null : game.timing, goal = rankRow && !duel && !!settings.team && loggedIn() && !game.fixedSeed ? goalLine() ?? '' : null;
+  // 오늘의 미션 줄(2026-11-23): 로그인한 랭킹 판은 서버 답을 기다리는 동안에도 한 판 더 줄처럼 자리를 잡아 두고, 로그인 안 했으면 이 기기에서 센 진행을 쓴다.
+  // 좁아서 둘 다 못 넣으면 미션을 채운 판(win)은 한 판 더 줄을, 아니면 미션 줄을 먼저 뺀다
+  const ml = rankRow && !duel && !game.fixedSeed ? missionLine(game.missionNote, loggedIn()) : null;
+  let mission = ml ? ml.text : rankRow && !duel && !!settings.team && loggedIn() && !game.fixedSeed ? '' : null;
   // 조준 판은 의견 보내기 줄만큼 길어서, 낮은 화면(사파리 375×548)에서는 '처음으로' 밑줄이 아래 주소(drawSiteMark)와 8px 떨어지게 30px까지 당겨 올린다
   if (game.aim) y -= clamp(y + (m ? 466 : 529) - view.h, 0, 30);
   // 10구의 타이밍 습관 줄·한 판 더 줄도 그 줄만큼까지 당겨 올린다(제목부터 '처음으로'까지 폰 398·PC 462px, 랭킹 줄이 없으면 30·36px 짧다).
   // 새 칭호 띠(drawNewTitles)가 제목 바로 위에 떠 있으면 올릴 자리가 없어서 그 판은 줄을 뺀다(한 판 더 줄 먼저). 한 판 더 줄은 8px 더(사파리 375×548은
   // 기본 배치가 이미 끝에 닿아 있다)까지 올려 보고 그래도 안 들어가면 뺀다
   else {
-    const over = () => y + (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + (tm ? tmStep : 0) + (goal != null ? goalStep : 0) - view.h, banner = titleNames(game.newTitles ?? []).length > 0;
-    const lift = () => (tm ? tmStep : 0) + (goal != null ? goalStep + 8 : 0);
-    if (goal != null && over() > (banner ? 0 : lift())) goal = null;
+    const over = () => y + (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + (tm ? tmStep : 0) + (goal != null ? goalStep : 0) + (mission != null ? goalStep : 0) - view.h, banner = titleNames(game.newTitles ?? []).length > 0;
+    const lift = () => (tm ? tmStep : 0) + (goal != null ? goalStep + 8 : 0) + (mission != null ? goalStep + 8 : 0);
+    for (const key of ml?.win ? ['goal', 'mission'] : ['mission', 'goal']) {
+      if (over() <= (banner ? 0 : lift())) break;
+      if (key === 'goal') goal = null; else mission = null;
+    }
     if (tm && over() > 0 && banner) tm = null;
     y -= clamp(over(), 0, lift());
   }
   // 그래도 넘치는 낮은 화면(아이폰 SE 1세대 사파리 320×460)은 줄 사이를 0.75배까지 줄여 '처음으로'를 아래 주소(drawSiteMark) 위에 넣는다(2026-11-18 여러 기기
   // 점검: 단추가 아래 주소와 겹치고 '처음으로'가 화면 밖이었다). 글자·단추 크기는 그대로다. need: 머리 줄부터 화면 아래까지, tail: '처음으로' 가운데부터 아래까지,
   // 86: 좌타·우타(38)와 공유·다시 하기(48) 높이
-  const need = game.aim ? (m ? 466 : 529) : (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + (tm ? tmStep : 0) + (goal != null ? goalStep : 0), tail = 28 + (m ? 54 : 49);
+  const need = game.aim ? (m ? 466 : 529) : (m ? 444 : 503) - (rankRow ? 0 : m ? 30 : 36) + (tm ? tmStep : 0) + (goal != null ? goalStep : 0) + (mission != null ? goalStep : 0), tail = 28 + (m ? 54 : 49);
   const k = y + need - view.h > 1 ? clamp((view.h - y - tail - 86) / (need - tail - 86), 0.75, 1) : 1;
   const streak = playStreak();   // 며칠 이어서 쳤는지(2일부터). 점수 줄은 코인까지 붙어 길어서 제목 옆에 둔다
   const head = duel ? `${duelWho(duel)}의 도전장 · ${game.duelTry >= 2 ? `${game.duelTry}번째 도전` : `${duel.score.toLocaleString()}점`}` : `10구 도전${streak >= 2 ? ` · ${streak}일 연속` : ''}`;
@@ -7117,6 +7235,10 @@ function drawGameOver() {
     if (goal != null) {   // 한 판 더: '2위까지 1,200점'·'홈런왕까지 홈런 3개'와 '우리 팀 지금 3위'(teamLine)를 한 줄에
       const line = withTeamLine(goal, m ? 13 : 15);
       if (line) text(line, cx, y - (m ? 8 : 10), { size: m ? 13 : 15, weight: 700, color: '#f2c94c' });
+      y += goalStep * k;
+    }
+    if (mission != null) {   // 오늘의 미션: '미션 완료! 홈런 3개 +80코인'·'미션 · 홈런 2/3'·'오늘의 미션 1/3 완료'
+      if (mission) { ctx.font = font(m ? 13 : 15, 700); text(fitText(mission, view.w - 32), cx, y - (m ? 8 : 10), { size: m ? 13 : 15, weight: 700, color: ml?.win ? '#f2c94c' : 'rgba(255,255,255,0.72)' }); }
       y += goalStep * k;
     }
   }
@@ -7447,6 +7569,7 @@ function recordGame() {
     if (game.score > best) store.set('best', game.score);
     startBest(best);
     startTitles();
+    startMissions();
     if (!loggedIn() && !game.fixedSeed) setWeekBest(weekStartOf(game.summary.date), game.score);   // 로그인했으면 서버 답으로(submitScore)
     noteTiming();
     submitScore(game.summary, 'challenge');   // 10구 도전도 주간 최고 기록에 들어간다(매번 다른 공이라 외워서 칠 수 없다)
@@ -7645,6 +7768,7 @@ function primaryAction(eventTime, x, y, kind = 'mouse') {   // kind: 누른 것(
   else if (game.state === 'calib') calibTap(eventTime);
   else if ((game.state === 'records' || game.state === 'titles') && x == null) goTitle();
   else if (game.state === 'news' && x == null) openMenu();
+  else if (game.state === 'missions' && x == null) closeMissions();
   else if (game.state === 'ranking' && x == null) closeRanking();
   else if (canSkip()) skipToBeat();   // 건너뛰게 한 탭은 다음 공으로 넘어가지 않는다
   else if (game.state === 'result' && game.resultT > Math.max(0.35, game.revealAt)) next();
@@ -7738,6 +7862,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'Escape' && game.state === 'gift') giftBack();   // 선물하기도 한 단계씩
   else if (e.code === 'Escape' && game.state === 'shop' && game.shop?.giftTo) closeGiftShop();
   else if (e.code === 'Escape' && game.state === 'onboard') closeOnboard();
+  else if (e.code === 'Escape' && game.state === 'missions') closeMissions();
   else if (e.code === 'Escape' && game.state !== 'title') goTitle();
   else if (game.mode === 'practice' && game.practice && !['title', 'over', 'records', 'titles', 'news', 'calib'].includes(game.state)) {
     if (/^Digit[1-6]$/.test(e.code)) setPractice({ type: PRACTICE_TYPES[Number(e.code.slice(5)) - 1] });
@@ -7860,6 +7985,7 @@ function drawScreen(time) {
   if (game.state === 'records') { drawRecords(); drawToast(); return; }
   if (game.state === 'titles') { drawTitles(); drawToast(); return; }
   if (game.state === 'news') { drawNews(); drawToast(); return; }
+  if (game.state === 'missions') { drawMissions(); drawToast(); return; }
   if (game.state === 'onboard') { drawOnboard(); drawToast(); return; }
   if (game.state === 'ranking') { drawRanking(); drawToast(); return; }
   if (game.state === 'account') { drawAccount(); drawToast(); return; }
@@ -8043,4 +8169,4 @@ warmUp();
 // 확인용: 브라우저 콘솔이나 자동 테스트에서 쓴다
 window.walkoff = { game, settings, setBats, store, ui, boardLayout, leaveDuel, judgeSwing, judgeTake, makeSequence, styleOn, weekPitcherLines, ballTime, startGame, goTitle, today, playStreak, shareText, startCalib, applyScenario, makeScenario, ballPos, pitcherHand, PITCHES, TEAMS, teamById, batterColors, pitcherColors, weekStartOf, openOnboard, confirmOnboard, openRanking, saveTeamAndNick, RANKING_API, auth, loggedIn, openAccount, keepPending, seedTicket, prefetchSeed, SHOP_ITEMS, SHOP_SLOTS, wallet, setWallet, currentLook, openShop, coinNote, batterSpan, drawShareCard, backNumberBox, view, batterSkeleton, swingAim, batterReact, batterKeysNow: () => lastBatKeys, drawnFlight, pitcherSkeleton, pitcherHandAt, crowd, fieldPlay, fieldersAt, fieldersNow, FIELDERS, BASE1, BASE2, flightPos, flightDuration, project, startReplay, Sound, hrStreakBonus, hrStreakBefore, hitStreakBonus, hitStreakBefore, zoneOff, seamPoints, runnerAt, BASE3, batterPre, cameraFocus, runnerSkeleton, actorState, actorSkeleton, DEFENSE, groundPath, interceptGround, catchTime, sprintTime, boardView, board, runnerReach, scenarioRunners, scenarioRuns, walkoffTime, cam, CAM_HOME, chaseable, chaseEnd, battedSpin, cleanLook, scoreboardRect, boardMoment, pitcherCard, scoreboardCache, BOARD_HOLD, DUGOUT, SCENARIOS, useScenario, NEWS, news, newsUnread, openNews, menu, openMenu, menuButtonRect, aimPointer, aimCursor, AIM_RADIUS, AIM_BAT, aimAxes, aimBatPoints, aimTilt, aimHeight, gripSpot, aimGripFor, drawAimBat, weekBest, allTimeBest, resultTitleBox, canSkip, beatAt, scoreboardShows, ballInfo,
   update, render, swing, followBall, CHASE, teamBoard, rankList, titleList, myTitle, pickedTitle, shopList, countsOf, giftBox, giftList, tagText, myTag, tap: primaryAction,
-  FACE_PX, facesNow, pitcherMood, drawBatterFigure, defenseColors, quality, paused: false };
+  FACE_PX, facesNow, pitcherMood, drawBatterFigure, defenseColors, quality, missionCard, missionsOn, openMissions, paused: false };
