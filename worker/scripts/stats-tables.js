@@ -1,9 +1,11 @@
 // npm run stats에 더한 표(2026-11-18 통계 보강, 사용자 '통계 보강'): 다시 온 비율(기기·로그인 계정)과 새 기기, 도전장, 주별 요약, 무료 한도 어림.
+// 2026-11-19 첫 주 숫자 장치(2026-11-30부터 센다): 처음 온 기기의 단계, 들어온 길, 판(빌드)별 10구, 10구 다시 시작·나감.
 // 홍보(11-23) 전에 넣은 것들이 사람을 데려오고 다시 오게 하는지를 끝까지 치는 비율·다음 날 다시 오는 비율로 본다(사용자 2026-11-04 기준).
 // 원격 DB를 읽기만 하고 표를 새로 만들지 않는다. 서버 코드(src/)를 바꾸면 서버 배포가 따라서 표는 여기 두고 stats.mjs가 돌린다.
 // 날짜는 한국 시간으로 센다(src/stats.js STATS_SQL과 같은 date('now', '+9 hours'))
 import { styleOn } from '../../js/core/pitches.js';
 import { addDays } from '../src/rules.js';
+import { STEPS } from '../src/stats.js';
 
 export const DAYS = 14;   // 다시 온 비율·도전장 표의 날 수(npm run stats -- --days 21). '7일 안'까지 끝난 날이 보이려면 8일보다 길어야 한다
 export const WEEKS = 8;   // 주별 요약의 주 수
@@ -60,14 +62,63 @@ FROM dw CROSS JOIN t LEFT JOIN pw ON pw.week = dw.week LEFT JOIN bw ON bw.week =
 // 주별 요약의 '주' 다음에 그 주 투수 유형(js/core styleOn: 11-23부터 월요일마다 바뀐다)을 넣는다. 11-23부터 유형끼리 견준다
 export const withStyle = (rows) => rows.map(({ 주: week, ...rest }) => ({ 주: week, 투수: STYLE_NAMES[styleOn(week.slice(0, 10))], ...rest }));
 
+// ===== 첫 주 숫자(2026-11-19 사용자 '첫 주 숫자 장치', 작업 글 walkoff-first-week-stats.md) =====
+// 처음 온 사람이 어디서 그만두는지(처음 연 것 → 첫 스윙 → 첫 10구 끝 → 한 판 더 → 다음 날), 어떤 길로 왔는지, 어느 판(빌드)에서 10구를 끝까지 쳤는지.
+// 처음 온 기기의 첫날 줄에만 들어온 길·단계가 있다(play_devices.path·steps, 단계 비트는 src/stats.js STEPS). 10구 판의 끝맺음은 build_stats(게임 판별)
+const NEWCOMERS = "('duel', 'link')";   // 처음 온 사람. 옛 주소에서 옮긴 기기(move)는 새 주소에 처음 온 것이라 단계 표에서 뺀다
+const PATH_NAMES = { link: '그냥 링크', duel: '도전장 주소', move: '옛 주소에서 옮김' };
+const TEN_NAME = "CASE mode WHEN 'duel' THEN '도전장' ELSE '10구' END";
+// 비율 칸 '34% (12)': base 가운데 hit의 비율과 수. base가 0이면 빈칸
+const part = (hit, base) => `CASE WHEN ${base} = 0 THEN '' ELSE printf('%d%% (%d)', CAST(ROUND(100.0 * (${hit}) / ${base}) AS INTEGER), ${hit}) END`;
+const has = (bit) => `COUNT(CASE WHEN steps & ${bit} THEN 1 END)`;
+// 기기 줄마다 그 기기가 다음에 온 날. 날짜 범위를 고르기 전에 표 전체로 센다
+const nextVisit = 'SELECT day, path, steps, LEAD(day) OVER (PARTITION BY device ORDER BY day) AS next FROM play_devices';
+
+// 날짜마다 처음 온 기기와 그중 첫날 간 단계의 비율, 다음 날 다시 판을 친 비율. 오늘은 *(늘 수 있다), 다음 날이 아직 안 끝났으면 다음 날 칸에 *
+export const funnelSql = (days = DAYS) => `WITH t AS (SELECT ${TODAY} AS today), v AS (${nextVisit}),
+c AS (SELECT day, COUNT(*) AS n, ${has(STEPS.swing)} AS swing, ${has(STEPS.end)} AS done, ${has(STEPS.again)} AS again,
+  COUNT(CASE WHEN next = date(day, '+1 day') THEN 1 END) AS b1 FROM v, t WHERE path IN ${NEWCOMERS} AND day >= date(today, '-${days - 1} days') GROUP BY day)
+SELECT day || CASE WHEN day >= today THEN '*' ELSE '' END AS "날짜", n AS "처음 온 기기", ${part('swing', 'n')} AS "첫 스윙", ${part('done', 'n')} AS "첫 10구 끝",
+  ${part('again', 'n')} AS "한 판 더", ${rate('b1', 'n', 1)} AS "다음 날"
+FROM c, t ORDER BY day DESC`;
+
+// 들어온 길마다(최근 days일 합): 처음 온 기기, 첫 스윙·첫 10구 끝 비율, 다음 날 다시 판을 친 비율(다음 날이 끝난 기기만, '25% (1/4)'). 맨 아래 처음 온 사람 합계
+export const pathSql = (days = DAYS) => `WITH t AS (SELECT ${TODAY} AS today), v AS (${nextVisit}),
+w AS (SELECT path, steps, CASE WHEN date(day, '+1 day') < today THEN 1 ELSE 0 END AS over, CASE WHEN next = date(day, '+1 day') THEN 1 ELSE 0 END AS back
+  FROM v, t WHERE path IS NOT NULL AND day >= date(today, '-${days - 1} days')),
+c AS (SELECT path, COUNT(*) AS n, ${has(STEPS.swing)} AS swing, ${has(STEPS.end)} AS done, SUM(over) AS m, SUM(over * back) AS b1 FROM w GROUP BY path
+  UNION ALL SELECT '합계', COUNT(*), ${has(STEPS.swing)}, ${has(STEPS.end)}, SUM(over), SUM(over * back) FROM w WHERE path IN ${NEWCOMERS} HAVING COUNT(*) > 0)
+SELECT CASE path ${Object.entries(PATH_NAMES).map(([k, v]) => `WHEN '${k}' THEN '${v}'`).join(' ')} ELSE '처음 온 사람 합계' END AS "들어온 길", n AS "처음 온 기기",
+  ${part('swing', 'n')} AS "첫 스윙", ${part('done', 'n')} AS "첫 10구 끝",
+  CASE WHEN m = 0 THEN '' ELSE printf('%d%% (%d/%d)', CAST(ROUND(100.0 * b1 / m) AS INTEGER), b1, m) END AS "다음 날"
+FROM c ORDER BY CASE path WHEN 'link' THEN 0 WHEN 'duel' THEN 1 WHEN 'move' THEN 2 ELSE 3 END`;
+
+// 판(빌드)·모드마다(최근 days일 합): 처음·마지막 날, 시작한 판과 그중 끝까지·다시 시작·나감(숨겼다 안 돌아옴)의 비율, 그 밖(아직 치는 중·신호를 못 보낸 판).
+// 판은 처음 본 날이 늦은 것(새 판)부터, 같은 판의 모드는 붙여 둔다
+export const buildSql = (days = DAYS) => `WITH t AS (SELECT ${TODAY} AS today),
+c AS (SELECT build, mode, MIN(day) AS since, MAX(day) AS until, SUM(starts) AS s, SUM(ends) AS e, SUM(restarts) AS r, SUM(leaves) - SUM(backs) AS l
+  FROM build_stats, t WHERE day >= date(today, '-${days - 1} days') GROUP BY build, mode)
+SELECT build AS "판", ${TEN_NAME} AS "모드", since AS "처음 본 날", until AS "마지막 날", s AS "시작",
+  ${part('e', 's')} AS "끝까지", ${part('r', 's')} AS "다시 시작", ${part('l', 's')} AS "나감", s - e - r - l AS "그 밖"
+FROM c ORDER BY MIN(since) OVER (PARTITION BY build) DESC, build, mode`;
+
+// 날짜·모드마다(판을 합친다): 시작한 판과 그중 끝까지·다시 시작·나감의 비율, 숨겼다 돌아온 수, 그 밖. 오늘은 *
+export const quitSql = (days = DAYS) => `WITH t AS (SELECT ${TODAY} AS today),
+c AS (SELECT day, mode, SUM(starts) AS s, SUM(ends) AS e, SUM(restarts) AS r, SUM(leaves) AS h, SUM(backs) AS b
+  FROM build_stats, t WHERE day >= date(today, '-${days - 1} days') GROUP BY day, mode)
+SELECT day || CASE WHEN day >= today THEN '*' ELSE '' END AS "날짜", ${TEN_NAME} AS "모드", s AS "시작", ${part('e', 's')} AS "끝까지",
+  ${part('r', 's')} AS "다시 시작", ${part('h - b', 's')} AS "나감", b AS "숨겼다 돌아옴", s - e - r - (h - b) AS "그 밖"
+FROM c, t ORDER BY day DESC, mode`;
+
 // ===== 무료 한도 어림 =====
 // 판 하나가 쓰는 서버 요청과 D1 줄(2026-11-18 코드에서 셈). 로그인한 10구 판 기준이라 넉넉한 쪽이다(로그인 안 한 판·연습은 통계 묶음뿐).
 // 요청: 시드 표 POST /seeds 1 + 점수 POST /scores 1 + 그 둘의 OPTIONS 2(access-control-max-age 동안 브라우저가 답을 들고 있어 실제로는 덜 온다)
 //   + 통계 묶음 POST /events 1(신호 20개마다·화면을 떠날 때, 판 하나에 시작·끝·스윙 신호 10여 개) + 랭킹 GET /rankings 1(랭킹 화면·메뉴를 열 때, 메뉴는 1분에 한 번까지) = 6
 // 쓰기: /scores 묶음의 그날 기록 1~3(그날 첫 판이면 표·기본 키·주 색인) + 주간 요약 1 + 계정 닉네임·판 수 2(닉네임 색인) + 쓴 표 1 + 기한 지난 표 지우기 1
-//   + 코인 1 + 칭호 1, 통계 묶음 3~4(기기·모드·스윙, 그날 처음이면 줄마다 색인 하나 더) ≈ 13(2026-11-18 d1 insights 쿼리별 줄 수와 맞춰 봄)
-// 읽기: /scores 약 50(그 사람의 그 주 기록·역대 최고, 요약), /rankings 약 60(요약 2줄, 목록 50명의 입은 물건), 통계 묶음 4 ≈ 120 → 넉넉히 150
-export const PER_GAME = { requests: 6, writes: 13, reads: 150 };
+//   + 코인 1 + 칭호 1, 통계 묶음 4~5(기기·모드·10구 판별·스윙, 그날 처음이면 줄마다 색인 하나 더) ≈ 14(2026-11-18 d1 insights 쿼리별 줄 수와 맞춰 본 13에
+//   2026-11-19 첫 주 숫자 장치의 10구 판별 줄 build_stats 1을 더함. 처음 온 기기의 들어온 길·단계는 기기 줄에 같이 써서 줄이 늘지 않는다)
+// 읽기: /scores 약 50(그 사람의 그 주 기록·역대 최고, 요약), /rankings 약 60(요약 2줄, 목록 50명의 입은 물건), 통계 묶음 5 ≈ 120 → 넉넉히 150
+export const PER_GAME = { requests: 6, writes: 14, reads: 150 };
 // 무료 플랜 하루 한도(2026-11-18 공식 문서, CLAUDE-rules.md '서버 자세히'). 넘으면 과금 없이 그날 오류, 한국 시간 오전 9시에 풀린다
 export const FREE = { requests: 100000, writes: 100000, reads: 5000000 };
 const LIMIT_NAMES = { requests: '서버 요청', writes: 'D1 쓰기', reads: 'D1 읽기' };

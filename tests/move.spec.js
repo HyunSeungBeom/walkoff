@@ -82,6 +82,18 @@ function trail(page) {
   page.on('framenavigated', (f) => { if (f === page.mainFrame()) urls.push(f.url()); });
   return urls;
 }
+// 통계를 켜고(테스트 브라우저는 안 보내서 사람이 연 것처럼) 보내는 묶음을 window.__beacons에 모은다. at은 두 주소 페이지의 지금(한국 시간):
+// 첫 주 숫자는 2026-11-30부터 세서(js/infra/stats.js FUNNEL_FROM) 실제 날짜에 따라 결과가 바뀌지 않게 정한다(시계는 그대로 흐른다). 돌려주는 값은 그날
+async function catchBeacons(context, at = '2026-11-30T12:00:00+09:00') {
+  await context.addInitScript((shift) => {
+    const Real = Date;
+    window.Date = class extends Real { constructor(...a) { super(...(a.length ? a : [Real.now() + shift])); } static now() { return Real.now() + shift; } };
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    window.__beacons = [];
+    navigator.sendBeacon = (url, body) => { window.__beacons.push({ url: String(url), body: JSON.parse(String(body)) }); return true; };
+  }, Date.parse(at) - Date.now());
+  return at.slice(0, 10);
+}
 // 주소를 열고, 옮겨 간 주소(to)에서 게임이 뜰 때까지 기다린다(옛 주소는 열자마자 새 주소로 간다)
 async function openAt(page, url, to = url) {
   await page.goto(url, { waitUntil: 'commit' });
@@ -144,14 +156,10 @@ test('새 주소에 이미 있는 값은 덮지 않고, 없는 값만 채운다'
 
 // 통계 보강(B, 새 기기 수로 홍보 효과를 본다)이 옮겨 온 사람을 새 기기로 세지 않게(2026-11-17 사용자). 테스트 브라우저는 통계를 안 보내서 사람이 연 것처럼 켜고 보내는 묶음을 모은다
 test('통계용 기기 번호도 같이 넘어가 옮겨 온 사람이 새 기기로 잡히지 않는다: 새 주소의 통계 묶음이 옛 번호로 가고, 옛 주소에서 못 보낸 묶음과 옮긴 기기 수(move)도 그 번호다', async ({ page, context }) => {
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    window.__beacons = [];
-    navigator.sendBeacon = (url, body) => { window.__beacons.push({ url: String(url), body: JSON.parse(String(body)) }); return true; };
-  });
+  const day = await catchBeacons(context);
   await serveSites(context, { on: true });
   await mockApi(context);
-  const day = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10), { session, playerId, ...values } = OLD_VALUES;   // 로그인 없이 본다
+  const { session, playerId, ...values } = OLD_VALUES;   // 로그인 없이 본다
   await seed(context, 'https://hyunseungbeom.github.io', { ...values, statsQueue: JSON.stringify({ day, counts: { challenge: { starts: 2, ends: 1 } }, n: 3 }) });
   await openAt(page, `${OLD}?seed=7`, `${NEW}?seed=7`);
   expect(await page.evaluate(() => walkoff.store.get('device', null))).toBe(values.device);
@@ -161,15 +169,31 @@ test('통계용 기기 번호도 같이 넘어가 옮겨 온 사람이 새 기�
     [`${API}/events`, values.device, day, { challenge: { starts: 2, ends: 1 } }],   // 옛 주소에서 못 보낸 묶음(열자마자 보낸다)
     [`${API}/events`, values.device, day, { move: { starts: 1, ends: 0 } }],
   ]);
+  // 첫 주 숫자(2026-11-19): 옮겨 온 기기는 들어온 길 move로 세고 처음 온 사람(그냥 링크·도전장 주소)으로 세지 않는다. 옛 주소에서 못 보낸 묶음에는 싣지 않는다
+  expect(beacons.map((b) => b.body.first)).toEqual([undefined, { path: 'move', steps: 1 }]);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('walkoff.arrival')))).toEqual({ day, path: 'move', steps: 1 });
+});
+
+// 첫 주 숫자(2026-11-23): 들어온 길의 '옛 주소에서 옮겨 옴'은 새 주소에 처음 온 기기만이다. 새 주소에 와 본 기기(이 주소의 기기 번호가 있음)가
+// 나중에 옛 주소의 기록을 받아 와도 처음 온 기기로 다시 세지 않는다(옮긴 기기 수 move는 그대로 센다)
+test('새 주소에 와 본 기기가 옛 주소의 기록을 받아 오면 옮긴 기기 수는 세지만 처음 온 기기(들어온 길)로는 세지 않고, 이 주소의 기기 번호를 그대로 쓴다', async ({ page, context }) => {
+  const day = await catchBeacons(context);
+  await serveSites(context, { on: true });
+  await mockApi(context);
+  const { session, playerId, ...values } = OLD_VALUES;
+  await seed(context, 'https://walkoff.kr', { device: 'd-here-0001' });   // 전에 새 주소로 바로 와 본 기기
+  await seed(context, 'https://hyunseungbeom.github.io', values);
+  await openAt(page, `${OLD}?seed=7`, `${NEW}?seed=7`);
+  expect(await page.evaluate(() => [walkoff.store.get('device', null), walkoff.settings.team])).toEqual(['d-here-0001', 'lg']);   // 번호는 그대로, 없던 값(팀)은 받았다
+  await page.evaluate(() => dispatchEvent(new Event('pagehide')));
+  const beacons = await page.evaluate(() => window.__beacons);
+  expect(beacons.map((b) => [b.body.device, b.body.day, b.body.counts, b.body.first])).toEqual([['d-here-0001', day, { move: { starts: 1, ends: 0 } }, undefined]]);
+  expect(await page.evaluate(() => localStorage.getItem('walkoff.arrival'))).toBe(null);
 });
 
 // 2026-11-18 보안 검토: 표만 빼면 남이 심은 닉네임·팀이 로그인할 때 계정에 올라가고(syncAccount → PUT /me), 타이밍 보정은 판정을 흔든다
 test('옛 주소에서 넘어올 때만 받는다: 남이 만든 #move= 주소로는 아무 값도 넣지 않고 옮긴 기기로도 세지 않으며, # 조각은 지운다', async ({ page, context }) => {
-  await context.addInitScript(() => {   // 통계를 켜서 옮긴 기기 수(move)가 안 가는 것까지 본다
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    window.__beacons = [];
-    navigator.sendBeacon = (url, body) => { window.__beacons.push({ url: String(url), body: JSON.parse(String(body)) }); return true; };
-  });
+  await catchBeacons(context);   // 통계를 켜서 옮긴 기기 수(move)가 안 가는 것까지 본다
   const { packMove } = await site();
   await serveSites(context, { on: true });
   const calls = await mockApi(context);
@@ -181,6 +205,7 @@ test('옛 주소에서 넘어올 때만 받는다: 남이 만든 #move= 주소�
   expect(calls.filter((c) => c.auth)).toEqual([]);
   await page.evaluate(() => dispatchEvent(new Event('pagehide')));
   expect((await page.evaluate(() => window.__beacons)).filter((b) => b.body.counts?.move)).toEqual([]);
+  expect((await page.evaluate(() => window.__beacons)).map((b) => b.body.first?.path)).toEqual(['link']);   // 받은 값이 없으니 처음 온 기기(옮겨 온 기기가 아니다)
   // 망가진 조각도 지우고 아무것도 넣지 않는다
   await openAt(page, `${NEW}?seed=4#move=!!!`, `${NEW}?seed=4`);
 });

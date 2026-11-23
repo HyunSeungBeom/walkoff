@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { kstDay, addDays } from '../src/rules.js';
-import { BATCH_MAX, BATCH_KEYS, DEVICE_DAYS, EVENT_CAP, LATE_DAYS, STATS_SQL, SWING_SQL, ERRORS_SQL, cleanErrorMessage } from '../src/stats.js';
+import { BATCH_MAX, BATCH_KEYS, DEVICE_DAYS, EVENT_CAP, FUNNEL_FROM, LATE_DAYS, STATS_SQL, SWING_SQL, ERRORS_SQL, STEPS, cleanErrorMessage } from '../src/stats.js';
 import { memoryD1 } from './d1.js';
 
 // 게임이 sendBeacon으로 보내는 것처럼 text/plain 본문으로 보낸다
@@ -289,4 +289,102 @@ test('이용 통계: 기기별 줄(무작위 번호)은 90일이 지나면 묶�
   assert.deepEqual(env.DB.rows('SELECT device FROM play_devices WHERE day < ?', addDays(day, -2)).map((r) => r.device), ['d-keep-0001']);
   const plan = env.DB.rows('EXPLAIN QUERY PLAN DELETE FROM play_devices WHERE day < ?', addDays(day, -DEVICE_DAYS)).map((r) => r.detail).join(' | ');
   assert.match(plan, /SEARCH play_devices USING (?:PRIMARY KEY|INDEX sqlite_autoindex_play_devices_1) \(day<\?\)/);
+});
+
+// 첫 주 숫자는 FUNNEL_FROM 날짜의 묶음부터 받는다(2026-11-23 사용자). 이 테스트 안에서만 서버·묶음의 오늘을 그날 한낮으로 멈춘다(실제 날짜와 상관없이)
+const atDay = (t, day = FUNNEL_FROM) => t.mock.timers.enable({ apis: ['Date'], now: Date.parse(`${day}T12:00:00+09:00`) });
+// 첫 주 숫자(2026-11-19, 작업 글 walkoff-first-week-stats.md): 묶음의 build(게임 판), first(처음 온 기기의 첫날 { path, steps }),
+// 10구 counts의 restarts(끝내지 않고 새 판)·leaves(끝내지 않고 숨김)·backs(숨겼다 돌아와 그 판을 끝내거나 새 판)
+test('첫 주 숫자: 처음 온 기기의 첫날 값은 그날 기기 줄에 남기고(들어온 길은 처음 받은 값, 단계는 합친다), 처음 연 것만 실은 묶음도 받는다', async (t) => {
+  atDay(t);
+  const env = { DB: memoryD1() }, { open, swing, end, again } = STEPS;
+  assert.equal((await send(env, batch({ counts: {}, build: 'abc1234', first: { path: 'duel', steps: open } }))).status, 204);   // 열고 아무것도 안 쳤다
+  assert.equal((await send(env, batch({ counts: { duel: { starts: 1, ends: 1 } }, build: 'abc1234', first: { path: 'link', steps: open | swing | end } }))).status, 204);
+  assert.equal((await send(env, batch({ counts: { challenge: { starts: 1, ends: 0 } }, build: 'abc1234', first: { path: 'link', steps: open | again } }))).status, 204);
+  assert.equal((await send(env, batch({ device: 'd-device-0002' }))).status, 204);   // 처음 온 기기가 아니다(예전 게임도 같다)
+  assert.deepEqual(env.DB.rows('SELECT device, events, path, steps FROM play_devices ORDER BY device'), [
+    { device: 'd-device-0001', events: 3, path: 'duel', steps: open | swing | end | again },   // 처음 연 것은 신호 수에 들지 않는다
+    { device: 'd-device-0002', events: 18, path: null, steps: 0 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT mode, starts FROM play_stats ORDER BY mode'), [{ mode: 'challenge', starts: 13 }, { mode: 'duel', starts: 1 }, { mode: 'scenario', starts: 2 }]);
+});
+
+test('첫 주 숫자: 10구 판(10구·도전장)은 판별 표에 시작·끝·다시 시작·숨김·돌아옴을 더하고, 판을 안 실은 예전 묶음은 판별 표에 쓰지 않는다', async (t) => {
+  atDay(t);
+  const env = { DB: memoryD1() }, day = kstDay(Date.now());
+  const ten = { challenge: { starts: 3, ends: 1, restarts: 1, leaves: 2, backs: 1 }, duel: { starts: 1, ends: 0 }, scenario: { starts: 1, ends: 0 } };
+  assert.equal((await send(env, batch({ counts: ten, build: 'abc1234' }))).status, 204);
+  assert.equal((await send(env, batch({ counts: { challenge: { starts: 0, ends: 0, leaves: 1 } }, build: 'abc1234' }))).status, 204);   // 숨김만: 판 수 줄은 안 쓴다
+  assert.equal((await send(env, batch({ counts: { challenge: { starts: 2, ends: 2 } }, build: 'def5678' }))).status, 204);   // 같은 날 판이 바뀌었다
+  assert.equal((await send(env, batch({ counts: { challenge: { starts: 5, ends: 5 } } }))).status, 204);   // 예전 게임(판 없음)
+  assert.deepEqual(env.DB.rows('SELECT day, build, mode, starts, ends, restarts, leaves, backs FROM build_stats ORDER BY build, mode'), [
+    { day, build: 'abc1234', mode: 'challenge', starts: 3, ends: 1, restarts: 1, leaves: 3, backs: 1 },
+    { day, build: 'abc1234', mode: 'duel', starts: 1, ends: 0, restarts: 0, leaves: 0, backs: 0 },
+    { day, build: 'def5678', mode: 'challenge', starts: 2, ends: 2, restarts: 0, leaves: 0, backs: 0 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT mode, starts, ends FROM play_stats ORDER BY mode'), [
+    { mode: 'challenge', starts: 10, ends: 8 }, { mode: 'duel', starts: 1, ends: 0 }, { mode: 'scenario', starts: 1, ends: 0 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT events FROM play_devices'), [{ events: 10 + 1 + 4 + 10 }]);   // 다시 시작·숨김·돌아옴도 신호다
+});
+
+test('첫 주 숫자: 규칙에 없는 판·첫날 값, 10구 밖 모드의 다시 시작·나감, 음수는 묶음째 거절한다', async (t) => {
+  atDay(t);
+  const env = { DB: memoryD1() };
+  const bad = [
+    [batch({ build: 'ABC1234' }), 'bad_build'], [batch({ build: 'abc123' }), 'bad_build'], [batch({ build: 1234567 }), 'bad_build'], [batch({ build: null }), 'bad_build'],
+    [batch({ first: { path: 'kakao', steps: 1 } }), 'bad_first'], [batch({ first: { path: 'link', steps: 16 } }), 'bad_first'],
+    [batch({ first: { path: 'link', steps: -1 } }), 'bad_first'], [batch({ first: { path: 'link', steps: 1.5 } }), 'bad_first'],
+    [batch({ first: { path: 'link' } }), 'bad_first'], [batch({ first: 'link' }), 'bad_first'], [batch({ first: null }), 'bad_first'],
+    [batch({ counts: { scenario: { starts: 1, ends: 0, restarts: 1 } } }), 'bad_counts'],   // 다시 시작·나감은 10구 판만
+    [batch({ counts: { challenge: { starts: 1, ends: 0, leaves: -1 } } }), 'bad_counts'],
+    [batch({ counts: { challenge: { starts: 1, ends: 0, backs: '1' } } }), 'bad_counts'],
+    [batch({ counts: {} }), 'bad_counts'],   // 첫날 값도 없는 빈 묶음
+  ];
+  for (const [body, error] of bad) {
+    const r = await send(env, body);
+    assert.deepEqual([r.status, (await r.json()).error], [400, error], JSON.stringify(body));
+  }
+  for (const t of ['play_stats', 'play_devices', 'build_stats']) assert.equal(env.DB.rows(`SELECT 1 FROM ${t}`).length, 0, t);
+});
+
+test(`첫 주 숫자: 판을 실은 묶음은 10구 판별 줄도 ${BATCH_KEYS}칸에 넣는다(판이 없는 예전 묶음은 그 줄을 안 써서 그대로)`, async (t) => {
+  atDay(t);
+  const env = { DB: memoryD1() };
+  const counts = Object.fromEntries(['challenge', 'duel', 'scenario', 'practice', 'aim'].map((m) => [m, { starts: 1, ends: 0 }]));   // 판 수 5칸 + 10구 판별 2칸
+  assert.equal((await send(env, batch({ counts, build: 'abc1234' }))).status, 204);
+  const r = await send(env, batch({ counts, build: 'abc1234', swings: { 'challenge|touch': sw() } }));   // 8칸
+  assert.deepEqual([r.status, (await r.json()).error], [400, 'bad_counts']);
+  assert.equal((await send(env, batch({ counts, swings: { 'challenge|touch': sw(), 'aim|touch': sw() } }))).status, 204);   // 판이 없으면 7칸
+  const leavesOnly = { challenge: { starts: 0, ends: 0, leaves: 1 }, scenario: { starts: 1, ends: 0 } };   // 숨김만 있는 10구 칸은 판별 줄 하나만 쓴다(2칸)
+  assert.equal((await send(env, batch({ counts: leavesOnly, build: 'abc1234', swings: Object.fromEntries(['challenge|touch', 'challenge|key', 'challenge|mouse', 'aim|touch', 'aim|key'].map((k) => [k, sw()])) }))).status, 204);
+  assert.equal(env.DB.rows('SELECT 1 FROM build_stats').length, 2);
+  assert.deepEqual(env.DB.rows("SELECT leaves FROM build_stats WHERE mode = 'challenge'"), [{ leaves: 1 }]);
+});
+
+test('첫 주 숫자: FUNNEL_FROM 전 날짜의 묶음은 판 번호·첫날 값·10구 다시 시작·나감을 없는 것으로 보고 나머지만 센다(예전 서버와 같다). 기기 시계가 빨라도 서버 날짜로 본다', async (t) => {
+  atDay(t, addDays(FUNNEL_FROM, -1));
+  const env = { DB: memoryD1() }, before = kstDay(Date.now());
+  const counts = { challenge: { starts: 3, ends: 1, restarts: 1, leaves: 2, backs: 1 }, duel: { starts: 0, ends: 0, leaves: 1 } };
+  assert.equal((await send(env, batch({ counts, build: 'abc1234', first: { path: 'link', steps: 15 } }))).status, 204);
+  assert.equal((await send(env, batch({ day: FUNNEL_FROM, counts, build: 'abc1234' }))).status, 204);   // 기기 시계가 하루 빠르다: 서버 날짜(그 전날)로 센다
+  const r = await send(env, batch({ counts: {}, build: 'abc1234', first: { path: 'link', steps: 1 } }));   // 처음 연 것만 실은 묶음은 예전처럼 받지 않는다
+  assert.deepEqual([r.status, (await r.json()).error], [400, 'bad_counts']);
+  for (const extra of [{ build: 'HEAD', first: 'x' }, { counts: { scenario: { starts: 1, ends: 0, restarts: -1 } } }]) {   // 읽지 않는 칸은 모양도 보지 않는다
+    assert.equal((await send(env, batch({ counts: { scenario: { starts: 1, ends: 0 } }, ...extra }))).status, 204);
+  }
+  // 0시가 지났다: 그날 묶음부터 받는다. 늦게 온 그 전날 묶음은 여전히 새 값을 읽지 않는다
+  t.mock.timers.setTime(Date.parse(`${FUNNEL_FROM}T00:00:05+09:00`));
+  assert.equal((await send(env, batch({ counts: { challenge: { starts: 1, ends: 0, restarts: 1 } }, build: 'abc1234', first: { path: 'link', steps: 1 } }))).status, 204);
+  assert.equal((await send(env, batch({ day: before, counts: { challenge: { starts: 1, ends: 0, leaves: 1 } }, build: 'abc1234' }))).status, 204);
+  assert.deepEqual(env.DB.rows('SELECT day, events, path, steps FROM play_devices ORDER BY day'), [
+    { day: before, events: 4 + 4 + 1 + 1 + 1, path: null, steps: 0 },
+    { day: FUNNEL_FROM, events: 2, path: 'link', steps: 1 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT day, mode, starts, ends FROM play_stats ORDER BY day, mode'), [
+    { day: before, mode: 'challenge', starts: 7, ends: 2 }, { day: before, mode: 'scenario', starts: 2, ends: 0 }, { day: FUNNEL_FROM, mode: 'challenge', starts: 1, ends: 0 },
+  ]);
+  assert.deepEqual(env.DB.rows('SELECT day, build, mode, starts, ends, restarts, leaves, backs FROM build_stats'), [
+    { day: FUNNEL_FROM, build: 'abc1234', mode: 'challenge', starts: 1, ends: 0, restarts: 1, leaves: 0, backs: 0 },
+  ]);
 });

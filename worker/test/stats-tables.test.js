@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { kstDay, addDays, weekStart, TEAM_IDS } from '../src/rules.js';
 import { styleOn } from '../../js/core/pitches.js';
 import { STYLE_NAMES } from '../../js/view/text.js';
-import { deviceBackSql, playerBackSql, duelSql, weeklySql, withStyle, GAMES_SQL, limits, table } from '../scripts/stats-tables.js';
+import { deviceBackSql, playerBackSql, duelSql, weeklySql, withStyle, funnelSql, pathSql, buildSql, quitSql, GAMES_SQL, limits, table } from '../scripts/stats-tables.js';
+import { STEPS } from '../src/stats.js';
 import { memoryD1 } from './d1.js';
 
 // npm run stats에 더한 표(2026-11-18 통계 보강, scripts/stats-tables.js). 날짜는 오늘(한국 시간)에서 며칠 전으로 넣는다
@@ -77,6 +78,76 @@ test('주별 요약: 월~일로 묶어 기기·새 기기·다음 날, 10구와 
   assert.deepEqual([now['주'], now['기기'], now['새 기기'], now['10구'], now['끝까지'], now['랭킹 사람'], now['1등']], [`${mon}*`, 1, 1, 4, '25%', 0, null]);
 });
 
+// 첫 주 숫자(2026-11-19): 처음 온 기기의 첫날 줄(play_devices.path·steps)과 10구 판의 끝맺음(build_stats, 게임 판별)
+const { open, swing, end, again } = STEPS;
+const arrived = (db, device, day, path, steps) => db.prepare('INSERT INTO play_devices (day, device, mobile, events, path, steps) VALUES (?, ?, 1, 3, ?, ?)').bind(day, device, path, steps).run();
+const tenGames = (db, day, build, mode, [starts, ends, restarts, leaves, backs]) => db.prepare('INSERT INTO build_stats (day, build, mode, starts, ends, restarts, leaves, backs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+  .bind(day, build, mode, starts, ends, restarts, leaves, backs).run();
+
+test('처음 온 기기 단계: 날짜마다 도전장 주소·그냥 링크로 처음 온 기기와 그중 첫 스윙·첫 10구 끝·한 판 더·다음 날 비율. 옛 주소에서 옮긴 기기와 첫날이 아닌 줄은 안 센다. 오늘은 *', async () => {
+  const db = memoryD1();
+  await arrived(db, 'd-device-0001', ago(3), 'link', open);   // 열기만
+  await arrived(db, 'd-device-0002', ago(3), 'link', open | swing);
+  await arrived(db, 'd-device-0003', ago(3), 'duel', open | swing | end | again);
+  await seen(db, 'd-device-0003', ago(2));   // 다음 날 다시 쳤다(첫날 값은 없다)
+  await arrived(db, 'd-device-0004', ago(3), 'move', open | swing | end);   // 옛 주소에서 옮김: 새 사람이 아니다
+  await seen(db, 'd-device-0005', ago(3));   // 전부터 온 기기
+  await arrived(db, 'd-device-0006', today, 'link', open | swing | end);
+  assert.deepEqual(db.rows(funnelSql()), [
+    { 날짜: `${today}*`, '처음 온 기기': 1, '첫 스윙': '100% (1)', '첫 10구 끝': '100% (1)', '한 판 더': '0% (0)', '다음 날': '' },
+    { 날짜: ago(3), '처음 온 기기': 3, '첫 스윙': '67% (2)', '첫 10구 끝': '33% (1)', '한 판 더': '33% (1)', '다음 날': '33% (1)' },
+  ]);
+  assert.deepEqual(db.rows(funnelSql(3)).map((r) => r['날짜']), [`${today}*`]);   // --days 3
+});
+
+test('들어온 길: 길마다 처음 온 기기와 첫 스윙·첫 10구 끝 비율, 다음 날 다시 친 비율(다음 날이 끝난 기기만), 맨 아래 처음 온 사람 합계', async () => {
+  const db = memoryD1();
+  assert.deepEqual(db.rows(pathSql()), []);   // 처음 온 기기가 없으면 합계 줄도 없다
+  await arrived(db, 'd-device-0001', ago(3), 'link', open | swing);
+  await seen(db, 'd-device-0001', ago(2));
+  await arrived(db, 'd-device-0002', ago(3), 'link', open);
+  await arrived(db, 'd-device-0003', ago(1), 'link', open | swing | end);   // 다음 날(오늘)이 안 끝나서 다음 날 칸에서 뺀다
+  await arrived(db, 'd-device-0004', ago(2), 'duel', open | swing | end);
+  await seen(db, 'd-device-0004', ago(1));
+  await arrived(db, 'd-device-0005', ago(2), 'move', open | swing);
+  await arrived(db, 'd-device-0006', ago(30), 'link', open);   // 범위(14일) 밖
+  assert.deepEqual(db.rows(pathSql()), [
+    { '들어온 길': '그냥 링크', '처음 온 기기': 3, '첫 스윙': '67% (2)', '첫 10구 끝': '33% (1)', '다음 날': '50% (1/2)' },
+    { '들어온 길': '도전장 주소', '처음 온 기기': 1, '첫 스윙': '100% (1)', '첫 10구 끝': '100% (1)', '다음 날': '100% (1/1)' },
+    { '들어온 길': '옛 주소에서 옮김', '처음 온 기기': 1, '첫 스윙': '100% (1)', '첫 10구 끝': '0% (0)', '다음 날': '0% (0/1)' },
+    { '들어온 길': '처음 온 사람 합계', '처음 온 기기': 4, '첫 스윙': '75% (3)', '첫 10구 끝': '50% (2)', '다음 날': '67% (2/3)' },
+  ]);
+});
+
+test('판별 10구: 판·모드마다 처음·마지막 날, 시작과 그중 끝까지·다시 시작·나감(숨김 - 돌아옴) 비율과 그 밖. 새 판이 위, 같은 판은 붙여 둔다', async () => {
+  const db = memoryD1();
+  await tenGames(db, ago(3), 'abc1234', 'challenge', [10, 3, 4, 3, 1]);
+  await tenGames(db, ago(2), 'abc1234', 'challenge', [10, 4, 3, 2, 0]);
+  await tenGames(db, ago(2), 'def5678', 'challenge', [6, 3, 1, 1, 0]);
+  await tenGames(db, ago(1), 'def5678', 'duel', [2, 1, 0, 1, 1]);
+  await tenGames(db, ago(30), 'f00d000', 'challenge', [9, 9, 0, 0, 0]);   // 범위 밖
+  assert.deepEqual(db.rows(buildSql()), [
+    { 판: 'def5678', 모드: '10구', '처음 본 날': ago(2), '마지막 날': ago(2), 시작: 6, 끝까지: '50% (3)', '다시 시작': '17% (1)', 나감: '17% (1)', '그 밖': 1 },
+    { 판: 'def5678', 모드: '도전장', '처음 본 날': ago(1), '마지막 날': ago(1), 시작: 2, 끝까지: '50% (1)', '다시 시작': '0% (0)', 나감: '0% (0)', '그 밖': 1 },
+    { 판: 'abc1234', 모드: '10구', '처음 본 날': ago(3), '마지막 날': ago(2), 시작: 20, 끝까지: '35% (7)', '다시 시작': '35% (7)', 나감: '20% (4)', '그 밖': 2 },
+  ]);
+});
+
+test('10구 다시 시작·나감: 날짜·모드마다 판을 합쳐 시작과 그중 끝까지·다시 시작·나감 비율, 숨겼다 돌아온 수, 그 밖. 오늘은 *', async () => {
+  const db = memoryD1();
+  await tenGames(db, ago(3), 'abc1234', 'challenge', [10, 3, 4, 3, 1]);
+  await tenGames(db, ago(2), 'abc1234', 'challenge', [10, 4, 3, 2, 0]);
+  await tenGames(db, ago(2), 'def5678', 'challenge', [6, 3, 1, 1, 0]);
+  await tenGames(db, ago(1), 'def5678', 'duel', [2, 1, 0, 1, 1]);
+  await tenGames(db, today, 'def5678', 'challenge', [0, 0, 0, 1, 0]);   // 숨김만 온 날
+  assert.deepEqual(db.rows(quitSql()), [
+    { 날짜: `${today}*`, 모드: '10구', 시작: 0, 끝까지: '', '다시 시작': '', 나감: '', '숨겼다 돌아옴': 0, '그 밖': -1 },
+    { 날짜: ago(1), 모드: '도전장', 시작: 2, 끝까지: '50% (1)', '다시 시작': '0% (0)', 나감: '0% (0)', '숨겼다 돌아옴': 1, '그 밖': 1 },
+    { 날짜: ago(2), 모드: '10구', 시작: 16, 끝까지: '44% (7)', '다시 시작': '25% (4)', 나감: '19% (3)', '숨겼다 돌아옴': 0, '그 밖': 2 },
+    { 날짜: ago(3), 모드: '10구', 시작: 10, 끝까지: '30% (3)', '다시 시작': '40% (4)', 나감: '20% (2)', '숨겼다 돌아옴': 1, '그 밖': 1 },
+  ]);
+});
+
 test('주별 요약: 주 다음 칸에 그 주 투수 유형을 넣는다(11-23 강속구형부터 월요일마다, 이름은 게임 화면 글과 같다)', () => {
   const rows = withStyle([{ 주: '2026-11-30', 기기: 1 }, { 주: '2026-11-23*', 기기: 2 }, { 주: '2026-11-16', 기기: 3 }]);
   assert.deepEqual(rows, [{ 주: '2026-11-30', 투수: '기교파', 기기: 1 }, { 주: '2026-11-23*', 투수: '강속구형', 기기: 2 }, { 주: '2026-11-16', 투수: '정통파', 기기: 3 }]);
@@ -100,7 +171,7 @@ test('무료 한도: 최근 7일·지금까지 가장 많이 친 날에 판당 �
   const { rows, note } = limits(games, used, today);
   assert.deepEqual(rows, [
     { 무엇: '서버 요청', '하루 한도': 100000, 판당: 6, '한도에 닿는 판': 16666, '최근 7일 최다 날': '<0.1%', '지금까지 최다 날': '10.5%', '실제 하루 평균': '대시보드에서' },
-    { 무엇: 'D1 쓰기', '하루 한도': 100000, 판당: 13, '한도에 닿는 판': 7692, '최근 7일 최다 날': '0.2%', '지금까지 최다 날': '22.8%', '실제 하루 평균': '214줄 · 0.2%' },
+    { 무엇: 'D1 쓰기', '하루 한도': 100000, 판당: 14, '한도에 닿는 판': 7142, '최근 7일 최다 날': '0.2%', '지금까지 최다 날': '24.6%', '실제 하루 평균': '214줄 · 0.2%' },   // 14: 10구 판별 줄(2026-11-19)
     { 무엇: 'D1 읽기', '하루 한도': 5000000, 판당: 150, '한도에 닿는 판': 33333, '최근 7일 최다 날': '<0.1%', '지금까지 최다 날': '5.3%', '실제 하루 평균': '3,623줄 · <0.1%' },
   ]);
   assert.equal(note, `판 수: 최근 7일 가장 많은 날 16판(${ago(6).slice(5)}), 지금까지 가장 많은 날 1,756판(${ago(10).slice(5)})`);

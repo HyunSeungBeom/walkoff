@@ -14,6 +14,8 @@ const PREFIX = 'walkoff.', MOVED = 'walkoff.moved', SESSION = 'walkoff.session';
 const STAY = ['moved', 'loginNonce'];   // 넘기지 않는 값: 넘긴 표시, 그 주소에서 로그인을 시작할 때만 쓰는 확인값
 
 export let movedIn = false;   // 새 주소: 이번에 옛 주소의 기록을 받았다(통계로 센다)
+// 새 주소: 받기 전에 이 주소에 기기 번호가 없었다(통계 첫 주 숫자의 처음 온 기기, infra/stats.js). 전에 새 주소에 와 본 기기는 받아도 false
+export let newHere = false;
 
 // 옛 주소: 처음이면 기록을 싣고, 넘긴 표시를 남긴 뒤 새 주소로 간다. 로그인 표는 옛 주소에 남기지 않는다. 저장소를 못 쓰면 기록 없이 간다
 function leaveOld() {
@@ -40,6 +42,7 @@ function arrive() {
   try { fromOld = new URL(document.referrer).origin === new URL(OLD_SITE).origin; } catch { /* 넘어온 곳을 모른다 */ }
   if (!values || !fromOld) return;
   try {
+    newHere = localStorage.getItem(`${PREFIX}device`) == null;
     for (const [k, v] of Object.entries(values)) {
       if (!STAY.includes(k) && localStorage.getItem(PREFIX + k) == null) localStorage.setItem(PREFIX + k, v);
     }

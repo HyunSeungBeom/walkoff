@@ -2250,7 +2250,8 @@ test.describe('화면', () => {
     expect(errors).toEqual([]);
   });
 
-  // 개인정보 안내(2026-11-17 사용자: 선물 찾기·이용 통계·도전장 주소를 더해 다섯 문장. 2026-11-18 처리방침에 맞춰 1·5줄을 고치고 처리방침 링크를 닫기 옆에 둠).
+  // 개인정보 안내(2026-11-17 사용자: 선물 찾기·이용 통계·도전장 주소를 더해 다섯 문장. 2026-11-18 처리방침에 맞춰 1·5줄을 고치고 처리방침 링크를 닫기 옆에 둠.
+  // 2026-11-23 첫 주 숫자(11-30부터)를 통계 문장에 줄여 더함).
   // 폰 11px에서 통계 문장은 400px가 넘어 띄어쓰기 자리에서 나눠 그린다
   test('내 계정: 개인정보 안내는 좁은 폰(360)에서도 긴 문장을 나눠 화면 안에 다 보이고, 처리방침 링크·닫기 단추와 겹치지 않는다', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 640 });
@@ -2267,7 +2268,7 @@ test.describe('화면', () => {
     expect(rows.map((r) => r.s).join(' ')).toBe([
       '카카오에서는 회원번호만 받아 비밀 키로 바꾼 값만 저장해요.',
       '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인 같은 내 기록에만 써요.',
-      '판 수·스윙 수와 오류 종류를 세는 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
+      '판 수·스윙 수, 오류 종류, 처음 온 날 들어온 길과 어디까지 쳤는지(11월 30일부터) 같은 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
       '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
       '랭킹 기록 지우기를 누르면 서버의 계정과 기록을 바로 지워요. 복구용 기록은 7일 뒤 사라져요.',
     ].join(' '));   // 로그인했으면 14세 안내는 없다
@@ -3729,22 +3730,42 @@ test.describe('랭킹 규칙', () => {
 test.describe('이용 통계', () => {
   test.skip(({ isMobile }) => isMobile, '보내는 내용은 화면 크기와 상관없어서 PC에서만 본다');
 
-  // 게임이 보낸 신호를 window.__beacons에 남긴다. human이면 사람이 연 브라우저처럼 navigator.webdriver를 끈다
-  async function catchBeacons(page, { human }) {
-    await page.addInitScript((human) => {
+  const AFTER = '2026-11-30T12:00:00+09:00', BEFORE = '2026-11-29T12:00:00+09:00';   // 첫 주 숫자를 세는 첫날과 그 전날의 한낮
+  // 게임이 보낸 신호를 window.__beacons에 남긴다. human이면 사람이 연 브라우저처럼 navigator.webdriver를 끈다. device를 주면 그 기기 번호를
+  // 미리 넣어 처음 온 기기가 아니게 한다. 저장소에 test.blockBeacons가 있으면 보내기가 막힌다(새로고침한 뒤에도)
+  // at은 그 페이지의 지금(한국 시간): 첫 주 숫자는 FUNNEL_FROM(2026-11-30)부터 세서, 실제 날짜에 따라 결과가 바뀌지 않게 정한다(시계는 그대로 흐르고,
+  // window.__setNow로 옮긴다). 돌려주는 값은 그날(서버 검사의 오늘로 쓴다)
+  async function catchBeacons(page, { human, device = null, at = AFTER }) {
+    await page.addInitScript(({ human, device, shift }) => {
+      const Real = Date;
+      let skew = shift;
+      window.Date = class extends Real { constructor(...a) { super(...(a.length ? a : [Real.now() + skew])); } static now() { return Real.now() + skew; } };
+      window.__setNow = (iso) => { skew = Real.parse(iso) - Real.now(); };
       if (human) Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      try { if (device && !localStorage.getItem('walkoff.device')) localStorage.setItem('walkoff.device', device); } catch { /* 빈 페이지 */ }
       window.__beacons = [];
-      navigator.sendBeacon = (url, body) => { window.__beacons.push({ url, body: JSON.parse(body) }); return true; };
-    }, human);
+      navigator.sendBeacon = (url, body) => {
+        if (localStorage.getItem('test.blockBeacons')) return false;
+        window.__beacons.push({ url, body: JSON.parse(body) });
+        return true;
+      };
+    }, { human, device, shift: Date.parse(at) - Date.now() });
+    return at.slice(0, 10);
   }
   const beacons = (page) => page.evaluate(() => window.__beacons);
-  const leave = (page) => page.evaluate(() => window.dispatchEvent(new Event('pagehide')));   // 창을 닫거나 다른 앱으로 갈 때
+  const leave = (page) => page.evaluate(() => window.dispatchEvent(new Event('pagehide')));   // 창을 닫거나 새로고침할 때
+  // 다른 앱으로 갔다 오기(화면 숨김). 실제 브라우저처럼 창(window)까지 올라가는 신호로 보낸다(통계는 창에서 듣는다)
+  const setHidden = (page, hidden) => page.evaluate((h) => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h ? 'hidden' : 'visible') });
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+  }, hidden);
+  const statsMod = () => import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
 
   // 2026-11-04부터 판 시작·끝을 모아 두었다가 묶음 하나로 보낸다(js/infra/stats.js, 서버 하루 요청·DB 쓰기 한도 때문)
-  test('사람이 친 판은 시작·끝을 모아 화면을 떠날 때 묶음 하나로 보내고, 기기 번호·날짜·모드별 수·터치 여부 말고는 보내지 않는다', async ({ page }) => {
-    const { MODES, validateEvent } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
-    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    await catchBeacons(page, { human: true });
+  test('사람이 친 판은 시작·끝을 모아 화면을 떠날 때 묶음 하나로 보내고, 기기 번호·날짜·판 번호·모드별 수·터치 여부와 처음 온 기기의 첫날 값 말고는 보내지 않는다', async ({ page }) => {
+    const { MODES, STEPS, validateEvent } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
+    const today = await catchBeacons(page, { human: true });
     const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
     await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });   // 공 하나로 끝나게
     await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
@@ -3755,10 +3776,12 @@ test.describe('이용 통계', () => {
     await leave(page);
     const sent = await beacons(page);
     expect(sent.map((b) => b.url)).toEqual([`${API}/events`]);
-    const body = sent[0].body, today = kstDay(Date.now());
-    expect(Object.keys(body).sort()).toEqual(['counts', 'day', 'device', 'mobile']);
+    const body = sent[0].body;
+    expect(Object.keys(body).sort()).toEqual(['build', 'counts', 'day', 'device', 'first', 'mobile']);
     expect(body.day).toBe(today);
-    expect(body.counts).toEqual({ challenge: { starts: 1, ends: 1 }, scenario: { starts: 1, ends: 0 }, practice: { starts: 1, ends: 0 } });
+    expect(body.build).toBe('local');   // 배포한 판이면 커밋 7자리(js-커밋 폴더)
+    expect(body.first).toEqual({ path: 'link', steps: STEPS.open | STEPS.end | STEPS.again });   // 빈 저장소로 연 처음 온 기기: 처음 열고, 10구를 끝내고, 새 판(스윙은 안 했다)
+    expect(body.counts).toEqual({ challenge: { starts: 1, ends: 1 }, scenario: { starts: 1, ends: 0 }, practice: { starts: 1, ends: 0 } });   // 끝낸 10구라 다시 시작·나감이 없다
     for (const mode of Object.keys(body.counts)) expect(MODES).toContain(mode);   // 서버(worker/src/stats.js)가 받는 모드만 보낸다
     expect(validateEvent(body, today)).toMatchObject({ ok: true, value: { n: 4 } });   // 서버가 그대로 받는 모양이다
     const ids = await page.evaluate(() => ({ device: localStorage.getItem('walkoff.device'), player: walkoff.settings.playerId }));
@@ -3772,7 +3795,7 @@ test.describe('이용 통계', () => {
   });
 
   test('20개가 쌓이면 화면을 떠나기 전에도 보내고, 못 보낸 묶음(보내기가 막혔거나 창을 갑자기 닫음)은 다음에 열 때 보낸다', async ({ page }) => {
-    await catchBeacons(page, { human: true });
+    await catchBeacons(page, { human: true, device: 'd-device-0001' });   // 전에 온 기기(처음 온 기기는 처음 연 것도 20개에 든다)
     await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
     for (let i = 0; i < 21; i++) await page.evaluate(() => walkoff.startGame('practice'));
     expect((await beacons(page)).map((b) => b.body.counts)).toEqual([{ practice: { starts: 20, ends: 0 } }]);
@@ -3790,7 +3813,7 @@ test.describe('이용 통계', () => {
     await page.evaluate(() => walkoff.startGame('challenge'));
     await leave(page);
     expect(await beacons(page)).toEqual([]);
-    expect(await page.evaluate(() => localStorage.getItem('walkoff.statsQueue'))).toBe(null);
+    expect(await page.evaluate(() => ['statsQueue', 'device', 'arrival'].map((k) => localStorage.getItem(`walkoff.${k}`)))).toEqual([null, null, null]);   // 기기 번호·첫날 값도 안 만든다
   });
 
   test('이 컴퓨터에서 연 게임(?api 없이)은 세지 않는다', async ({ page }) => {
@@ -3799,13 +3822,12 @@ test.describe('이용 통계', () => {
     await page.evaluate(() => walkoff.startGame('challenge'));
     await leave(page);
     expect(await beacons(page)).toEqual([]);
-    expect(await page.evaluate(() => localStorage.getItem('walkoff.statsQueue'))).toBe(null);
+    expect(await page.evaluate(() => ['statsQueue', 'device', 'arrival'].map((k) => localStorage.getItem(`walkoff.${k}`)))).toEqual([null, null, null]);
   });
 
   test('스윙 결과 수: 10구(기준선)와 조준 실험의 스윙을 모드·입력별로 묶음에 더하고(맞힘·안타·정타·조준 자리), 조준 판 수는 aim으로 센다. 서버가 그대로 받는 모양이다', async ({ page }) => {
     const { validateEvent } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
-    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    await catchBeacons(page, { human: true });
+    const today = await catchBeacons(page, { human: true });
     const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
     await page.evaluate(() => walkoff.startGame('challenge'));   // 10구: 스페이스바로 정확히(seed 42 첫 공은 홈런)
     await page.waitForFunction(() => walkoff.game.state === 'pitch');
@@ -3818,10 +3840,10 @@ test.describe('이용 통계', () => {
     await pressAt(page, 0);
     await page.waitForFunction(() => walkoff.game.state === 'result');
     await leave(page);
-    const body = (await beacons(page))[0].body, today = kstDay(Date.now());
-    expect(body.counts).toEqual({ challenge: { starts: 1, ends: 0 }, aim: { starts: 1, ends: 0 } });
+    const body = (await beacons(page))[0].body;
+    expect(body.counts).toEqual({ challenge: { starts: 1, ends: 0, restarts: 1 }, aim: { starts: 1, ends: 0 } });   // 10구를 끝내지 않고 조준 판을 열었다(다시 시작)
     expect(body.swings).toEqual({ 'challenge|key': { swings: 1, contacts: 1, hits: 1, perfect: 1, near: 0, edge: 0, miss: 0 }, 'aim|key': { swings: 1, contacts: 1, hits: 1, perfect: 1, near: 1, edge: 0, miss: 0 } });
-    expect(validateEvent(body, today)).toMatchObject({ ok: true, value: { n: 4 } });
+    expect(validateEvent(body, today)).toMatchObject({ ok: true, value: { n: 5 } });
     expect(errors).toEqual([]);
   });
 
@@ -3837,8 +3859,7 @@ test.describe('이용 통계', () => {
 
   test('오류 종류: 우리 파일에서 난 오류와 받지 않은 거절을 싣고(남의 스크립트 오류는 뺀다), 주소·메일·한글·긴 숫자·받은 글은 지운다. 같은 오류는 하루 한 번(새로고침해도), 하루 3가지까지. 서버가 그대로 받는다', async ({ page }) => {
     const { validateEvent, cleanErrorMessage, ERROR_OS, ERROR_BROWSERS, BATCH_KEYS } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
-    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    await catchBeacons(page, { human: true });
+    const today = await catchBeacons(page, { human: true, device: 'd-device-0001' });   // 전에 온 기기(처음 온 기기의 첫날 값 없이 오류만 본다)
     const raw = '닉네임 홍길동 https://walkoff-api.walkoff-api.workers.dev/me?player=p-123 kim@naver.com seed 1234567 "{"nick":"kimbo"}"';
     await fakeModule(page, 'boom.js', `${ran} throw new TypeError(${JSON.stringify(raw)});`);
     await fakeModule(page, 'reject.js', `${ran} Promise.reject(new RangeError('bad seed 98765'));`);
@@ -3855,8 +3876,8 @@ test.describe('이용 통계', () => {
     expect(await queuedErrors(page)).toBe(3);
     expect(await beacons(page)).toEqual([]);   // 오류도 화면을 떠날 때 묶음으로 보낸다
     await leave(page);
-    const [sent] = await beacons(page), body = sent.body, today = kstDay(Date.now());
-    expect(Object.keys(body).sort()).toEqual(['counts', 'day', 'device', 'errors', 'mobile']);
+    const [sent] = await beacons(page), body = sent.body;
+    expect(Object.keys(body).sort()).toEqual(['build', 'counts', 'day', 'device', 'errors', 'mobile']);   // build: 판 번호(첫 주 숫자, 2026-11-30부터)
     expect(body.counts).toEqual({});
     expect(body.errors.map(({ os, browser, col, ...e }) => e)).toEqual([
       { build: 'local', src: 'infra/boom.js', line: 1, name: 'TypeError', message: '… seed # "…"' },
@@ -3884,8 +3905,7 @@ test.describe('이용 통계', () => {
 
   test('오류 칸도 묶음의 칸 수 상한(서버 BATCH_KEYS)에 들어서, 칸이 차 있으면 먼저 보내고 새 묶음에 싣는다. 자동 브라우저는 오류도 세지 않는다', async ({ page, browser }) => {
     const { validateEvent, MODES } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'stats.js')).href);
-    const { kstDay } = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    await catchBeacons(page, { human: true });
+    const today = await catchBeacons(page, { human: true, at: BEFORE });   // 11-30 전 칸 수(10구 판별 칸 없음). 11-30부터의 칸 수는 첫 주 숫자의 칸 수 테스트가 본다
     await fakeModule(page, 'boom.js', `${ran} throw new Error('full');`);
     await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
     const modes = MODES.filter((m) => m !== 'daily').slice(0, 7);
@@ -3896,7 +3916,7 @@ test.describe('이용 통계', () => {
     const first = await beacons(page);
     expect(first.map((b) => [Object.keys(b.body.counts).length, b.body.errors?.length ?? 0])).toEqual([[7, 0]]);
     await leave(page);
-    const all = await beacons(page), today = kstDay(Date.now());
+    const all = await beacons(page);
     expect(all.map((b) => [Object.keys(b.body.counts).length, b.body.errors?.length ?? 0])).toEqual([[7, 0], [0, 1]]);
     for (const b of all) expect(validateEvent(b.body, today).ok).toBe(true);
 
@@ -3909,6 +3929,154 @@ test.describe('이용 통계', () => {
     expect(await beacons(bot)).toEqual([]);
     expect(await bot.evaluate(() => [localStorage.getItem('walkoff.statsQueue'), localStorage.getItem('walkoff.errorsSeen')])).toEqual([null, null]);
     await bot.close();
+  });
+
+  // 첫 주 숫자(2026-11-19 사용자 '첫 주 숫자 장치'): 처음 온 기기의 첫날 단계·들어온 길, 판 번호, 10구 다시 시작·나감(js/infra/stats.js)
+  test('처음 온 기기는 열자마자 처음 연 것을 세고, 첫날 간 단계(첫 스윙·첫 10구 끝·끝낸 뒤 새 판)를 그날 묶음에 싣는다. 다시 열어도 또 세지 않고, 다음 날부터는 싣지 않는다', async ({ page }) => {
+    const { STEPS, validateEvent } = await statsMod();
+    const today = await catchBeacons(page, { human: true });
+    const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    await leave(page);   // 열고 아무것도 안 치고 나갔다
+    const [opened] = (await beacons(page)).map((b) => b.body);
+    expect(opened).toEqual({ device: expect.stringMatching(/^[a-z0-9-]{8,40}$/), mobile: false, day: today, build: 'local', counts: {}, first: { path: 'link', steps: STEPS.open } });
+    expect(validateEvent(opened, today)).toMatchObject({ ok: true, value: { n: 0, first: { path: 'link', steps: STEPS.open } } });
+    // 첫 10구(공 하나로)를 쳐서 끝내고 다시 하기
+    await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await page.waitForFunction(() => walkoff.game.state === 'pitch');
+    await pressAt(page, 0);
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over' && walkoff.game.resultT > 0.7);
+    await page.keyboard.press('Space');   // 끝 화면에서 다시 하기
+    await page.waitForFunction(() => walkoff.game.state === 'windup');
+    await leave(page);   // 새 판을 치다 나갔다
+    const played = (await beacons(page))[1].body;
+    expect(played.device).toBe(opened.device);
+    expect(played.first).toEqual({ path: 'link', steps: STEPS.open | STEPS.swing | STEPS.end | STEPS.again });
+    expect(played.counts).toEqual({ challenge: { starts: 2, ends: 1, leaves: 1 } });
+    expect(validateEvent(played, today).ok).toBe(true);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('walkoff.arrival')))).toEqual({ day: today, path: 'link', steps: 15 });
+    // 다시 열면 처음 온 기기가 아니다: 아무것도 안 하면 보낼 것이 없다
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    await leave(page);
+    expect(await beacons(page)).toEqual([]);
+    // 다음 날: 첫날 값을 싣지 않는다
+    await page.evaluate(() => { const a = JSON.parse(localStorage.getItem('walkoff.arrival')); localStorage.setItem('walkoff.arrival', JSON.stringify({ ...a, day: '2026-01-01' })); });
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    await page.evaluate(() => walkoff.startGame('practice'));
+    await leave(page);
+    const later = (await beacons(page))[0].body;
+    expect(later.counts).toEqual({ practice: { starts: 1, ends: 0 } });
+    expect(later.first).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
+
+  test('도전장 주소로 처음 온 기기는 들어온 길이 duel이다(도전장 주소·보낸 사람은 싣지 않는다). 기기 번호가 이미 있는 기기는 첫날 값을 싣지 않는다', async ({ page }) => {
+    await catchBeacons(page, { human: true });
+    const query = await duelQuery(), errors = await open(page, `${query}&api=${encodeURIComponent(API)}`, { team: null });
+    await page.evaluate(() => walkoff.startGame('challenge', false, { duel: true }));
+    await leave(page);
+    const [b] = (await beacons(page)).map((x) => x.body);
+    expect(b.first).toEqual({ path: 'duel', steps: 1 });
+    expect(b.counts).toEqual({ duel: { starts: 1, ends: 0, leaves: 1 } });   // 도전장 판도 10구 판이다
+    const text = JSON.stringify(b);
+    for (const secret of [query.slice(4), SENDER.nick, SENDER.team, String(SENDER.score)]) expect(text).not.toContain(secret);
+    // 기기 번호가 있는 기기(전에 온 기기): 첫날 값을 지워도 처음 온 기기로 세지 않는다
+    await page.evaluate(() => localStorage.removeItem('walkoff.arrival'));
+    await page.reload();
+    await page.waitForFunction(() => !!window.walkoff);
+    await page.evaluate(() => walkoff.startGame('practice'));
+    await leave(page);
+    const again = (await beacons(page)).map((x) => x.body);
+    expect(again).toHaveLength(1);
+    expect(again[0].first).toBeUndefined();
+    expect(await page.evaluate(() => localStorage.getItem('walkoff.arrival'))).toBe(null);
+    expect(errors).toEqual([]);
+  });
+
+  test('10구를 끝내지 않고 새 판을 열면 다시 시작, 치다가 화면을 숨기면 나감으로 세어 바로 보내고, 돌아와 그 판을 끝내면 돌아옴으로 센다. 끝낸 뒤 새 판은 다시 시작이 아니다', async ({ page }) => {
+    const { validateEvent } = await statsMod();
+    const today = await catchBeacons(page, { human: true, device: 'd-device-0001' });
+    const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    await page.evaluate(() => { walkoff.startGame('challenge'); walkoff.startGame('challenge'); });   // 공을 보고 처음부터(다시 시작)
+    await setHidden(page, true);   // 치다가 다른 앱으로: 나감을 세어 바로 보낸다(돌아오지 않을 수 있다)
+    expect((await beacons(page)).map((b) => b.body.counts)).toEqual([{ challenge: { starts: 2, ends: 0, restarts: 1, leaves: 1 } }]);
+    await setHidden(page, false);
+    await setHidden(page, true);   // 같은 판을 또 숨겨도 나감은 한 번
+    await setHidden(page, false);
+    await page.evaluate(() => Object.assign(walkoff.game, { left: 1, extra: 99 }));   // 돌아와 마저 쳐서 끝낸다(공 하나로)
+    await page.keyboard.press('Space');   // 멈춘 공 이어 가기
+    await page.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => walkoff.game.state === 'over');
+    await page.evaluate(() => walkoff.startGame('challenge'));   // 끝낸 뒤 새 판: 다시 시작이 아니다
+    await page.keyboard.press('Escape');   // 처음으로
+    await page.evaluate(() => walkoff.startGame('practice'));   // 처음으로 뒤 새 판: 다시 시작
+    await leave(page);
+    const sent = (await beacons(page)).map((b) => b.body), sum = {};
+    for (const b of sent) {
+      expect(validateEvent(b, today).ok).toBe(true);
+      expect(b.first).toBeUndefined();   // 전에 온 기기
+      for (const [k, v] of Object.entries(b.counts.challenge ?? {})) sum[k] = (sum[k] ?? 0) + v;
+    }
+    expect(sum).toEqual({ starts: 3, ends: 1, restarts: 2, leaves: 1, backs: 1 });
+    expect(errors).toEqual([]);
+  });
+
+  test('묶음이 DB에 쓸 칸(모드, 10구 판별, 스윙)이 서버 상한을 넘게 되면 먼저 보내고 새 묶음을 연다', async ({ page }) => {
+    const { BATCH_KEYS, validateEvent } = await statsMod();
+    const today = await catchBeacons(page, { human: true, device: 'd-device-0001' });
+    await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    expect(await page.evaluate(async () => (await import('./js/infra/stats.js')).BATCH_KEYS)).toBe(BATCH_KEYS);   // 게임과 서버가 같은 상한
+    // 못 보낸 오늘 묶음: 모드 3칸 + 스윙 3칸(10구 판은 판별 칸까지 두 칸이라 하나만 더 오면 넘는다)
+    const sw = { swings: 1, contacts: 0, hits: 0, perfect: 0, near: 0, edge: 0, miss: 0 };
+    const counts = { scenario: { starts: 1, ends: 0 }, practice: { starts: 1, ends: 0 }, aim: { starts: 1, ends: 0 } }, swings = { 'aim|key': sw, 'aim|mouse': sw, 'aim|touch': sw };
+    await page.evaluate((q) => { localStorage.setItem('test.blockBeacons', '1'); localStorage.setItem('walkoff.statsQueue', JSON.stringify(q)); }, { day: today, build: 'local', counts, swings, n: 6 });
+    await page.reload();   // 열 때 보내기가 막혀서 그 묶음을 이어서 모은다
+    await page.waitForFunction(() => !!window.walkoff);
+    await page.evaluate(() => { localStorage.removeItem('test.blockBeacons'); walkoff.startGame('challenge'); });
+    const sent = (await beacons(page)).map((b) => b.body);
+    expect(sent).toHaveLength(1);   // 10구 칸(두 칸)을 더하기 전에 모은 묶음을 먼저 보냈다
+    expect([sent[0].counts, sent[0].swings]).toEqual([counts, swings]);
+    expect(validateEvent({ ...sent[0], counts: { ...counts, challenge: { starts: 1, ends: 0 } } }, today)).toMatchObject({ ok: false, error: 'bad_counts' });   // 합쳤으면 서버가 묶음째 버렸다
+    await leave(page);
+    const all = (await beacons(page)).map((b) => b.body);
+    expect(all[1].counts).toEqual({ challenge: { starts: 1, ends: 0, leaves: 1 } });
+    for (const b of all) expect(validateEvent(b, today).ok).toBe(true);
+  });
+
+  // 2026-11-23 사용자: 처리방침에 새로 받는 정보를 7일 전에 알려야 해서 첫 주 숫자는 2026-11-30 0시(한국 시간)부터 센다(js/infra/stats.js FUNNEL_FROM)
+  test('첫 주 숫자는 11-30 0시 전에는 안 보낸다: 처음 온 기기도 열기만 하면 보낼 것이 없고, 묶음은 판 번호·첫날 값·10구 다시 시작·나감 없이 예전 그대로다. 서버도 그 전 날짜 묶음의 새 값은 읽지 않는다. 0시가 지나면 그때 연 판부터 센다', async ({ page }) => {
+    const { FUNNEL_FROM, validateEvent } = await statsMod();
+    const today = await catchBeacons(page, { human: true, at: '2026-11-29T23:59:00+09:00' });
+    const errors = await open(page, `?seed=42&api=${encodeURIComponent(API)}`);
+    expect(await page.evaluate(async () => (await import('./js/infra/stats.js')).FUNNEL_FROM)).toBe(FUNNEL_FROM);   // 게임과 서버가 같은 날
+    await leave(page);   // 처음 온 기기가 열기만 하고 나갔다
+    expect(await beacons(page)).toEqual([]);
+    expect(await page.evaluate(() => ['device', 'arrival'].map((k) => localStorage.getItem(`walkoff.${k}`)))).toEqual([null, null]);   // 기기 번호도 그때 만들지 않는다
+    await page.evaluate(() => { walkoff.startGame('challenge'); walkoff.startGame('challenge'); });   // 끝내지 않고 처음부터
+    expect(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('walkoff.statsQueue'))))).toEqual(['day', 'counts', 'n']);   // 기기에 둔 묶음도 예전 모양
+    await setHidden(page, true);   // 치다가 다른 앱으로
+    await setHidden(page, false);
+    const [b] = (await beacons(page)).map((x) => x.body);
+    expect(b).toEqual({ device: expect.stringMatching(/^[a-z0-9-]{8,40}$/), mobile: false, day: today, counts: { challenge: { starts: 2, ends: 0 } } });
+    expect(validateEvent(b, today)).toMatchObject({ ok: true, value: { build: null, first: null, n: 2 } });
+    // 서버: 그 전 날짜의 묶음은 새 값을 없는 것으로 본다. 기기 시계가 빨라 날짜가 앞서 와도 서버 날짜로 본다
+    const extra = { ...b, build: 'local', first: { path: 'link', steps: 1 }, counts: { challenge: { starts: 2, ends: 0, restarts: 1, leaves: 1 } } };
+    expect(validateEvent(extra, today)).toMatchObject({ ok: true, value: { build: null, first: null, counts: [['challenge', 2, 0, 0, 0, 0]], n: 2 } });
+    expect(validateEvent({ ...extra, day: FUNNEL_FROM }, today)).toMatchObject({ ok: true, value: { day: today, build: null, first: null, n: 2 } });
+    expect(validateEvent({ ...extra, day: FUNNEL_FROM }, FUNNEL_FROM)).toMatchObject({ ok: true, value: { build: 'local', first: { path: 'link', steps: 1 }, n: 4 } });
+    // 0시가 지났다: 11-29에 처음 온 기기는 처음 온 기기로 세지 않고(첫날 값 없음), 그때부터 친 10구는 판 번호와 다시 시작·나감을 싣는다
+    await page.evaluate(() => window.__setNow('2026-11-30T00:00:05+09:00'));
+    await page.evaluate(() => { walkoff.startGame('challenge'); walkoff.startGame('challenge'); });
+    await leave(page);
+    const later = (await beacons(page)).slice(1).map((x) => x.body);
+    expect(later).toEqual([{ device: b.device, mobile: false, day: FUNNEL_FROM, build: 'local', counts: { challenge: { starts: 2, ends: 0, restarts: 1, leaves: 1 } } }]);
+    expect(validateEvent(later[0], FUNNEL_FROM)).toMatchObject({ ok: true, value: { build: 'local', first: null, n: 4 } });
+    expect(await page.evaluate(() => localStorage.getItem('walkoff.arrival'))).toBe(null);
+    expect(errors).toEqual([]);
   });
 });
 

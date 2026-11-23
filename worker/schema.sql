@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS play_devices (
   device TEXT NOT NULL,                          -- 게임이 기기에 저장한 무작위 번호. 랭킹 ID·계정과 잇지 않는다
   mobile INTEGER NOT NULL DEFAULT 0,             -- 터치 기기면 1
   events INTEGER NOT NULL DEFAULT 0,             -- 그날 받은 신호 수(EVENT_CAP까지만 센다)
+  path TEXT,                                     -- 처음 온 기기의 첫날만: 들어온 길(duel 도전장 주소, link 그냥 링크, move 옛 주소에서 옮김). 2026-11-30부터, migrations/0015_funnel.sql
+  steps INTEGER NOT NULL DEFAULT 0,              -- 처음 온 기기의 첫날만: 간 단계를 더한 수(1 처음 연 것, 2 첫 스윙, 4 첫 10구 끝, 8 10구를 끝낸 뒤 새 판)
   PRIMARY KEY (day, device)
 );
 -- 스윙 결과 수(2026-11-05 조준 타격 실험, src/stats.js). 이미 있던 DB에는 migrations/0006_swing_stats.sql로 더했다
@@ -99,6 +101,18 @@ CREATE TABLE IF NOT EXISTS error_stats (
   browser TEXT NOT NULL,                         -- kakao, naver, instagram, facebook, whale, samsung, edge, firefox, chrome, safari, other
   devices INTEGER NOT NULL DEFAULT 0,            -- 그날 이 오류를 낸 기기 수
   PRIMARY KEY (day, build, src, line, col, name, message, os, browser)
+);
+-- 10구 판(도전장 판 포함)이 어떻게 끝났는지 게임 판(빌드)별로(2026-11-19 첫 주 숫자 장치, 2026-11-30부터 센다, src/stats.js). 이미 있던 DB에는 migrations/0015_funnel.sql로 더했다
+CREATE TABLE IF NOT EXISTS build_stats (
+  day TEXT NOT NULL,                             -- 한국 시간 날짜 YYYY-MM-DD
+  build TEXT NOT NULL,                           -- 게임 판: 배포한 커밋 7자리(오른쪽 아래 #build. 이 컴퓨터에서 연 게임은 local)
+  mode TEXT NOT NULL,                            -- challenge(10구), duel(도전장 판)
+  starts INTEGER NOT NULL DEFAULT 0,             -- 시작한 판
+  ends INTEGER NOT NULL DEFAULT 0,               -- 끝까지 친 판
+  restarts INTEGER NOT NULL DEFAULT 0,           -- 끝내지 않고 새 판을 연 수(처음부터, 처음으로 뒤 새 판)
+  leaves INTEGER NOT NULL DEFAULT 0,             -- 끝내지 않고 화면을 숨긴 수(다른 앱, 창 닫기, 새로고침)
+  backs INTEGER NOT NULL DEFAULT 0,              -- 숨겼다 돌아와 그 판을 끝내거나 새 판을 연 수(나감 = leaves - backs)
+  PRIMARY KEY (day, build, mode)
 );
 
 -- 10구 도전 시드 표(2026-10-30, src/seeds.js). 서버가 판마다 내주고 점수와 함께 한 번만 받는다. 이미 있던 DB에는 migrations/0004_seed_tokens.sql로 더했다

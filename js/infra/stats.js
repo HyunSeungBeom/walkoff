@@ -14,33 +14,56 @@
 // 같은 오류는 기기마다 하루 한 번, 하루 3가지까지(쓰기 한도). 오류 칸도 서버의 묶음 칸 상한(BATCH_KEYS)에 들어서, 칸이 차면 먼저 보내고 새 묶음을 연다.
 // index.html이 move.js 다음, 게임(main.js)보다 먼저 이 모듈을 따로 띄워서 게임 모듈이 아예 못 떠도(문법 오류·파일 못 받음) 센다.
 // 옛 주소에서 move.js가 새 주소로 보내며 일부러 멈출 때(MOVE_ON)는 세지 않는다
+// 첫 주 숫자(2026-11-19 사용자 '첫 주 숫자 장치', 작업 글 walkoff-first-week-stats.md): 처음 온 사람이 어디서 그만두는지, 어떤 길로 왔는지, 어느 판이었는지 센다.
+// 처리방침에 새로 받는 정보를 7일 전에 알려야 해서 2026-11-30(한국 시간)부터 센다(2026-11-23 사용자, FUNNEL_FROM). 그 전 날짜의 묶음은 아래 셋 없이 예전 그대로다
+//  build: 이 판의 커밋 7자리(배포한 js 폴더 이름 js-커밋7자리, 오른쪽 아래 #build와 같다. 이 컴퓨터에서 연 게임은 local). 하루 안에 판이 바뀌어도 갈라 센다
+//  first: 처음 온 기기의 첫날(한국 시간) 묶음에만 { path, steps }. 처음 온 기기는 열 때 기기 번호가 없던 기기다(옛 주소의 기록을 받아 온 기기는 받기 전에
+//    이 주소에 없었으면, infra/move.js newHere). path는 들어온 길 갈래 이름뿐이다(도전장 주소로 옴 duel, 그냥 링크 link, 옛 주소에서 기록을 가져옴 move.
+//    도전장 주소나 보낸 사람은 보내지 않는다). steps는 첫날 간 단계를 더한 수(STEP). 이 기기에는 walkoff.arrival { day, path, steps }로 남는다
+//  10구(도전장 판 포함) counts에 restarts(끝내지 않고 새 판을 엶: 처음부터·처음으로 뒤 새 판)·leaves(끝내지 않고 화면을 숨김)·backs(숨겼다 돌아와
+//    그 판을 끝내거나 새 판을 엶)를 더한다. 나감은 leaves - backs다. 처음 온 사람은 돌아오지 않을 때가 많아서 숨길 때 바로 세어 보낸다
+// move.js는 movedIn·newHere 때문에 가져온다(move.js를 못 받으면 이 모듈도 못 뜬다. 게임도 move.js를 맨 먼저 가져와서 그때는 같이 못 뜬다)
 import { RANKING_API } from './api.js';
+import { movedIn, newHere } from './move.js';
 import { MOVE_ON, OLD_SITE, siteOf } from './site.js';
 import { store } from './store.js';
 
 const SITE = siteOf(location.href);
 const STATS_ON = !navigator.webdriver && (SITE != null || new URLSearchParams(location.search).has('api')) && !(MOVE_ON && SITE === OLD_SITE);
-const FLUSH_EVENTS = 20, QUEUE_KEY = 'statsQueue';
-export const BATCH_KEYS = 7;   // 묶음 하나의 모드·스윙·오류 칸 수 상한(서버 worker/src/stats.js와 같다)
+const FLUSH_EVENTS = 20, QUEUE_KEY = 'statsQueue', ARRIVAL_KEY = 'arrival';
+export const BATCH_KEYS = 7;   // 묶음 하나의 모드·스윙·오류 칸 수 상한(서버 worker/src/stats.js와 같다). 판 번호를 실은 묶음은 10구 모드를 판별 칸(build_stats)까지 두 칸으로 센다
+export const FUNNEL_FROM = '2026-11-30';   // 첫 주 숫자(판 번호·첫날 값·10구 다시 시작과 나감)를 세는 첫날(한국 시간, 서버 FUNNEL_FROM과 같다)
 const ERRORS_PER_DAY = 3, SEEN_KEY = 'errorsSeen', MESSAGE_MAX = 80;
+const TEN = ['challenge', 'duel'];   // 10구 판(도전장 판 포함): 판별로 끝까지·다시 시작·나감을 센다
+const NOT_PLAYS = ['invite', 'move'];   // 판이 아닌 모드(도전장 보낸 수, 옛 주소에서 옮긴 기기)
+const SWING_MODES = ['challenge', 'aim'];   // 스윙 결과 수를 세는 모드(서버 SWING_MODES와 같다)
+const PATHS = ['duel', 'link', 'move'];
+const STEP = { open: 1, swing: 2, end: 4, again: 8 };   // 처음 연 것, 첫 스윙, 첫 10구 끝, 10구를 끝낸 뒤 새 판(서버 STEPS와 같다)
+const DEVICE_RE = /^[a-z0-9-]{8,40}$/;
 const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);   // 서버(worker/src/rules.js kstDay)와 같은 한국 시간 날짜
-let queue = null;   // { day, counts, swings?, errors?, n }. 저장소를 못 쓰는 브라우저(사생활 보호 모드)도 이 판 동안은 모아 보낸다
+const funnelOn = (day) => day >= FUNNEL_FROM;
+let queue = null;   // { day, build?, counts, swings?, errors?, n }(build는 FUNNEL_FROM부터). 저장소를 못 쓰는 브라우저(사생활 보호 모드)도 이 판 동안은 모아 보낸다
+let arrival = null;   // 처음 온 기기의 첫날 { day, path, steps }(walkoff.arrival). 처음 온 기기가 아니면 null
+let live = null;   // 지금 치는 10구 판 { mode, left }. 시작하면 생기고 끝나거나 새 판을 열면 없어진다. left: 그 판을 치다 화면을 숨겼다
+let deviceId = null;   // 저장소를 못 쓰는 브라우저도 이 판 동안은 같은 번호로 보낸다(전에는 보낼 때마다 새 번호라 기기가 여러 대로 셌다)
 
 function ensureDeviceId() {
   const saved = String(store.get('device', ''));
-  if (/^[a-z0-9-]{8,40}$/.test(saved)) return saved;
-  const id = globalThis.crypto?.randomUUID?.() ?? `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  store.set('device', id);
-  return id;
+  if (DEVICE_RE.test(saved)) return saved;
+  deviceId ??= globalThis.crypto?.randomUUID?.() ?? `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  store.set('device', deviceId);
+  return deviceId;
 }
 
-// 모은 묶음을 보낸다. 보내기를 받아 주면(sendBeacon이 true) 비우고, 못 보내면 남겨 두었다가 다음에 다시 보낸다
+// 모은 묶음을 보낸다. 보내기를 받아 주면(sendBeacon이 true) 비우고, 못 보내면 남겨 두었다가 다음에 다시 보낸다.
+// 처음 온 기기의 첫날 묶음에는 그때까지 간 단계를 싣는다(서버가 그날 기기 줄에 합친다)
 function flush(q = queue) {
   if (!q?.n) return;
   try {
+    const first = funnelOn(q.day) && arrival?.day === q.day ? { path: arrival.path, steps: arrival.steps } : null;
     const body = JSON.stringify({
-      device: ensureDeviceId(), mobile: matchMedia('(pointer: coarse)').matches, day: q.day, counts: q.counts,
-      ...(q.swings ? { swings: q.swings } : {}), ...(q.errors?.length ? { errors: q.errors } : {}),
+      device: ensureDeviceId(), mobile: matchMedia('(pointer: coarse)').matches, day: q.day, ...(q.build ? { build: q.build } : {}), counts: q.counts,
+      ...(q.swings ? { swings: q.swings } : {}), ...(q.errors?.length ? { errors: q.errors } : {}), ...(first ? { first } : {}),
     });
     if (!navigator.sendBeacon(`${RANKING_API}/events`, body)) return;
   } catch { return; /* 통계를 못 보내도 게임은 그대로 */ }
@@ -48,39 +71,66 @@ function flush(q = queue) {
   store.remove(QUEUE_KEY);
 }
 
-// 오늘 묶음. 날짜가 바뀌면 지난날 묶음을 먼저 보낸다(못 보내면 버린다)
+// 오늘 묶음. 날짜가 바뀌면 지난날 묶음을 먼저 보낸다(못 보내면 버린다). 판 번호는 FUNNEL_FROM부터 싣는다(그 전에는 저장소의 묶음도 예전과 같다)
+const buildFor = (day) => (funnelOn(day) ? BUILD : undefined);
 function today() {
   const day = kstDay();
   if (queue && queue.day !== day) { flush(); queue = null; }
-  return (queue ??= { day, counts: {}, n: 0 });
+  return (queue ??= { day, build: buildFor(day), counts: {}, n: 0 });
 }
-// 새 칸(모드·스윙·오류)을 하나 더할 오늘 묶음. 칸이 서버 상한만큼 차 있으면 먼저 보내고 새 묶음을 연다. 못 보내 그대로 차 있으면 null(이번 것은 세지 않는다)
-const keysOf = (q) => Object.keys(q.counts).length + Object.keys(q.swings ?? {}).length + (q.errors?.length ?? 0);
-function roomFor(isNew) {
-  if (isNew && keysOf(today()) >= BATCH_KEYS) flush();
+// 묶음이 DB에 쓸 칸 수: 모드마다 한 칸(판 번호를 실은 묶음의 10구는 판별 칸까지 두 칸), 스윙은 모드·입력마다, 오류는 하나마다 한 칸
+const costOf = (q, mode) => (q.build && TEN.includes(mode) ? 2 : 1);
+const keysOf = (q) => Object.keys(q.counts).reduce((s, m) => s + costOf(q, m), 0) + Object.keys(q.swings ?? {}).length + (q.errors?.length ?? 0);
+// 새 칸 cost개를 더할 오늘 묶음. 서버 상한을 넘으면 먼저 보내고 새 묶음을 연다. 못 보내 그대로 차 있으면 null(이번 것은 세지 않는다)
+function roomFor(cost) {
+  if (cost && keysOf(today()) + cost > BATCH_KEYS) flush();
   const q = today();
-  return isNew && keysOf(q) >= BATCH_KEYS ? null : q;
+  return cost && keysOf(q) + cost > BATCH_KEYS ? null : q;
 }
 function added() {
   queue.n += 1;
   store.set(QUEUE_KEY, queue);
   if (queue.n >= FLUSH_EVENTS) flush();
 }
+// 그 모드 칸에 key(starts·ends·restarts·leaves·backs)를 하나 더한다
+function bump(mode, key) {
+  const t = today(), q = roomFor(t.counts[mode] ? 0 : costOf(t, mode));
+  if (!q) return;
+  const c = (q.counts[mode] ??= { starts: 0, ends: 0 });
+  c[key] = (c[key] ?? 0) + 1;
+  added();
+}
+// 처음 온 기기의 첫날 단계(STEP)를 적는다. 새 단계면 신호 하나로 세어 다음 묶음에 실린다. 첫날이 지나면 더 적지 않는다
+function step(bit) {
+  if (arrival?.day !== kstDay() || arrival.steps & bit) return;
+  arrival.steps |= bit;
+  store.set(ARRIVAL_KEY, arrival);
+  today();
+  added();
+}
 
 // type은 'start'(판 시작)·'end'(판 끝), mode는 그 판의 모드
 export function track(type, mode) {
   if (!STATS_ON) return;
-  const q = roomFor(!today().counts[mode]);
-  if (!q) return;
-  const c = (q.counts[mode] ??= { starts: 0, ends: 0 });
-  c[type === 'start' ? 'starts' : 'ends'] += 1;
-  added();
+  if (type === 'start' && !NOT_PLAYS.includes(mode)) {   // 새 판: 끝내지 않은 10구가 있었으면 다시 시작이다
+    if (live) { bump(live.mode, 'restarts'); if (live.left) bump(live.mode, 'backs'); }
+    live = TEN.includes(mode) && funnelOn(kstDay()) ? { mode, left: false } : null;   // 다시 시작·나감은 FUNNEL_FROM부터 시작한 판만 센다
+    if (arrival?.steps & STEP.end) step(STEP.again);
+  }
+  if (type === 'end') {
+    if (live?.mode === mode) { if (live.left) bump(mode, 'backs'); live = null; }
+    if (TEN.includes(mode)) step(STEP.end);
+  }
+  bump(mode, type === 'start' ? 'starts' : 'ends');
 }
 
-// 스윙 하나: mode는 'challenge'·'aim', input은 'mouse'·'touch'·'key', r은 판정 결과(맞힘은 파울 포함, aimZone은 조준 판만)
+// 스윙 하나: mode는 판의 모드('challenge'·'aim'이면 스윙 결과 수도 센다, 다른 모드는 처음 온 기기의 첫 스윙만), input은 'mouse'·'touch'·'key',
+// r은 판정 결과(맞힘은 파울 포함, aimZone은 조준 판만)
 export function trackSwing(mode, input, r) {
   if (!STATS_ON) return;
-  const key = `${mode}|${input}`, q = roomFor(!today().swings?.[key]);
+  step(STEP.swing);
+  if (!SWING_MODES.includes(mode)) return;
+  const key = `${mode}|${input}`, q = roomFor(today().swings?.[key] ? 0 : 1);
   if (!q) return;
   const s = ((q.swings ??= {})[key] ??= { swings: 0, contacts: 0, hits: 0, perfect: 0, near: 0, edge: 0, miss: 0 });
   s.swings += 1;
@@ -89,6 +139,18 @@ export function trackSwing(mode, input, r) {
   if (r.perfect) s.perfect += 1;
   if (r.aimZone) s[r.aimZone] += 1;
   added();
+}
+
+// 화면을 숨겼다(다른 앱, 창 닫기, 새로고침): 치던 10구는 나감으로 한 번 세고, 모은 묶음을 보낸다
+function hide() {
+  if (live && !live.left) { live.left = true; bump(live.mode, 'leaves'); }
+  flush();
+}
+
+// 저장해 둔 첫날 값. 모양이 틀리면 없는 것으로 본다
+function savedArrival() {
+  const a = store.get(ARRIVAL_KEY, null);
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(a?.day)) && PATHS.includes(a.path) && Number.isInteger(a.steps) ? a : null;
 }
 
 // 오류 메시지에서 사람이나 주소를 알아볼 수 있는 것을 지운다: 주소(물음표 뒤 포함)·메일, 큰따옴표 안(JSON 조각처럼 받은 글), 이름이 아닌 작은따옴표 안,
@@ -161,7 +223,7 @@ function noteError(e) {
       seen = s?.day === day && Array.isArray(s.keys) ? s : { day, keys: [] };
     }
     if (seen.keys.includes(key) || seen.keys.length >= ERRORS_PER_DAY) return;
-    const q = roomFor(true);
+    const q = roomFor(1);
     if (!q) return;
     seen.keys.push(key);
     store.set(SEEN_KEY, seen);
@@ -171,13 +233,25 @@ function noteError(e) {
 }
 
 if (STATS_ON) {
+  // 처음 온 기기: 열 때 기기 번호가 없었다. 옛 주소의 기록을 받아 온 기기는 번호도 들고 오므로 받기 전에 이 주소에 없었는지(newHere)로 본다.
+  // 아래 보내기가 번호를 만들기 전에 본다
+  const fresh = movedIn ? newHere : !DEVICE_RE.test(String(store.get('device', '')));
+  arrival = savedArrival();
   const left = store.get(QUEUE_KEY, null);   // 지난번에 못 보낸 묶음(창을 갑자기 닫았거나 보내기가 막혔을 때)
   if (left?.n > 0 && left.counts) {
     flush(left);
-    if (store.get(QUEUE_KEY, null) && left.day === kstDay()) queue = left;   // 또 못 보낸 오늘 묶음은 이어서 모은다(전에는 새 묶음이 덮어써서 그 판 수가 사라졌다)
+    if (store.get(QUEUE_KEY, null) && left.day === kstDay() && left.build === buildFor(left.day)) queue = left;   // 또 못 보낸 오늘 묶음은 이어서 모은다(전에는 새 묶음이 덮어써서 그 판 수가 사라졌다). 판이 바뀌었으면 잇지 않는다
   }
-  addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
-  addEventListener('pagehide', () => flush());
+  // 처음 온 기기는 열자마자 처음 연 것을 센다(아무것도 안 치고 나간 기기도 센다). FUNNEL_FROM부터
+  if (fresh && funnelOn(kstDay())) {
+    arrival = { day: kstDay(), path: movedIn ? 'move' : new URLSearchParams(location.search).has('vs') ? 'duel' : 'link', steps: STEP.open };
+    store.set(ARRIVAL_KEY, arrival);
+    ensureDeviceId();
+    today();
+    added();
+  }
+  addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') hide(); });
+  addEventListener('pagehide', hide);
   addEventListener('error', noteError, true);   // 붙잡는 단계에서 들어서 스크립트 파일을 못 받은 것(창까지 올라오지 않는 신호)도 받는다
   addEventListener('unhandledrejection', noteError);
 }
