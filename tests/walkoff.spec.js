@@ -37,6 +37,7 @@ async function rankingOf(rows, mine = null) {
 // seedFail: /seeds가 서버 오류로 답한다. seedExpired: /seeds만 로그인이 풀린 것처럼 401로 답한다(계정 확인 /me는 된다).
 // seedHold: /seeds 답을 테스트가 calls.releaseSeeds()로 풀 때까지 잡아 둔다(풀면 그 뒤 요청은 바로 답한다). scoreFail: /scores가 서버 오류로 답한다.
 // near: (그 주 내 기록) => 바로 위·아래 등수와 기록({ above, below }). 없으면 /scores 답에 near가 없다(2026-11-16 전 서버). 요청 때 읽는다.
+// myTeam: /scores 답의 우리 팀 순위(기본 lg 2위, null이면 없음). 요청 때 읽는다.
 // /scores는 실제 서버처럼 10구 도전에 표가 없거나 모르는 표, 이미 쓴 표면 거절한다.
 // 상점은 실제 서버(worker/src/shop.js)의 가격으로 코인·산 물건·착용을 기억한다. account.coins·owned·look으로 처음 지갑을 준다.
 // account.allTime: 계정의 역대 최고(다른 기기에서 친 판 포함). 실제 서버처럼 /rankings?player=와 /scores 답에 allTime으로 주고, 받은 점수로 올린다
@@ -135,7 +136,7 @@ async function mockApi(page, opts = {}) {
       record.counts = addCounts(record.counts, countsOf(lights, seq, lefty, score));
       const newTitles = titlesFor(record.counts).filter((id) => !record.titles.includes(id));
       record.titles = TITLE_IDS.filter((id) => record.titles.includes(id) || newTitles.includes(id));
-      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: { rank: 2, total: 9000, team: 'lg' }, ...(opts.near ? { near: opts.near(best) } : {}), count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles], counts: { ...record.counts } });
+      return reply({ ok: true, accepted: !lower, week: '2026-10-26', me: { rank: 3, best, days: 1, team: 'lg' }, myTeam: 'myTeam' in opts ? opts.myTeam : { rank: 2, total: 9000, team: 'lg' }, ...(opts.near ? { near: opts.near(best) } : {}), count: 5, allTime: record.allTime, coins: shop.coins, earned, newTitles, titles: [...record.titles], counts: { ...record.counts } });
     }
     if (url.pathname === '/shop/buy') {
       const it = ITEMS.find((i) => i.id === JSON.parse(req.postData() || '{}').item);
@@ -2502,7 +2503,7 @@ test.describe('화면', () => {
     const errors = await open(page, '?seed=42', { api: { rankings: await rankingOf(TEAM_ROWS, '테스트') } });
     await page.evaluate(() => walkoff.openRanking('title'));
     await tap(page, '팀');
-    expect(await drawnTexts(page)).toContain('팀원들의 이번 주 최고 기록을 더한 순위예요 · 누르면 팀원');
+    expect(await drawnTexts(page)).toContain('팀원 위 5명의 최고 기록을 더한 순위예요 · 누르면 팀원');
     await tap(page, '팀 줄 lg');
     expect(await page.evaluate(() => walkoff.game.rankTeam)).toBe('lg');
     const gold = await norm(page, 'rgba(242,201,76,0.2)');
@@ -2528,16 +2529,16 @@ test.describe('화면', () => {
     const others = ['lotte', 'doosan', 'kia', 'hanwha', 'ssg', 'nc'], lg = [0, 19, 39, 50, 52, 54];
     const rows = Array.from({ length: 56 }, (_, i) => [i === 52 ? '테스트' : `타자${1000 + i}`, lg.includes(i) ? 'lg' : others[i % others.length], 30000 - i * 100]);
     const rankings = await rankingOf(rows, '테스트'), lgTeam = rankings.teams.find((t) => t.team === 'lg');
-    expect([rankings.players.length, rankings.me.rank, lgTeam.players, lgTeam.total]).toEqual([50, 53, 6, 158600]);   // 서버처럼 사람은 50명만 온다
+    expect([rankings.players.length, rankings.me.rank, lgTeam.players, lgTeam.total]).toEqual([50, 53, 6, 134000]);   // 서버처럼 사람은 50명만 온다. 팀 점수는 위 5명 합(55위 24,600점은 빠진다)
     const errors = await open(page, '?seed=42', { api: { rankings } });
     const shown = async () => (await drawnOps(page)).filter((o) => o.t === 'text').map((o) => o.s);
     await page.evaluate(() => walkoff.openRanking('title'));
     await tap(page, '팀');
     await tap(page, '팀 줄 lg');
     let texts = await shown();
-    expect(texts).toEqual(expect.arrayContaining([`이번 주 ${lgTeam.rank}위 · 158,600점 · 6명`, '타자1000', '타자1019', '타자1039', '테스트', '24,800점', '-', '외 2명 · 49,600점']));
-    expect(texts.filter((s) => ['타자1050', '타자1054'].includes(s))).toEqual([]);   // 50위 밖 다른 팀원은 이름을 모른다
-    expect(texts.indexOf('테스트')).toBeLessThan(texts.indexOf('외 2명 · 49,600점'));
+    expect(texts).toEqual(expect.arrayContaining([`이번 주 ${lgTeam.rank}위 · 134,000점 · 6명`, '타자1000', '타자1019', '타자1039', '테스트', '24,800점', '-', '외 2명']));
+    expect(texts.filter((s) => ['타자1050', '타자1054'].includes(s) || s.startsWith('외 2명 ·'))).toEqual([]);   // 50위 밖 다른 팀원은 이름을 모르고, 위 5명 합이라 그들 점수 합은 안 붙인다
+    expect(texts.indexOf('테스트')).toBeLessThan(texts.indexOf('외 2명'));
     await tap(page, '팀원 줄 4');   // 붙인 내 줄도 누르면 입은 모습(전체 순위)
     expect(await page.evaluate(() => { const v = walkoff.game.rankView; return [v.nick, v.rank, v.best]; })).toEqual(['테스트', 53, 24800]);
     expect((await shown()).some((s) => s.includes('이번 주 53위 · 24,800점'))).toBe(true);
@@ -5768,8 +5769,9 @@ test.describe('투수·수비수 얼굴(2026-11-16)', () => {
 });
 
 test.describe("끝 화면 '한 판 더' 줄(2026-11-16)", () => {
-  // 공 하나로 끝나는 로그인한 10구(서버 시드 42, 첫 공은 지켜본 스트라이크). 끝 화면에 그린 글자 가운데 한 판 더 줄과 '다시 하기' 자리
-  const goalOf = (texts) => texts.find((t) => /^\d+위까지 [\d,]+점$|^\d+위와 [\d,]+점 차$|^.+까지 .*[\d,]+(개|번|판)$/.test(t)) ?? null;
+  // 공 하나로 끝나는 로그인한 10구(서버 시드 42, 첫 공은 지켜본 스트라이크). 끝 화면에 그린 글자 가운데 한 판 더 줄과 '다시 하기' 자리.
+  // 한 판 더 줄 뒤에 이어 붙는 우리 팀 순위(' · 우리 팀 지금 2위', 2026-11-23 팀 대항전)는 떼고 본다
+  const goalOf = (texts) => texts.map((t) => t.replace(/ · 우리 팀 (지금 )?\d+위$/, '')).find((t) => /^\d+위까지 [\d,]+점$|^\d+위와 [\d,]+점 차$|^.+까지 .*[\d,]+(개|번|판)$/.test(t)) ?? null;
   const endChallenge = async (page) => {
     await seedReady(page);
     await page.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
@@ -5778,8 +5780,31 @@ test.describe("끝 화면 '한 판 더' 줄(2026-11-16)", () => {
     await page.waitForFunction(() => walkoff.game.state === 'over' && ['ok', 'error'].includes(walkoff.game.rankInfo?.status));
     await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '다시 하기'));
     const texts = await drawnTexts(page);
-    return { goal: goalOf(texts), retry: await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '다시 하기').r.y), score: await page.evaluate(() => walkoff.game.score) };
+    return { goal: goalOf(texts), team: texts.find((t) => t.includes('우리 팀')) ?? null, retry: await page.evaluate(() => walkoff.ui.buttons.find((b) => b.label === '다시 하기').r.y), score: await page.evaluate(() => walkoff.game.score) };
   };
+
+  test("팀 대항전(2026-11-23): 로그인한 10구 끝 화면에 '우리 팀 지금 n위'. 한 판 더 줄이 있으면 그 뒤에 잇고, 이번 주 기록이 다른 팀 것이거나 서버 오류면 없다. 팀 없는 사람은 없다", async ({ page, browser }) => {
+    const api = { scoreReply: 'lower', near: (best) => ({ above: { rank: 2, best: best + 1200 }, below: null }) };
+    const errors = await open(page, '', { login: true, api });
+    const first = await endChallenge(page);
+    expect([first.goal, first.team]).toEqual(['2위까지 1,200점', '2위까지 1,200점 · 우리 팀 지금 2위']);
+    api.near = () => ({ above: null, below: null });   // 한 판 더 줄이 비면 팀 순위만
+    expect((await endChallenge(page)).team).toBe('우리 팀 지금 2위');
+    api.myTeam = { rank: 1, total: 4000, team: 'kt' };   // 이번 주 최고 기록을 kt로 친 사람이 lg로 바꾼 뒤 친 판
+    expect((await endChallenge(page)).team).toBe(null);
+    api.myTeam = { rank: 3, total: 9000, team: 'lg' }; api.scoreFail = true;
+    const fail = await endChallenge(page);
+    expect([fail.team, fail.retry]).toEqual([null, first.retry]);   // 줄 자리는 그대로라 단추가 안 움직인다
+    expect(errors).toEqual([]);
+    const guest = await browser.newPage();   // 팀을 안 고른 사람(로그인 안 함): 랭킹 줄 자리가 팀 고르기
+    await open(guest, '?seed=42', { team: null });
+    await guest.evaluate(() => { walkoff.startGame('challenge'); Object.assign(walkoff.game, { left: 1, extra: 99 }); });
+    await guest.waitForFunction(() => walkoff.game.state === 'result' && walkoff.game.resultT > walkoff.game.revealAt + 0.4, null, { timeout: 15_000 });
+    await guest.keyboard.press('Space');
+    await guest.waitForFunction(() => walkoff.game.state === 'over' && walkoff.ui.buttons.some((b) => b.label === '팀을 고르고 주간 랭킹에 올라가요 ›'));
+    expect((await drawnTexts(guest)).filter((t) => t.includes('우리 팀'))).toEqual([]);
+    await guest.close();
+  });
 
   test('로그인한 10구: 다음 순위까지 몇 점, 1위면 바로 아래와 몇 점 차. 옛 서버·서버 오류면 줄이 없고 자리만 남아 단추가 밀리지 않는다. 낮은 폰(375×548)에서도 단추가 화면 안이다', async ({ page, isMobile }) => {
     const api = { scoreReply: 'lower', near: (best) => ({ above: { rank: 2, best: best + 1200 }, below: null }) };   // lower: 이번 주 기록은 이번 판 + 1,000점
@@ -5835,6 +5860,74 @@ test.describe("끝 화면 '한 판 더' 줄(2026-11-16)", () => {
     await guest.waitForFunction(() => walkoff.game.state === 'over' && walkoff.ui.buttons.some((b) => b.label === '다시 하기'));
     expect(goalOf(await drawnTexts(guest))).toBe(null);
     await guest.close();
+  });
+});
+
+test.describe('팀 대항전(2026-11-23)', () => {
+  // lg 7명(위 5명 합 35,000), kt 2명 30,000, 두산 2명·키움 1명은 6,000으로 같아 인원이 많은 두산이 위. 나머지 여섯 팀은 안 쳤다
+  const ROWS = [...[9000, 8000, 7000, 6000, 5000, 4000, 3000].map((s, i) => [i === 6 ? '테스트' : `엘지${i}`, 'lg', s]),
+    ['케이티0', 'kt', 20000], ['케이티1', 'kt', 10000], ['곰0', 'doosan', 4000], ['곰1', 'doosan', 2000], ['영웅0', 'kiwoom', 6000]];
+  const TEAM_NAMES = ['LG 트윈스', 'KT 위즈', '두산 베어스', '키움 히어로즈', 'KIA 타이거즈', 'NC 다이노스', 'SSG 랜더스', '롯데 자이언츠', '삼성 라이온즈', '한화 이글스'];
+  // 한 번 그리며 쓴 글자와 그때의 투명도(흐린 줄)
+  const alphas = (page) => page.evaluate(() => {
+    const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, out = [];
+    proto.fillText = function (s, ...rest) { out.push({ s: String(s), a: this.globalAlpha }); return fill.call(this, s, ...rest); };
+    try { walkoff.render(performance.now() / 1000); } finally { proto.fillText = fill; }
+    return out;
+  });
+  // 트로피(잔을 칠한 첫 점, drawTrophy)마다 같은 높이에서 그보다 왼쪽에 쓴 마지막 글자(이름 또는 지난주 줄 앞부분). 트로피 높이는 11~13px
+  const trophies = async (page) => {
+    const ops = await drawnOps(page), gold = await norm(page, '#f2c94c'), texts = ops.filter((o) => o.t === 'text');
+    return ops.filter((o) => o.t === 'fill' && o.style === gold && o.w === 0 && o.h === 0)
+      .map((o) => texts.filter((t) => t.x < o.x && [11, 12, 13].some((s) => Math.abs(t.y - (o.y + s / 2)) < 0.01)).pop()?.s ?? null);
+  };
+
+  test('팀 탭: 위 5명 합으로 매기고 같으면 인원이 많은 팀이 위, 안 친 팀은 아래에 흐린 참가 없음(누르는 줄 아님). 팀 창은 위 5명 밖 팀원이 흐리다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { api: { rankings: await rankingOf(ROWS, '테스트') } });
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await tap(page, '팀');
+    const texts = (await drawnOps(page)).filter((o) => o.t === 'text'), lineOf = (name) => texts.filter((t) => t.y === texts.find((x) => x.s === name).y).map((t) => t.s);
+    expect(texts.map((t) => t.s).filter((s) => TEAM_NAMES.includes(s))).toEqual(TEAM_NAMES);   // 참가 없는 팀은 팀 고르기 순서로 아래에
+    expect(TEAM_NAMES.map(lineOf)).toEqual([['1', 'LG 트윈스', '7명', '35,000점'], ['2', 'KT 위즈', '2명', '30,000점'], ['3', '두산 베어스', '2명', '6,000점'], ['4', '키움 히어로즈', '1명', '6,000점'],   // 6,000점끼리는 인원으로 갈린다
+      ...TEAM_NAMES.slice(4).map((n) => ['-', n, '참가 없음', ''])]);
+    expect(texts.map((t) => t.s)).toContain('팀원 위 5명의 최고 기록을 더한 순위예요 · 누르면 팀원');
+    let drawn = await alphas(page);
+    const at = (s) => drawn.filter((d) => d.s === s);
+    expect(TEAM_NAMES.map((s) => at(s)[0].a)).toEqual([1, 1, 1, 1, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45]);
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label).filter((l) => l.startsWith('팀 줄')).sort())).toEqual(['팀 줄 doosan', '팀 줄 kiwoom', '팀 줄 kt', '팀 줄 lg']);
+    await tap(page, '팀 줄 lg');
+    drawn = await alphas(page);
+    expect(drawn.map((d) => d.s)).toEqual(expect.arrayContaining(['이번 주 1위 · 35,000점 · 7명', '팀원 위 5명의 최고 기록 합이 팀 점수예요 · 누르면 입은 모습']));
+    expect(['엘지0', '엘지1', '엘지2', '엘지3', '엘지4', '엘지5', '테스트'].map((s) => at(s)[0].a)).toEqual([1, 1, 1, 1, 1, 0.5, 0.5]);
+    await tap(page, '팀원 줄 7');   // 흐린 줄도 누르면 입은 모습
+    expect(await page.evaluate(() => walkoff.game.rankView?.nick)).toBe('테스트');
+    expect(errors).toEqual([]);
+  });
+
+  test('지난주 1등 팀 표시: 서버가 champ를 준 사람의 이름 뒤, 팀 탭의 그 팀, 지난주 1위 줄에 트로피. champs가 없는 주(12-07 전)는 어디에도 없다', async ({ page }) => {
+    const base = await rankingOf(ROWS, '테스트');
+    const lastWeek = { player: { rank: 1, nick: '엘지0', team: 'lg', best: 12000, days: 3, me: false }, team: { rank: 1, team: 'lg', total: 30000, players: 5 } };
+    const withChamp = { ...base, lastWeek: { ...lastWeek, champs: ['lg'] }, players: base.players.map((p) => ({ ...p, champ: p.team === 'lg' && p.nick !== '엘지3' })) };   // 엘지3은 지난주에 안 쳤다
+    const errors = await open(page, '?seed=42', { api: { rankings: withChamp } });
+    const head = '지난주 1위 엘지0(LG) 12,000점 · ';
+    await page.evaluate(() => walkoff.openRanking('title'));
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok');
+    expect(await trophies(page)).toEqual(['엘지0', '엘지1', '엘지2', '엘지4', '엘지5', '테스트', head]);   // 10위 밖 내 줄(테스트)에도
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining([head, '팀 1위 LG']));
+    await tap(page, '팀');
+    expect(await trophies(page)).toEqual(['LG 트윈스', head]);
+    await tap(page, '팀 줄 lg');
+    expect(await trophies(page)).toEqual(['엘지0', '엘지1', '엘지2', '엘지4', '엘지5', '테스트']);   // 위 5명 밖(흐린 줄)이어도 단다
+
+    await page.unroute(`${API}/**`);
+    await mockApi(page, { rankings: { ...base, lastWeek } });   // 12-07 전 서버: champs·champ가 없다
+    await page.evaluate(() => { walkoff.goTitle(); walkoff.openRanking('title'); walkoff.game.rankTab = 'players'; });
+    await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok' && !walkoff.game.ranking.data.lastWeek.champs);
+    expect(await trophies(page)).toEqual([]);
+    expect(await drawnTexts(page)).toContain(`${head}팀 1위 LG`);   // 지난주 줄은 예전처럼 한 줄
+    await tap(page, '팀');
+    expect(await trophies(page)).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });
 

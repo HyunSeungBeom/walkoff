@@ -3,7 +3,7 @@
 import { makeSequence, pitcherHand, dailySeed, styleOn, SEQ_LEN } from '../../js/core/pitches.js';
 import { maxScoreFor, scoreRange } from '../../js/core/score.js';
 import { playChallenge } from '../../js/core/challenge.js';
-import { TEAM_IDS } from '../../js/core/catalog.js';
+import { TEAM_IDS, TEAM_TOP } from '../../js/core/catalog.js';
 import { checkNick } from '../../js/core/nick.js';
 import { ticketError } from './seeds.js';
 import { MOVE_MS } from './scenario.js';
@@ -96,11 +96,12 @@ function replaySubmission(b, who, nowMs, ticket) {
   return { ok: true, value: { ...who, week: weekStart(who.day), score: game.score, lights: game.lights, seed, style, play: JSON.stringify({ seed, style, bats, moves }), mismatch } };
 }
 
-// key가 큰 순서로 줄 세우고, 같은 값은 같은 등수(1, 2, 2, 4)
-function rankBy(list, key) {
-  list.sort((a, b) => b[key] - a[key]);
+// 앞 key가 큰 순서로 줄 세우고(같으면 다음 key), 모든 key가 같으면 같은 등수(1, 2, 2, 4). 같은 줄끼리는 목록 순서 그대로다
+function rankBy(list, ...keys) {
+  const cmp = (a, b) => { for (const k of keys) if (a[k] !== b[k]) return b[k] - a[k]; return 0; };
+  list.sort(cmp);
   let rank = 0;
-  list.forEach((x, i) => { if (i === 0 || x[key] !== list[i - 1][key]) rank = i + 1; x.rank = rank; });
+  list.forEach((x, i) => { if (i === 0 || cmp(x, list[i - 1]) !== 0) rank = i + 1; x.rank = rank; });
   return list;
 }
 
@@ -119,18 +120,20 @@ export function summarize(rows) {
 }
 
 // 사람마다 한 줄(summarize)로 순위를 매긴다(2026-10-29 사용자 결정: 합계가 아니라 이번 주 최고 기록).
-// 사람 점수는 그 주 최고 기록이고 그 기록을 낸 날의 팀으로 간다. 팀 점수는 팀원 최고 기록의 합이다.
+// 사람 점수는 그 주 최고 기록이고 그 기록을 낸 날의 팀으로 간다. 팀 점수는 팀원 최고 기록 가운데 위 TEAM_TOP(5)명의 합이고(2026-11-23 팀 대항전,
+// 전에는 팀원 전부의 합), 같으면 친 사람(players)이 많은 팀이 위다. 그 주에 아무도 안 친 팀은 teams에 없다(게임이 '참가 없음'으로 채운다).
 // 이름은 가장 최근 기록을 따른다. 밖으로 내보내는 목록에는 사람 ID를 넣지 않는다. 같은 점수는 목록 순서대로 늘어선다.
 // withIds면 목록과 같은 순서의 사람 ID(ids)를 따로 붙인다. 서버가 입은 물건을 찾을 때만 쓰고 응답에서는 뺀다
 export function rankSummary(list, playerId, { withIds = false } = {}) {
   const byTeam = new Map();
   const players = rankBy(list.map((p) => ({ ...p })), 'best');
-  for (const p of players) {
+  for (const p of players) {   // 최고 기록 순서라 팀마다 먼저 온 TEAM_TOP명이 위 5명이다
     const t = byTeam.get(p.team) ?? { team: p.team, total: 0, players: 0 };
-    t.total += p.best; t.players += 1;
+    if (t.players < TEAM_TOP) t.total += p.best;
+    t.players += 1;
     byTeam.set(p.team, t);
   }
-  const teams = rankBy([...byTeam.values()], 'total');
+  const teams = rankBy([...byTeam.values()], 'total', 'players');
   const mine = playerId ? players.find((p) => p.id === playerId) : null;
   const myTeam = mine ? teams.find((t) => t.team === mine.team) : null, top = players.slice(0, 50);
   // 10구 끝 화면 '한 판 더' 줄(2026-11-16): 내 바로 위(나보다 높은 기록 가운데 가장 낮은)와, 1위면 바로 아래(나보다 낮은 기록 가운데 가장 높은)의

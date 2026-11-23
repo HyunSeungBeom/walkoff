@@ -12,7 +12,7 @@ import { groundPath, interceptGround, sprintTime } from './core/race.js';
 import { AIM, FAIR_MS, FOUL_MS, judgeSwing as judgeSwingIn, judgeTake as judgeTakeIn, PERFECT_MS } from './core/judge.js';
 import { applyScenario as applyScenarioIn, leadAt, makeScenario as makeScenarioIn, SCENARIOS, scenarioPitch, scenarioPoints } from './core/scenario.js';
 import { carryOf, catchTime, flightDuration, flightPos } from './core/flight.js';
-import { GIFT_MIN_GAMES, GIFTS_PER_DAY, ITEMS, SALES, SLOTS, TEAM_IDS, saleOn } from './core/catalog.js';
+import { GIFT_MIN_GAMES, GIFTS_PER_DAY, ITEMS, SALES, SLOTS, TEAM_IDS, TEAM_TOP, saleOn } from './core/catalog.js';
 import { TITLES, TIERS, titleById, countsOf, addCounts, cleanCounts, titlesFor, topTitle } from './core/titles.js';
 import { checkNick } from './core/nick.js';
 import { connect } from './sim/port.js';
@@ -4738,6 +4738,19 @@ function goalLine() {
   const title = nextTitle(ri.counts, ri.titles);
   return title && title.frac <= 0.2 && (!rank || title.frac < rank.frac) ? title.text : rank?.text ?? null;
 }
+// 10구 끝 화면 '우리 팀 지금 3위'(2026-11-23 팀 대항전): 랭킹 판에 서버가 답한 팀 순위(myTeam). 그 순위는 이번 주 최고 기록을 낸 팀 것이라
+// 이번 주에 팀을 바꿔서 지금 팀과 다르면 뺀다. 한 판 더 줄(goalLine) 자리에 ' · '로 이어 붙이고, 줄이 넘치면 '지금'을 빼고, 그래도 넘치면 한 판 더 줄만
+function teamLine() {
+  const t = game.rankInfo?.status === 'ok' ? game.rankInfo.myTeam : null;
+  return t && t.team === settings.team ? `우리 팀 지금 ${t.rank}위` : null;
+}
+function withTeamLine(goal, size) {
+  const team = teamLine();
+  if (!team || !goal) return goal || team;
+  ctx.font = font(size, 700);
+  const fits = (s) => ctx.measureText(s).width <= Math.min(view.w - 32, 420);
+  return [`${goal} · ${team}`, `${goal} · ${team.replace('지금 ', '')}`].find(fits) ?? goal;
+}
 // 아직 못 받은 칭호 가운데 남은 몫이 가장 작은 것. 판으로 세는 칭호(g_)는 'N판', 개수로 세는 칭호는 설명의 말로 '홈런왕까지 홈런 3개'
 function nextTitle(counts, have) {
   if (!counts || !have) return null;
@@ -4753,19 +4766,34 @@ function nextTitle(counts, have) {
   return { text: `${t.name}까지 ${what}`, frac: best.frac };
 }
 
+// 지난주 1등 팀 표시(트로피, 2026-11-23 팀 대항전): 가운데 x·y, 높이 s. 랭킹 줄의 이름 뒤와 지난주 1위 줄에 쓴다
+function drawTrophy(x, y, s) {
+  const top = y - s / 2;
+  ctx.fillStyle = '#f2c94c'; ctx.strokeStyle = '#f2c94c'; ctx.lineWidth = Math.max(1, s * 0.11);
+  ctx.beginPath();   // 잔
+  ctx.moveTo(x - 0.34 * s, top); ctx.lineTo(x + 0.34 * s, top);
+  ctx.quadraticCurveTo(x + 0.34 * s, top + 0.6 * s, x, top + 0.62 * s); ctx.quadraticCurveTo(x - 0.34 * s, top + 0.6 * s, x - 0.34 * s, top);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.arc(x - 0.34 * s, top + 0.22 * s, 0.15 * s, Math.PI * 0.5, Math.PI * 1.5); ctx.stroke();   // 손잡이
+  ctx.beginPath(); ctx.arc(x + 0.34 * s, top + 0.22 * s, 0.15 * s, -Math.PI * 0.5, Math.PI * 0.5); ctx.stroke();
+  ctx.fillRect(x - 0.07 * s, top + 0.6 * s, 0.14 * s, 0.2 * s);   // 기둥과 받침
+  ctx.fillRect(x - 0.26 * s, top + 0.8 * s, 0.52 * s, 0.18 * s);
+}
+
 function drawRankRow(y, x0, w, cells, highlight) {
   const m = view.mobile, h = 32;
   if (highlight) { roundRect(x0 - 8, y - h / 2, w + 16, h, 8); ctx.fillStyle = 'rgba(242,201,76,0.2)'; ctx.fill(); }
-  const [rank, team, name, sub, total, badge] = cells, t = teamById(team), subX = x0 + w * (m ? 0.66 : 0.64);
+  const [rank, team, name, sub, total, badge, champ] = cells, t = teamById(team), subX = x0 + w * (m ? 0.66 : 0.64);
   text(rank, x0 + 18, y, { size: m ? 13 : 15, weight: 800, color: '#f2c94c' });
   if (t) { ctx.beginPath(); ctx.arc(x0 + 46, y, 6, 0, Math.PI * 2); ctx.fillStyle = t.main; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = t.accent; ctx.stroke(); }
   text(name, x0 + 60, y, { size: m ? 13 : 15, weight: 700, align: 'left' });
-  if (badge) {   // 대표 칭호 배지(2~4글자, 등급 색. badge는 TITLES 한 줄): 이름 뒤에 들어갈 자리가 있을 때만(폰은 줄이 좁다)
-    ctx.font = font(m ? 13 : 15, 700);
-    const bx = x0 + 60 + ctx.measureText(name).width + 6, bs = m ? 10 : 11;
-    ctx.font = font(m ? 11 : 13, 600);
-    if (bx + titleBadgeW(badge.short, bs) <= subX - ctx.measureText(sub).width / 2 - 6) titleBadge(bx, y, badge, bs);
-  }
+  // 이름 뒤 표시는 들어갈 자리가 있을 때만(폰은 줄이 좁다): 지난주 1등 팀 트로피(champ)가 먼저, 그다음 대표 칭호 배지(2~4글자, 등급 색. badge는 TITLES 한 줄)
+  ctx.font = font(m ? 13 : 15, 700);
+  let bx = x0 + 60 + ctx.measureText(name).width + 6;
+  ctx.font = font(m ? 11 : 13, 600);
+  const room = subX - ctx.measureText(sub).width / 2 - 6, ts = m ? 12 : 13, bs = m ? 10 : 11;
+  if (champ && bx + ts <= room) { drawTrophy(bx + ts / 2, y, ts); bx += ts + 5; }
+  if (badge && bx + titleBadgeW(badge.short, bs) <= room) titleBadge(bx, y, badge, bs);
   text(sub, subX, y, { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
   text(total, x0 + w, y, { size: m ? 13 : 15, weight: 800, align: 'right' });
 }
@@ -4823,7 +4851,7 @@ function drawRanking() {
     addButton(r, i ? '팀' : '개인', game.rankTab === tab ? 'chipOn' : 'chip', () => { game.rankTab = tab; });
   });
   y += 36 + (m ? 18 : 22);
-  text(game.rankTab === 'players' ? '이번 주 최고 기록 순위예요 · 누르면 입은 모습' : '팀원들의 이번 주 최고 기록을 더한 순위예요 · 누르면 팀원', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  text(game.rankTab === 'players' ? '이번 주 최고 기록 순위예요 · 누르면 입은 모습' : `팀원 위 ${TEAM_TOP}명의 최고 기록을 더한 순위예요 · 누르면 팀원`, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
   y += m ? 16 : 20;
   text(TEAM_NOTE, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
   y += m ? 26 : 32;
@@ -4833,13 +4861,24 @@ function drawRanking() {
     note(rk.busy ? '요청이 많아요. 잠시 뒤 다시 해 주세요' : '랭킹을 불러오지 못했어요');   // busy: 서버 횟수 제한(429)
     addButton({ x: cx - 80, y: y + 44, w: 160, h: 42 }, '다시 시도', 'secondary', loadRanking);
   } else {
-    const players = game.rankTab === 'players', rows = players ? d.players : d.teams, lp = d.lastWeek?.player, lt = d.lastWeek?.team;
-    const lastWeek = () => text(`지난주 1위 ${lp ? `${lp.nick}(${teamById(lp.team)?.short ?? ''}) ${(lp.best ?? lp.total ?? 0).toLocaleString()}점` : '-'} · 팀 1위 ${lt ? teamById(lt.team)?.short ?? lt.team : '-'}`, cx, y,
-      { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' });
-    if (!rows.length) {
+    const players = game.rankTab === 'players', ranked = players ? d.players : d.teams, lp = d.lastWeek?.player, lt = d.lastWeek?.team, champs = d.lastWeek?.champs ?? [];
+    // 지난주 1위 줄. 지난주 1등 팀 표시가 있는 주(champs, 서버가 2026-12-07 주부터 준다, core CHAMP_FROM)는 '팀 1위' 앞에 같은 트로피를 그려 무슨 표시인지 알린다
+    const lastWeek = () => {
+      const head = `지난주 1위 ${lp ? `${lp.nick}(${teamById(lp.team)?.short ?? ''}) ${(lp.best ?? lp.total ?? 0).toLocaleString()}점` : '-'} · `, tail = `팀 1위 ${lt ? teamById(lt.team)?.short ?? lt.team : '-'}`;
+      const st = { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' };
+      if (!champs.length) { text(head + tail, cx, y, st); return; }
+      ctx.font = font(st.size, st.weight);
+      const ts = m ? 11 : 12, hw = ctx.measureText(head).width, lx = cx - (hw + ts + 3 + ctx.measureText(tail).width) / 2;
+      text(head, lx, y, { ...st, align: 'left' });
+      drawTrophy(lx + hw + ts / 2, y, ts);
+      text(tail, lx + hw + ts + 3, y, { ...st, align: 'left' });
+    };
+    if (!ranked.length) {
       note('아직 이번 주 기록이 없어요. 한 판 쳐서 첫 줄에 올라 보세요');
       if (lp || lt) { y += m ? 52 : 58; lastWeek(); }   // 새 주 첫날에도 안내 글 아래에
     } else {
+      // 팀 탭은 이번 주에 아무도 안 친 팀도 아래에 '참가 없음'으로 둔다(2026-11-23 팀 대항전, 팀 고르기 순서). 누르는 줄이 아니다
+      const rows = players ? ranked : [...ranked, ...TEAM_IDS.filter((id) => !ranked.some((t) => t.team === id)).map((team) => ({ team, absent: true }))];
       const shown = rows.slice(0, 10), mine = players ? rows.find((p) => p.me) : rows.find((t) => t.team === d.myTeam?.team);
       if (mine && !shown.includes(mine)) shown.push(null, mine);   // 10위 밖이면 … 아래에 내 줄
       // 줄 사이 전체가 누르는 자리다(폰 36px. 전에는 28px라 빠듯했다). 로그인 안내가 있으면 그 위까지
@@ -4849,10 +4888,14 @@ function drawRanking() {
         if (!row) { text('…', cx, y, { size: 14, color: 'rgba(255,255,255,0.5)' }); y += step; continue; }
         const total = `${((players ? row.best : null) ?? row.total ?? 0).toLocaleString()}점`, r = { x: x0 - 8, y: y - step / 2, w: w + 16, h: step };   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
         if (players) {
-          drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total, titleById(row.title)], row.me);
+          drawRankRow(y, x0, w, [String(row.rank), row.team, row.nick, `${row.days}일`, total, titleById(row.title), row.champ], row.me);
           scrollButton(rankList, r, `랭킹 줄 ${row.rank}`, () => openRankLook(row));
+        } else if (row.absent) {
+          ctx.save(); ctx.globalAlpha = 0.45;
+          drawRankRow(y, x0, w, ['-', row.team, teamById(row.team)?.name ?? row.team, '참가 없음', ''], false);
+          ctx.restore();
         } else {
-          drawRankRow(y, x0, w, [String(row.rank), row.team, teamById(row.team)?.name ?? row.team, `${row.players}명`, total], row === mine);
+          drawRankRow(y, x0, w, [String(row.rank), row.team, teamById(row.team)?.name ?? row.team, `${row.players}명`, total, null, champs.includes(row.team)], row === mine);
           scrollButton(rankList, r, `팀 줄 ${row.team}`, () => { game.rankTeam = row.team; });
         }
         y += step;
@@ -4869,10 +4912,11 @@ function drawRanking() {
 
 // ===== 팀 창 =====
 // 2026-11-06 사용자 '랭킹에서 팀 누르면 누구누구 속해 있는지 모달 띄워서 보여 주는 건 어때?': 팀 탭에서 팀 줄을 누르면 뜬다. 팀 점수는
-// 팀원 최고 기록의 합이라서 누가 몇 점 보탰는지 보이게 한다. 위는 팀 색 띠(배지·이름·팀 순위·합계·인원), 아래는 개인 탭과 같은 팀원 줄(팀 안 순위·
+// 팀원 최고 기록(2026-11-23부터 위 5명, 그 밖 줄은 흐리게)의 합이라서 누가 몇 점 보탰는지 보이게 한다. 위는 팀 색 띠(배지·이름·팀 순위·합계·인원), 아래는 개인 탭과 같은 팀원 줄(팀 안 순위·
 // 닉네임·대표 칭호·친 날·이번 주 최고 기록)이고 내 줄은 금색이다. 팀원을 누르면 입은 모습, 뒤로 가면 팀 창 → 팀 탭.
 // 처음에는 팀 점수에 보탠 몫을 막대·%로 그렸는데 뺐다(같은 날 사용자 '사람이 많아지면 1%·0.1%가 될 텐데 굳이').
-// 팀원은 랭킹 서버가 보내는 상위 50명에서 골라서 서버는 그대로다. 그 밖 팀원은 이름을 몰라 '외 N명'과 그들의 점수 합으로 묶는다
+// 팀원은 랭킹 서버가 보내는 상위 50명에서 골라서 서버는 그대로다. 그 밖 팀원은 이름을 몰라 '외 N명'으로 묶는다(팀 점수가 위 5명 합이 된 2026-11-23부터는
+// 점수 합을 안 붙인다. 50위 밖 팀원이 위 5명에 드는 것은 50위 안 팀원이 5명이 안 될 때뿐이다)
 // 내가 50위 밖이면 d.me로 내 줄을 붙인다(닉네임·모습·칭호는 이 기기 것). 다른 50위 밖 팀원이 있으면 팀 안 순위를 몰라 비운다(teamRank null)
 function teamBoard(d, team) {
   const t = d.teams.find((x) => x.team === team);
@@ -4880,13 +4924,13 @@ function teamBoard(d, team) {
   const pts = (p) => p.best ?? p.total ?? 0;   // 서버가 바뀌기 전이면 사람 점수도 total로 온다
   const list = d.players.filter((p) => p.team === team);
   if (d.me?.team === team && !list.some((p) => p.me)) list.push({ rank: d.me.rank, nick: settings.nick || '-', team, best: pts(d.me), days: d.me.days, me: true, look: wallet.look, title: myTitle(), tag: myTag(), outside: true });
-  const rest = Math.max(0, t.players - list.length), restPts = Math.max(0, t.total - list.reduce((s, p) => s + pts(p), 0));
+  const rest = Math.max(0, t.players - list.length);
   let rank = 0;
   const rows = list.map((p, i) => {
     rank = i && pts(p) === pts(list[i - 1]) ? rank : i + 1;   // 같은 점수는 같은 순위
     return { ...p, pts: pts(p), teamRank: p.outside && rest ? null : rank };
   });
-  return { t, rows, rest, restPts };
+  return { t, rows, rest };
 }
 // 팀 창을 그린다. 그 팀이 랭킹에 없으면(다시 불러와 바뀌었으면) 팀 탭으로 돌아가고 false
 function drawRankTeam() {
@@ -4905,15 +4949,17 @@ function drawRankTeam() {
   text(tm?.name ?? t.team, tx, band.y + band.h * 0.37, { size: m ? 18 : 22, weight: 800, align: 'left' });
   text(`이번 주 ${t.rank}위 · ${t.total.toLocaleString()}점 · ${t.players}명`, tx, band.y + band.h * 0.67, { size: m ? 12 : 14, weight: 700, color: 'rgba(255,255,255,0.82)', align: 'left' });
   let y = band.y + band.h + (m ? 20 : 26);
-  text('팀원 최고 기록의 합이 팀 점수예요 · 누르면 입은 모습', cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
+  text(`팀원 위 ${TEAM_TOP}명의 최고 기록 합이 팀 점수예요 · 누르면 입은 모습`, cx, y, { size: m ? 11 : 13, weight: 500, color: 'rgba(255,255,255,0.55)' });
   const step = m ? 44 : 40;   // 폰 줄은 44px(누르는 자리)
   y = beginScroll(rankList, `team:${t.team}`, y + (m ? 14 : 18), view.h - (m ? 124 : 134)) + step / 2;
-  rows.forEach((p, i) => {
-    drawRankRow(y, x0, w, [p.teamRank == null ? '-' : String(p.teamRank), p.team, p.nick, `${p.days}일`, `${p.pts.toLocaleString()}점`, titleById(p.title)], p.me);
+  rows.forEach((p, i) => {   // 팀 점수에 안 든 6번째부터는 흐리게(누르면 입은 모습은 그대로)
+    ctx.save(); if (i >= TEAM_TOP) ctx.globalAlpha = 0.5;
+    drawRankRow(y, x0, w, [p.teamRank == null ? '-' : String(p.teamRank), p.team, p.nick, `${p.days}일`, `${p.pts.toLocaleString()}점`, titleById(p.title), p.champ], p.me);
+    ctx.restore();
     scrollButton(rankList, { x: x0 - 8, y: y - step / 2, w: w + 16, h: step }, `팀원 줄 ${i + 1}`, () => openRankLook(p));
     y += step;
   });
-  if (rest) { text(`외 ${rest}명 · ${tb.restPts.toLocaleString()}점`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.55)' }); y += step; }
+  if (rest) { text(`외 ${rest}명`, cx, y, { size: m ? 12 : 14, weight: 600, color: 'rgba(255,255,255,0.55)' }); y += step; }
   endScroll(rankList, y - step / 2, x0 + w + 12);
   text(UNOFFICIAL, cx, view.h - (m ? 112 : 122), { size: m ? 11 : 12, weight: 500, color: 'rgba(255,255,255,0.5)' });
   addButton({ x: cx - 90, y: view.h - (m ? 96 : 104), w: 180, h: 48 }, '‹ 랭킹으로', 'primary', closeRanking);
@@ -7065,8 +7111,9 @@ function drawGameOver() {
     if (!settings.team) addButton(r, '팀을 고르고 주간 랭킹에 올라가요 ›', 'link', () => openOnboard('over'));
     else addButton(r, rankLine(), 'link', () => (loggedIn() ? openRanking('over') : startKakaoLogin()));
     y += (m ? 30 : 36) * k;
-    if (goal != null) {   // 한 판 더: '2위까지 1,200점'·'홈런왕까지 홈런 3개'
-      if (goal) text(goal, cx, y - (m ? 8 : 10), { size: m ? 13 : 15, weight: 700, color: '#f2c94c' });
+    if (goal != null) {   // 한 판 더: '2위까지 1,200점'·'홈런왕까지 홈런 3개'와 '우리 팀 지금 3위'(teamLine)를 한 줄에
+      const line = withTeamLine(goal, m ? 13 : 15);
+      if (line) text(line, cx, y - (m ? 8 : 10), { size: m ? 13 : 15, weight: 700, color: '#f2c94c' });
       y += goalStep * k;
     }
   }

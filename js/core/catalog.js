@@ -2,6 +2,10 @@
 // 전에는 서버에 복사본을 두고 tests/core가 같은지 봤다). 이름·색·모양은 화면 쪽(main.js의 TEAM_LOOKS·ITEM_LOOKS)이 맡는다
 
 export const TEAM_IDS = ['kia', 'kt', 'lg', 'nc', 'ssg', 'doosan', 'lotte', 'samsung', 'kiwoom', 'hanwha'];   // KBO 10개 구단. 팀 고르기 화면도 이 순서다
+// 팀 대항전(2026-11-23): 팀 점수는 그 주 팀원 최고 기록 가운데 위에서 이만큼의 합이다. 같은 팀 친구를 데려올수록 오르되 사람 수만으로 이기지는 않게
+export const TEAM_TOP = 5;
+// 지난주 1등 팀에서 친 사람의 이름 옆 표시는 이 주부터 보인다(처리방침에 적은 날 2026-11-24 + 7일 뒤 첫 월요일, 2026-11-23 사용자 '새로 보이는 값은 7일 뒤부터')
+export const CHAMP_FROM = '2026-12-07';
 
 export const SLOTS = ['bat', 'helmet', 'glove', 'shoe', 'uniform', 'number', 'trail', 'sound'];
 
