@@ -1555,9 +1555,9 @@ test.describe('화면', () => {
     await page.addInitScript(() => { window.__vibes = []; navigator.vibrate = (p) => { window.__vibes.push(p); return true; }; });
     const errors = await open(page);
     await page.evaluate(() => walkoff.startGame('challenge'));
-    const o = await playPitch(page, 0);   // 시드 42의 첫 공(가운데 직구)을 정확한 타이밍에 친다
+    const o = await playPitch(page, 0), perfect = await page.evaluate(() => walkoff.game.results[0].perfect);   // 시드 42의 첫 공(가운데 직구)을 정확한 타이밍에 친다
     expect(o.kind).not.toBe('whiff');
-    expect(await page.evaluate(() => window.__vibes)).toEqual([o.kind === 'hr' ? [50, 40, 110] : o.kind === 'foul' ? 15 : 30]);
+    expect(await page.evaluate(() => window.__vibes)).toEqual([o.kind === 'hr' ? [50, 40, 110] : o.kind === 'foul' ? 15 : perfect ? 45 : 30]);   // 정타는 조금 길게(2026-11-23)
     await page.keyboard.press('Escape');
     await tap(page, '메뉴');
     await tap(page, '진동 켜짐');
@@ -4374,6 +4374,40 @@ test.describe('고가 공 꼬리·타격음', () => {
     expect(cat.last).toBeLessThan(0.6);
     expect(errors).toEqual([]);
   });
+
+  test('나무 딱은 홈런만 0.17초 뒤 메아리가 나고 보통·정타 딱은 짧게 끝나며, 상점 타격음은 정타·홈런이어도 그대로다(2026-11-23 사용자 "타격감 보강")', async ({ page }) => {
+    await page.addInitScript(() => {   // 게임 소리를 그대로 미리 녹음한다(1초)
+      window.AudioContext = function () { window.__ac = new OfflineAudioContext(1, 44100, 44100); return window.__ac; };
+    });
+    const errors = await open(page);
+    // 10ms 창 크기(RMS)로: 최댓값의 3% 넘게 들리는 마지막 시각, 0.16초 뒤 가장 큰 크기(최댓값에 견줌), 녹음 지문(잡음 없는 소리만 늘 같다)
+    const record = async (power, style, hit) => {
+      await page.reload();
+      await page.waitForFunction(() => !!window.walkoff);
+      return page.evaluate(async ([power, style, hit]) => {
+        walkoff.Sound.init(); walkoff.Sound.crack(power, style, hit);
+        const d = (await window.__ac.startRendering()).getChannelData(0), win = 441;
+        const rms = (i) => { let s = 0; for (let k = i; k < i + win; k++) s += d[k] * d[k]; return Math.sqrt(s / win); };
+        let max = 0, last = 0, tail = 0, h = 0;
+        for (let i = 0; i + win <= d.length; i += win) max = Math.max(max, rms(i));
+        for (let i = 0; i + win <= d.length; i += win) { const v = rms(i); if (v > max * 0.03) last = (i + win) / 44100; if (i >= 0.16 * 44100) tail = Math.max(tail, v / max); }
+        for (const x of d) h = (Math.imul(h, 31) + Math.round(x * 1e6)) >>> 0;
+        return { last, tail: Math.round(tail * 1000) / 1000, h };
+      }, [power, style, hit]);
+    };
+    const plain = await record(0.74, 'sound-wood', { sweet: false, echo: 0 }), sweet = await record(0.91, 'sound-wood', { sweet: true, echo: 0 }), hr = await record(0.92, 'sound-wood', { sweet: true, echo: 1.4 });
+    expect(plain.last).toBeLessThan(0.2);
+    expect(sweet.last).toBeLessThan(0.2);
+    expect(Math.max(plain.tail, sweet.tail)).toBeLessThan(0.005);   // 정타는 메아리 없이 날카롭게(사용자가 견본에서 고름)
+    expect(hr.tail).toBeGreaterThan(0.03);   // 홈런만 0.17초·0.31초 뒤 메아리
+    // 상점 타격음은 정타·홈런 인자를 받아도 그대로: 8비트(잡음 없음)는 녹음이 똑같고, 금속은 남는 크기·길이가 잡음이 흔드는 만큼만 다르다(메아리가 붙으면 0.32초까지 간다)
+    const chip = [await record(0.9, 'sound-8bit', {}), await record(0.9, 'sound-8bit', { sweet: true, echo: 1.4 })];
+    expect(chip[1].h).toBe(chip[0].h);
+    const metal = [await record(0.9, 'sound-metal', {}), await record(0.9, 'sound-metal', { sweet: true, echo: 1.4 })];
+    expect(Math.abs(metal[1].tail - metal[0].tail)).toBeLessThan(0.01);
+    expect(Math.abs(metal[1].last - metal[0].last)).toBeLessThanOrEqual(0.015);
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('맞는 순간 효과', () => {
@@ -4392,6 +4426,43 @@ test.describe('맞는 순간 효과', () => {
     for (const [bat, fx] of [['bat-phoenix', 'phoenix'], ['bat-rainbow', 'rainbow'], ['bat-baguette', 'baguette']]) expect(await hit(bat, 0)).toEqual({ kind: 'hr', burst: fx });   // 2026-11-10 더한 배트
     expect(await hit('bat-choco', 0)).toEqual({ kind: 'hr', burst: null });      // 초코 막대(2026-11-12)는 모양만 다르고 효과는 없다
     expect(await hit('bat-beam', -200)).toEqual({ kind: 'whiff', burst: null }); // 헛스윙
+    expect(errors).toEqual([]);
+  });
+
+  test('정타는 보통 타구보다 오래 멈추고 크게 떨리며 정타 딱을 내고, 홈런만 메아리가 나며, 보통 타구·파울·홈런의 멈춤과 떨림은 전과 같다(2026-11-23 사용자 "타격감 보강")', async ({ page, isMobile }) => {
+    await page.addInitScript(() => { navigator.vibrate = (p) => { (window.__vibes ??= []).push(p); return true; }; });   // 진동은 터치 화면 폰(안드로이드)만 울린다
+    const errors = await open(page, '?seed=17');
+    const hit = async (seed, dt) => {
+      for (let k = 0; ; k++) {
+        await page.goto(PAGE + `?seed=${seed}`);
+        await page.waitForFunction(() => !!window.walkoff);
+        await page.evaluate(() => {   // 소리를 낼 때의 멈춤·떨림과 소리 인자를 남긴다(swing은 멈춤·떨림을 정한 뒤 소리를 낸다)
+          const S = walkoff.Sound; window.__snd = [];
+          for (const k of ['crack', 'foul', 'whoosh']) { const f = S[k]; S[k] = (...a) => { window.__snd.push({ k, stop: walkoff.game.hitstop, shake: walkoff.view.shake, opt: a[2] ?? null }); return f.apply(S, a); }; }
+          walkoff.goTitle(); walkoff.startGame('challenge');
+        });
+        await pressAt(page, dt);   // 와인드업 동안 걸어 둔다(투구 중이 된 뒤에 걸면 부하가 클 때 공이 이미 지나가 있었다)
+        await page.waitForFunction(() => walkoff.game.state === 'result');
+        const r = await page.evaluate(() => ({ kind: walkoff.game.outcome.kind, perfect: walkoff.game.outcome.perfect, took: !!walkoff.game.outcome.took, s: window.__snd[0], vibes: window.__vibes ?? [],
+          left: { stop: walkoff.game.hitstop, flash: walkoff.game.flash, impact: walkoff.game.impact } }));
+        if (!r.took || k >= 2) return r;   // 그래도 스윙이 안 들어갔으면(공을 지켜봄) 다시 친다
+      }
+    };
+    const p = await hit(17, 0), h = await hit(42, 0), n = await hit(42, 30), f = await hit(42, 115), w = await hit(42, -200);
+    expect([p.kind, p.perfect, h.kind, n.kind, n.perfect, f.kind, w.kind]).toEqual(['double', true, 'hr', 'out', false, 'foul', 'whiff']);   // seed 17 첫 공은 제때 치면 정타 2루타(홈런 아님)
+    // 정타: 보통 타구보다 오래 멈추고 크게 떨리며, 정타 딱(sweet). 메아리는 없다(사용자가 견본에서 메아리 없는 '날카롭게'를 고름)
+    expect([p.s.k, p.s.opt]).toEqual(['crack', { sweet: true, echo: 0 }]);
+    expect(p.s.stop).toBeGreaterThan(n.s.stop);
+    expect(p.s.shake).toBeGreaterThan(n.s.shake);
+    // 홈런·보통 타구·파울의 멈춤과 떨림은 전과 같다. 메아리는 홈런만, 보통 타구는 메아리 없는 보통 딱
+    expect([h.s.stop, h.s.shake]).toEqual([0.14, 12]);
+    expect(h.s.opt.echo).toBeGreaterThan(0);
+    expect([n.s.k, n.s.stop, n.s.opt.sweet, n.s.opt.echo]).toEqual(['crack', 0.09, false, 0]);
+    expect([f.s.k, f.s.stop, f.s.shake]).toEqual(['foul', 0.09, 3]);
+    // 헛스윙은 멈춤·빛·떨림이 없다
+    expect(w.s.k).toBe('whoosh');
+    expect(w.left).toEqual({ stop: 0, flash: 0, impact: null });
+    expect([p.vibes, h.vibes, n.vibes, f.vibes, w.vibes]).toEqual(isMobile ? [[45], [[50, 40, 110]], [30], [15], []] : [[], [], [], [], []]);   // 정타는 조금 길게, 나머지는 전과 같다
     expect(errors).toEqual([]);
   });
 });

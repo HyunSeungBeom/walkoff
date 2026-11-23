@@ -213,7 +213,7 @@ export const Sound = (() => {
     // 다른 앱으로 가면 멈추고(나가 있는 동안 함성이 이어지지 않게), 돌아오면 켜 둔 사람만 잇는다
     suspend() { if (ac) settle(ac.suspend()); },
     resume() { if (ac && on) settle(ac.resume()); },
-    crack(power, style = 'sound-wood') {   // 딱. power 0~1. style은 상점의 타격음
+    crack(power, style = 'sound-wood', hit = {}) {   // 딱. power 0~1. style은 상점의 타격음. hit의 정타(sweet)·메아리 크기(echo, 0이면 없음)는 나무 '딱'만 쓴다
       if (style === 'sound-metal') {   // 알루미늄 '깡': 높은 음이 길게 울린다
         noise({ dur: 0.04, freq: 4200, q: 1.4, peak: 0.45 + 0.3 * power });
         tone({ freq: 2350, freqTo: 2050, dur: 0.45 + 0.25 * power, type: 'triangle', peak: 0.22 + 0.15 * power });
@@ -262,9 +262,25 @@ export const Sound = (() => {
         chip(1319 * k, 0.065, 0.24, CHIP_GAIN);
         return;
       }
-      noise({ dur: 0.07 + 0.05 * power, freq: 2600, q: 0.9, peak: 0.5 + 0.5 * power });
-      tone({ freq: 1500, freqTo: 700, dur: 0.05, type: 'triangle', peak: 0.25 + 0.2 * power });
-      tone({ freq: 180, freqTo: 70, dur: 0.14, peak: 0.25 + 0.45 * power });
+      // 나무 '딱'(기본 타격음). 2026-11-23 사용자 '타격감 보강': 맨 앞에 아주 짧은 높은 '탁'(폰 스피커가 잘 내는 대역)을 더해 맞는 순간이 또렷하다.
+      // 정타(sweet)는 사용자가 견본(맑은 '딱'·묵직한 '빡'·날카롭게, 날카롭게를 더 깊게 한 셋) 가운데 고른 '날카롭게'다: 더 센 '탁'과 좁고 높은 몸통, 짧은 높은 음.
+      // 홈런은 경기장 메아리(echo): 0.17초·0.31초 뒤에 높은 소리가 빠진 작은 '딱' 둘. 상점 타격음은 산 그대로다(정타·홈런이어도 위 갈래에서 끝난다)
+      const { sweet = false, echo = 0 } = hit;
+      noise({ dur: 0.012, type: 'highpass', freq: 5000, peak: (0.2 + 0.25 * power) * (sweet ? 1.8 : 1), attack: 0.001 });
+      if (sweet) {
+        noise({ dur: 0.06, freq: 3600, q: 1.4, peak: 0.7 + 0.3 * power });
+        tone({ freq: 2400, freqTo: 2200, dur: 0.09, peak: 0.12 });
+        tone({ freq: 180, freqTo: 70, dur: 0.12, peak: 0.25 + 0.45 * power });
+      } else {
+        noise({ dur: 0.07 + 0.05 * power, freq: 2600, q: 0.9, peak: 0.5 + 0.5 * power });
+        tone({ freq: 1500, freqTo: 700, dur: 0.05, type: 'triangle', peak: 0.25 + 0.2 * power });
+        tone({ freq: 180, freqTo: 70, dur: 0.14, peak: 0.25 + 0.45 * power });
+      }
+      if (echo > 0) {
+        noise({ dur: 0.08, freq: 1900, q: 0.9, peak: 0.13 * echo, delay: 0.17 });
+        tone({ freq: 1300, freqTo: 700, dur: 0.05, type: 'triangle', peak: 0.05 * echo, delay: 0.17 });
+        noise({ dur: 0.1, freq: 1400, q: 0.8, peak: 0.06 * echo, delay: 0.31 });
+      }
     },
     foul() { noise({ dur: 0.05, freq: 1400, q: 1.5, peak: 0.35 }); tone({ freq: 600, freqTo: 400, dur: 0.04, type: 'triangle', peak: 0.12 }); },
     whoosh() { noise({ dur: 0.22, freq: 300, freqTo: 1600, q: 1.2, peak: 0.22, attack: 0.05 }); },

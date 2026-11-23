@@ -6094,6 +6094,9 @@ function drawDuelCard(d, cx, y) {
 // 새 소식 띠에 NEW(2026-11-05 전에는 빨간 점. 시작 화면은 그대로, 창을 띄우지 않는다). 읽은 기록은 이 브라우저에 마지막으로 본 소식 id(walkoff.newsSeen).
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 줄을 더하면 끝 글자를 올려 읽은 사람에게도 NEW를 다시 띄운다), label은 화면 머리
+  { id: '2026-11-23a', label: '11/23', items: [
+    '치는 손맛을 살렸어요. 정타가 나오면 화면이 한순간 멈추고 맞은 자리만 환해지면서 공이 날아가는 쪽으로 쿵 울려요. 맞는 소리도 더 또렷해졌고 홈런엔 경기장 메아리가 따라오니, 회사에서는 소리를 조금 줄여 주세요.',
+  ] },
   { id: '2026-11-20b', label: '11/20', items: [
     'walkoff.kr로 이사했어요. 예전 주소로 들어와도 연속 기록과 설정, 로그인까지 챙겨서 새 주소로 데려다 드려요. 주소가 짧아져서 친구에게 불러 주기도 쉬워요.',
     '개인정보 처리방침을 만들었어요. 로그인 안내와 내 계정에서 열어 볼 수 있어요.',
@@ -6666,7 +6669,7 @@ const restartGame = () => startGame(game.mode, false, { aim: game.aim, duel: gam
 const WINDUP_HOLD = 3;
 const screenHome = () => Math.abs(view.panX) < view.w * 0.02 && Math.abs(view.panY) < view.h * 0.02 && !camMoved();   // 화면 밀기·카메라가 타석 시점 가까이(2% 안)
 function startPitch() {
-  Object.assign(game, { state: 'windup', t: -0.5, held: 0, swingAt: null, swingAim: null, batFrom: lastBatKeys, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, burst: null, mittDone: false, replay: null, replayed: false });
+  Object.assign(game, { state: 'windup', t: -0.5, held: 0, swingAt: null, swingAim: null, batFrom: lastBatKeys, outcome: null, gained: 0, resultT: 0, flightT: 0, contactPos: null, burst: null, impact: null, mittDone: false, replay: null, replayed: false });
   game.lastChance = game.mode !== 'scenario' && game.left === 1;
 }
 
@@ -6790,6 +6793,24 @@ function drawAimLayer(p) {
   ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(3, BALL_R * c.s), 0, Math.PI * 2); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke();   // 공이 지난 자리
 }
 
+// 맞는 순간 세기(2026-11-23 사용자 '타격감 보강'): 멈춤(초)·떨림(px, 없으면 타구 속도로)·빛 크기·집중(흰 심과 주변 어둡게, drawImpactFx)·확대·메아리·진동(안드로이드).
+// 전에는 정타도 보통 타구와 같았고 홈런만 컸다. 정타는 더 오래 멈추고 크게 떨리며 날카로운 정타 '딱'(sound.js sweet)을 낸다. 메아리는 홈런만(사용자가 견본에서 고름).
+// 정타는 늘 안타라(core throughGap) 맞는 순간 안타인 게 드러난다(홈런은 전부터 그랬다). 함성은 그대로 결과 글자와 함께(celebrate)
+const IMPACT = {
+  foul: { stop: 0.09, shake: 3, flash: 1, focus: false, zoom: 0, echo: 0, buzz: 15 },
+  hit: { stop: 0.09, flash: 1, focus: false, zoom: 0, echo: 0, buzz: 30 },
+  perfect: { stop: 0.13, shake: 8, flash: 1.4, focus: true, zoom: 0.03, echo: 0, buzz: 45 },
+  hr: { stop: 0.14, shake: 12, flash: 1.4, focus: true, zoom: 0.04, echo: 1.4, buzz: [50, 40, 110] },
+};
+const impactOf = (r) => (r.kind === 'hr' ? 'hr' : r.kind === 'foul' ? 'foul' : r.perfect ? 'perfect' : 'hit');
+// 떨림 방향: 맞은 자리에서 타구가 나가는 쪽(화면에서 1m 앞 자리로 잰다). 투영이 안 되면 위아래
+function shakeDir(r, c) {
+  const a = r.spray * DEG, la = r.la * DEG, p0 = project(c.x, c.y, c.z);
+  const p1 = project(c.x + Math.sin(a) * Math.cos(la), c.y + Math.sin(la), c.z + Math.cos(a) * Math.cos(la));
+  const dx = p0 && p1 ? p1.x - p0.x : 0, dy = p0 && p1 ? p1.y - p0.y : -1, l = Math.hypot(dx, dy) || 1;
+  return { x: dx / l, y: dy / l };
+}
+
 // input: 무엇으로 쳤는지('mouse'·'touch'·'key', 스윙 통계). at: 조준 판에서 휘두른 자리(화면 px, 없으면 지금 커서)
 function swing(eventTime, input = 'key', at = null) {
   const t0 = fpsMeter && performance.now();   // ?fps=1: 맞는 순간 스윙 처리 시간
@@ -6806,14 +6827,16 @@ function swing(eventTime, input = 'key', at = null) {
   game.swingAim = swingAim(p, r, aim);   // 그림에서 배트가 지나는 자리(판정은 그대로, 조준 판은 겨눈 자리)
   if (r.kind === 'whiff') Sound.whoosh();
   else {
-    const h = game.swingAim?.hit;
+    const h = game.swingAim?.hit, tier = impactOf(r), im = IMPACT[tier];
     game.contactPos = h ? { x: h[0], y: h[1], z: h[2] } : ballPos(p, bt / p.T);   // 맞는 순간 빛: 배트가 공을 맞힌 자리
-    game.hitstop = r.kind === 'hr' ? 0.14 : 0.09;
+    game.hitstop = im.stop;
     game.flash = 1;
+    game.impact = { tier, t: 0, dir: shakeDir(r, game.contactPos) };
     const bfx = fxOf(currentLook().bat);
     game.burst = BAT_BURSTS[bfx] ? { fx: bfx, t: 0, seed: (game.seed * 31 + game.i * 7919) >>> 0 } : null;
-    view.shake = r.kind === 'hr' ? 12 : r.kind === 'foul' ? 3 : 3 + r.ev / 45;
-    if (r.kind === 'foul') { Sound.foul(); buzz(15); } else { Sound.crack(clamp((r.ev - 80) / 100, 0, 1), currentLook().sound); buzz(r.kind === 'hr' ? [50, 40, 110] : 30); }
+    view.shake = im.shake ?? 3 + r.ev / 45;
+    if (r.kind === 'foul') Sound.foul(); else Sound.crack(clamp((r.ev - 80) / 100, 0, 1), currentLook().sound, { sweet: r.perfect, echo: im.echo });
+    buzz(im.buzz);
   }
   finish(r);
   if (fpsMeter && r.kind !== 'whiff') fpsMeter.swing(performance.now() - t0);
@@ -6961,6 +6984,7 @@ function update(dt) {
   view.shake = Math.max(0, view.shake - dt * 45);
   game.flash = Math.max(0, game.flash - dt * 8);
   if (game.burst) game.burst.t += dt;   // 효과 배트의 효과는 맞는 순간 멈춤 동안에도 터진다
+  if (game.impact) game.impact.t += dt;   // 떨림·확대·집중도 멈춤 동안 흐른다
   if (game.hitstop > 0) { game.hitstop -= dt; game.clockAt = now; return; }
   game.t += dt; game.clockAt = now;
   const p = game.seq[game.i];
@@ -7213,6 +7237,38 @@ function render(time) {
   ui.buttons = [];
   for (const el of [nickInput, noInput, giftInput]) if (el.style.display !== 'none') el.style.display = 'none';
 }
+// 맞는 순간 떨림(2026-11-23): 크기는 view.shake(줄이는 것은 update), 방향은 타구가 나가는 쪽이다. 그쪽으로 '쿵' 밀렸다가 2~3번 잦아든다
+// (전에는 장면마다 무작위로 튀어서 가벼웠다). 정타·홈런은 맞은 자리를 가운데로 잠깐 확대했다 돌아온다. 움직임 줄이기를 켠 기기는 떨림 30%·확대 없음
+const CALM = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const SHAKE_HZ = 11, ZOOM_T = 0.12;
+function shakeScreen() {
+  const im = game.impact;
+  if (!im) return;
+  const t = im.t, k = view.shake * (CALM ? 0.3 : 1), w = Math.cos(2 * Math.PI * SHAKE_HZ * t), side = 0.25 * Math.sin(2 * Math.PI * SHAKE_HZ * 1.6 * t);
+  if (k > 0) ctx.translate(k * (im.dir.x * w - im.dir.y * side), k * (im.dir.y * w + im.dir.x * side));
+  const z = CALM || camMoved() ? 0 : IMPACT[im.tier].zoom * Math.max(0, 1 - t / ZOOM_T) ** 2, c = z > 0 && game.contactPos ? project(game.contactPos.x, game.contactPos.y, game.contactPos.z) : null;
+  if (c) { ctx.translate(c.x, c.y); ctx.scale(1 + z, 1 + z); ctx.translate(-c.x, -c.y); }
+}
+// 정타·홈런의 맞은 자리(2026-11-23): 가운데 작고 단단한 흰 심이 0.12초에 사라지고, 멈춘 동안 주변이 살짝 어두워져 맞은 자리만 밝다(멈춤이 끝나면 0.15초에 돌아온다).
+// 사용자가 견본 셋(빛만·한 번 번쩍·집중) 가운데 '집중'을 골랐다. 처음 넣은 고리·빛줄기는 '촌스럽다'로 뺐다.
+// 크기는 맞은 자리 원근(c.s, 1m가 몇 px)이라 PC·폰이 같은 비율이다. 시간은 멈춤 동안에도 흐른다(update). 점수판·단추는 이 뒤에 그려서 어두워지지 않는다
+const FOCUS_T = 0.3;
+function drawImpactFx(c, t) {
+  const u = Math.min(1, t / 0.12);
+  if (u < 1) {
+    const r = c.s * 0.11 * (1 - 0.5 * u), g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+    g.addColorStop(0, `rgba(255,255,255,${(0.95 * (1 - u)).toFixed(3)})`); g.addColorStop(0.55, `rgba(255,255,250,${(0.8 * (1 - u)).toFixed(3)})`); g.addColorStop(1, 'rgba(255,255,250,0)');
+    ctx.fillStyle = g; ctx.fillRect(c.x - r, c.y - r, r * 2, r * 2);
+  }
+  const stop = IMPACT[game.impact.tier].stop, k = t < 0.03 ? t / 0.03 : t < stop ? 1 : Math.max(0, 1 - (t - stop) / 0.15);
+  if (k > 0) {
+    ctx.save(); ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);   // 떨림·확대와 상관없이 화면 전체에
+    const g = ctx.createRadialGradient(c.x, c.y, c.s * 0.45, c.x, c.y, Math.hypot(view.w, view.h));
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${(0.42 * k).toFixed(3)})`);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.restore();
+  }
+}
 function drawScreen(time) {
   ui.buttons = [];
   if (game.state !== 'onboard' && nickInput.style.display !== 'none') nickInput.style.display = 'none';
@@ -7220,7 +7276,7 @@ function drawScreen(time) {
   if (!(game.state === 'gift' && game.gift?.step === 'find') && giftInput.style.display !== 'none') giftInput.style.display = 'none';
   ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
   ctx.save();
-  if (view.shake > 0) ctx.translate((Math.random() * 2 - 1) * view.shake, (Math.random() * 2 - 1) * view.shake);
+  shakeScreen();
   drawField();
   const playing = game.state === 'windup' || game.state === 'pitch' || game.state === 'result';
   const p = game.seq[game.i], r = game.outcome;
@@ -7262,11 +7318,16 @@ function drawScreen(time) {
   if (game.flash > 0 && game.contactPos) {
     const c = project(game.contactPos.x, game.contactPos.y, game.contactPos.z);
     if (c) {
-      const R = 120 * game.flash + 30;
+      // 크기는 맞은 자리 원근(1m가 몇 px)으로: 폰은 전(120·flash+30px)과 같고 PC도 같은 비율이 된다(전에는 PC에서 폰의 절반쯤). 정타·홈런은 1.4배
+      const R = c.s * (0.125 + 0.5 * game.flash) * (IMPACT[game.impact?.tier]?.flash ?? 1);
       const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, R);
       g.addColorStop(0, `rgba(255,255,240,${0.9 * game.flash})`); g.addColorStop(1, 'rgba(255,255,240,0)');
       ctx.fillStyle = g; ctx.fillRect(c.x - R, c.y - R, R * 2, R * 2);
     }
+  }
+  if (game.impact && IMPACT[game.impact.tier].focus && game.impact.t < FOCUS_T && game.contactPos && !camMoved()) {   // 정타·홈런: 흰 심과 집중
+    const c = project(game.contactPos.x, game.contactPos.y, game.contactPos.z);
+    if (c) drawImpactFx(c, game.impact.t);
   }
   if (game.burst && game.burst.t < BURST_T && !camMoved()) {   // 효과 배트로 맞힌 자리에서 터지는 효과
     const h = game.swingAim?.hit ?? [HIT_SPOT.x, HIT_SPOT.y, HIT_SPOT.z], c = project(h[0], h[1], h[2]);
