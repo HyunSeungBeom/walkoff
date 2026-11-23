@@ -170,17 +170,18 @@ test.describe('주소 옮기기(2026-11-17)', () => {
   });
 });
 
-// 상태 알림(2026-11-18 운영 준비, .github/workflows/health.yml·scripts/health.js): 15분마다 게임 주소와 서버를 열어 보고, 죽었으면 잡이 실패해 메일이 간다
+// 상태 알림(2026-11-18 운영 준비, .github/workflows/health.yml·scripts/health.js): 15분마다 게임 주소와 서버를 열어 보고, 죽었으면 잡이 실패해 메일이 간다.
+// 2026-11-20부터는 두 번째 감시이고 첫째는 Cloudflare Worker(worker/health, 시험은 worker/health/test). 판정은 둘이 worker/health/src/checks.js를 같이 쓴다
 test.describe('상태 알림(2026-11-18)', () => {
   test.skip(({ isMobile }) => isMobile, '파일은 화면 크기와 상관없어서 PC에서만 본다');
 
-  test('15분마다 정각을 피해 돌고, 게임 index.html에 적힌 모듈을 모두 본다. 손으로 넣는 주소는 환경 변수로만 넘긴다', () => {
+  test('15분마다 정각을 피해 돌고, 게임 index.html에 적힌 모듈을 모두 본다. 손으로 넣는 주소는 환경 변수로만 넘긴다', async () => {
     const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'health.yml'), 'utf8');
     expect(yml).toContain("- cron: '7,22,37,52 * * * *'");   // 매시 정각은 붐벼서 늦거나 빠진다
     expect(yml).toMatch(/permissions:\n  contents: read\n/);
     expect(yml).toContain('EXTRA_URL: ${{ inputs.extra_url }}');
     expect(yml).not.toMatch(/run:[^\n]*\$\{\{/);   // 넣은 값을 명령 줄에 바로 쓰지 않는다(명령 끼워 넣기)
-    const { gameFiles } = require('../scripts/health.js');
+    const { gameFiles } = await import(pathToFileURL(path.join(ROOT, 'worker', 'health', 'src', 'checks.js')).href);
     const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
     const listed = [...html.matchAll(/<script type="module" src="([^"]+)"|<link rel="modulepreload" href="([^"]+)"/g)].map((m) => m[1] ?? m[2]);
     expect(gameFiles(html).sort()).toEqual([...new Set(listed)].sort());

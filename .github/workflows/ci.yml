@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       - name: 랭킹 서버 규칙 테스트
         run: node --test 'worker/test/*.test.js'
+      - name: 상태 알림 Worker 테스트(worker/health, 배포는 손으로)
+        run: node --test 'worker/health/test/*.test.js'
       - name: 층 검사와 판정 규칙 테스트(js/core)
         run: |
           node scripts/layers.js
