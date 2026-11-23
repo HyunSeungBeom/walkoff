@@ -5904,7 +5904,7 @@ test.describe('팀 대항전(2026-11-23)', () => {
     expect(errors).toEqual([]);
   });
 
-  test('지난주 1등 팀 표시: 서버가 champ를 준 사람의 이름 뒤, 팀 탭의 그 팀, 지난주 1위 줄에 트로피. champs가 없는 주(12-07 전)는 어디에도 없다', async ({ page }) => {
+  test('지난주 1등 팀 표시: 서버가 champ를 준 사람의 이름 뒤, 팀 탭의 그 팀, 지난주 1위 줄에 트로피. champs가 없을 때(12-01 전)는 어디에도 없다', async ({ page }) => {
     const base = await rankingOf(ROWS, '테스트');
     const lastWeek = { player: { rank: 1, nick: '엘지0', team: 'lg', best: 12000, days: 3, me: false }, team: { rank: 1, team: 'lg', total: 30000, players: 5 } };
     const withChamp = { ...base, lastWeek: { ...lastWeek, champs: ['lg'] }, players: base.players.map((p) => ({ ...p, champ: p.team === 'lg' && p.nick !== '엘지3' })) };   // 엘지3은 지난주에 안 쳤다
@@ -5920,7 +5920,7 @@ test.describe('팀 대항전(2026-11-23)', () => {
     expect(await trophies(page)).toEqual(['엘지0', '엘지1', '엘지2', '엘지4', '엘지5', '테스트']);   // 위 5명 밖(흐린 줄)이어도 단다
 
     await page.unroute(`${API}/**`);
-    await mockApi(page, { rankings: { ...base, lastWeek } });   // 12-07 전 서버: champs·champ가 없다
+    await mockApi(page, { rankings: { ...base, lastWeek } });   // 12-01 전 서버: champs·champ가 없다
     await page.evaluate(() => { walkoff.goTitle(); walkoff.openRanking('title'); walkoff.game.rankTab = 'players'; });
     await page.waitForFunction(() => walkoff.game.ranking?.status === 'ok' && !walkoff.game.ranking.data.lastWeek.champs);
     expect(await trophies(page)).toEqual([]);

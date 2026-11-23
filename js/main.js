@@ -4862,7 +4862,7 @@ function drawRanking() {
     addButton({ x: cx - 80, y: y + 44, w: 160, h: 42 }, '다시 시도', 'secondary', loadRanking);
   } else {
     const players = game.rankTab === 'players', ranked = players ? d.players : d.teams, lp = d.lastWeek?.player, lt = d.lastWeek?.team, champs = d.lastWeek?.champs ?? [];
-    // 지난주 1위 줄. 지난주 1등 팀 표시가 있는 주(champs, 서버가 2026-12-07 주부터 준다, core CHAMP_FROM)는 '팀 1위' 앞에 같은 트로피를 그려 무슨 표시인지 알린다
+    // 지난주 1위 줄. 지난주 1등 팀 표시가 있는 주(champs, 서버가 2026-12-01부터 준다, core CHAMP_FROM)는 '팀 1위' 앞에 같은 트로피를 그려 무슨 표시인지 알린다
     const lastWeek = () => {
       const head = `지난주 1위 ${lp ? `${lp.nick}(${teamById(lp.team)?.short ?? ''}) ${(lp.best ?? lp.total ?? 0).toLocaleString()}점` : '-'} · `, tail = `팀 1위 ${lt ? teamById(lt.team)?.short ?? lt.team : '-'}`;
       const st = { size: m ? 11 : 13, weight: 600, color: 'rgba(255,255,255,0.6)' };
@@ -6609,7 +6609,7 @@ function drawDuelCard(d, cx, y) {
 // 처음 온 사람(이 기기에 친 기록이 없음)은 열 때 모두 읽은 것으로 적어 점을 띄우지 않는다. 쳐 본 사람은 첫 소식부터 점이 뜬다
 const NEWS = [   // id는 시간 순으로 커지는 글자(같은 날 줄을 더하면 끝 글자를 올려 읽은 사람에게도 NEW를 다시 띄운다), label은 화면 머리
   { id: '2026-11-24a', label: '11/24', items: [
-    '팀 대항전이 생겼어요. 팀 점수는 팀원 가운데 잘 친 다섯 명의 합이라 같은 팀 친구를 데려올수록 올라가고, 로그인하고 10구를 마치면 우리 팀이 지금 몇 위인지 알려 드려요. 12월 7일부터는 지난주 1등 팀에서 친 분이 이번 주에도 그 팀이면 이름 옆에 트로피가 붙어요.',
+    '팀 대항전이 생겼어요. 팀 점수는 팀원 가운데 잘 친 다섯 명의 합이라 같은 팀 친구를 데려올수록 올라가고, 로그인하고 10구를 마치면 우리 팀이 지금 몇 위인지 알려 드려요. 12월 1일부터는 지난주 1등 팀에서 친 분이 이번 주에도 그 팀이면 이름 옆에 트로피가 붙고, 이건 개인정보 처리방침에도 미리 적어 뒀어요.',
   ] },
   { id: '2026-11-23c', label: '11/23', items: [
     '치는 손맛을 살렸어요. 정타가 나오면 화면이 한순간 멈추고 맞은 자리만 환해지면서 공이 날아가는 쪽으로 쿵 울려요. 맞는 소리도 더 또렷해졌고 홈런엔 경기장 메아리가 따라오니, 회사에서는 소리를 조금 줄여 주세요.',

@@ -63,12 +63,13 @@ async function allTimeBest(db, playerId) {
 }
 
 // 지난주 1등 팀(점수·인원이 같으면 여럿, champs)에서 친 사람이 이번 주에도 그 팀으로 쳤으면 목록의 그 줄에 champ(이름 옆 1등 팀 표시, 2026-11-23 팀 대항전).
-// 이미 읽은 지난주 요약으로 정해서 더 읽는 줄도, 따로 남기는 값도 없다. 처리방침에 적은 날 + 7일인 CHAMP_FROM 주부터 준다
+// 이미 읽은 지난주 요약으로 정해서 더 읽는 줄도, 따로 남기는 값도 없다. 처리방침에 적은 날 + 7일인 CHAMP_FROM(한국 날짜)부터, 그날이 든 주부터의 목록에 준다
+// (12-01 화요일부터 11-30 주 목록에 11-23 주 1등 팀 표시. 그 앞 주는 나중에 물어도 없다)
 async function rankings(db, week, playerId, now, { looks = false, lastWeek = true } = {}) {
   const [list, lastList, allTime] = await Promise.all([readBoard(db, week, now), lastWeek ? readBoard(db, addDays(week, -7), now) : null, playerId ? allTimeBest(db, playerId) : null]);
   const { ids, ...cur } = rankSummary(list, playerId, { withIds: looks });   // ids는 응답에 넣지 않는다
   const lookById = looks ? await looksOf(db, ids) : null, last = lastList && rankSummary(lastList, null);
-  const champs = last && week >= CHAMP_FROM ? last.teams.filter((t) => t.rank === 1).map((t) => t.team) : null;
+  const champs = last && kstDay(now) >= CHAMP_FROM && week >= weekStart(CHAMP_FROM) ? last.teams.filter((t) => t.rank === 1).map((t) => t.team) : null;
   const champOf = champs?.length ? new Map(lastList.filter((p) => champs.includes(p.team)).map((p) => [p.id, p.team])) : null;
   return {
     week, nextWeek: addDays(week, 7), ...cur, ...(playerId ? { allTime } : {}),   // allTime: 그 사람이 이번 주에 친 판이 없어도(me가 null) 준다

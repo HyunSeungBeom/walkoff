@@ -47,27 +47,30 @@ test('숨긴 계정은 팀 점수와 인원에서 빠지고, 그 자리에 다�
   assert.deepEqual(teamsOf(rankSummary(await readBoard(db, WEEK, NOW), null)), [[1, 'kt', 32000, 1], [2, 'lg', 30000, 5]]);   // 8000+7000+6000+5000+4000
 });
 
-test('/rankings: 한국 시간 월요일 0시에 새 주가 되고, 지난주 1등 팀에서 친 사람이 이번 주에도 그 팀이면 champ. CHAMP_FROM 주 전에는 표시가 없다', async () => {
-  assert.equal(CHAMP_FROM, '2026-12-07');
+test('/rankings: 한국 시간 월요일 0시에 새 주가 되고, 지난주 1등 팀에서 친 사람이 이번 주에도 그 팀이면 champ. CHAMP_FROM(12-01 화) 전에는 표시가 없다', async () => {
+  assert.equal(CHAMP_FROM, '2026-12-01');
   const env = { DB: memoryD1() };
-  await put(env.DB, 'p-d1-0001', '2026-11-27', '2026-11-23', 'doosan', 3000);   // 11-23 주 1등은 두산(그 주 기록은 표시하지 않는다)
-  await put(env.DB, 'p-d1-0001', '2026-12-01', '2026-11-30', 'doosan', 9000);
-  await put(env.DB, 'p-d2-0001', '2026-12-06', '2026-11-30', 'doosan', 8000);   // 일요일 판
-  await put(env.DB, 'p-l1-0001', '2026-12-02', '2026-11-30', 'lg', 10000);
-  await put(env.DB, 'p-d1-0001', '2026-12-07', '2026-12-07', 'doosan', 5000);   // 그대로 두산: 표시
-  await put(env.DB, 'p-d2-0001', '2026-12-07', '2026-12-07', 'lg', 7000);       // 지난주 두산이었는데 lg로 옮김: 표시 없음
-  await put(env.DB, 'p-l1-0001', '2026-12-07', '2026-12-07', 'lg', 6000);       // 지난주 2등 팀
-  await put(env.DB, 'p-n1-0001', '2026-12-07', '2026-12-07', 'doosan', 4000);   // 지난주에 안 친 두산 팬
-  const sunday = await rankingAt(env, '2026-12-06T14:59:59Z');   // 한국 시간 12-06(일) 23:59:59
-  assert.equal(sunday.week, '2026-11-30');
+  await put(env.DB, 'p-d1-0001', '2026-11-20', '2026-11-16', 'doosan', 3000);   // 11-16 주 1등은 두산(그 주 1등은 표시하지 않는다)
+  await put(env.DB, 'p-d1-0001', '2026-11-24', '2026-11-23', 'doosan', 9000);
+  await put(env.DB, 'p-d2-0001', '2026-11-29', '2026-11-23', 'doosan', 8000);   // 일요일 판
+  await put(env.DB, 'p-l1-0001', '2026-11-25', '2026-11-23', 'lg', 10000);
+  await put(env.DB, 'p-d1-0001', '2026-11-30', '2026-11-30', 'doosan', 5000);   // 그대로 두산: 표시
+  await put(env.DB, 'p-d2-0001', '2026-11-30', '2026-11-30', 'lg', 7000);       // 지난주 두산이었는데 lg로 옮김: 표시 없음
+  await put(env.DB, 'p-l1-0001', '2026-11-30', '2026-11-30', 'lg', 6000);       // 지난주 2등 팀
+  await put(env.DB, 'p-n1-0001', '2026-11-30', '2026-11-30', 'doosan', 4000);   // 지난주에 안 친 두산 팬
+  const sunday = await rankingAt(env, '2026-11-29T14:59:59Z');   // 한국 시간 11-29(일) 23:59:59
+  assert.equal(sunday.week, '2026-11-23');
   assert.deepEqual(teamsOf(sunday), [[1, 'doosan', 17000, 2], [2, 'lg', 10000, 1]]);
-  assert.deepEqual(sunday.players.map((p) => p.champ), [false, false, false]);   // 11-23 주 1등 두산 팬이 이번 주에도 두산이지만 CHAMP_FROM 전
+  assert.deepEqual(sunday.players.map((p) => p.champ), [false, false, false]);   // 11-16 주 1등 두산 팬이 이번 주에도 두산이지만 CHAMP_FROM 전
   assert.ok(!('champs' in sunday.lastWeek));
-  const monday = await rankingAt(env, '2026-12-06T15:00:00Z');   // 한국 시간 12-07(월) 0시
-  assert.equal(monday.week, '2026-12-07');
+  const monday = await rankingAt(env, '2026-11-30T14:59:59Z');   // 한국 시간 11-30(월) 23:59:59: 새 주지만 아직 CHAMP_FROM 전
+  assert.equal(monday.week, '2026-11-30');
   assert.deepEqual(teamsOf(monday), [[1, 'lg', 13000, 2], [2, 'doosan', 9000, 2]]);   // 지난주 판은 안 든다
-  assert.deepEqual([monday.lastWeek.team.team, monday.lastWeek.champs], ['doosan', ['doosan']]);
-  assert.deepEqual(monday.players.map((p) => [p.nick, p.team, p.champ]), [['p-d2-0001', 'lg', false], ['p-l1-0001', 'lg', false], ['p-d1-0001', 'doosan', true], ['p-n1-0001', 'doosan', false]]);
+  assert.deepEqual([monday.lastWeek.team.team, 'champs' in monday.lastWeek, monday.players.some((p) => p.champ)], ['doosan', false, false]);
+  const tuesday = await rankingAt(env, '2026-11-30T15:00:00Z');   // 한국 시간 12-01(화) 0시
+  assert.deepEqual([tuesday.week, tuesday.lastWeek.champs], ['2026-11-30', ['doosan']]);
+  assert.deepEqual(tuesday.players.map((p) => [p.nick, p.team, p.champ]), [['p-d2-0001', 'lg', false], ['p-l1-0001', 'lg', false], ['p-d1-0001', 'doosan', true], ['p-n1-0001', 'doosan', false]]);
+  assert.ok(!('champs' in (await rankingAt(env, '2026-11-30T15:00:00Z', '?week=2026-11-23')).lastWeek));   // CHAMP_FROM이 든 주보다 앞 주는 그 뒤에 물어도 없다
 });
 
 test('/rankings: 지난주 1등 팀이 점수와 인원까지 같아 여럿이면 모두 champs이고, 지난주에 아무도 안 쳤으면 champs가 비어 있다', async () => {
