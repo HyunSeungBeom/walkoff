@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { kstDay, addDays } from '../src/rules.js';
-import { BATCH_MAX, BATCH_KEYS, DEVICE_DAYS, EVENT_CAP, FUNNEL_FROM, LATE_DAYS, STATS_SQL, SWING_SQL, ERRORS_SQL, STEPS, cleanErrorMessage } from '../src/stats.js';
+import { BATCH_MAX, BATCH_KEYS, DEVICE_DAYS, EVENT_CAP, FUNNEL_FROM, LATE_DAYS, STATS_SQL, SWING_SQL, ERRORS_SQL, STEPS, cleanErrorMessage, validateEvent } from '../src/stats.js';
 import { memoryD1 } from './d1.js';
 
 // 게임이 sendBeacon으로 보내는 것처럼 text/plain 본문으로 보낸다
@@ -66,7 +66,7 @@ test('npm run stats 표: 최근 7일만, 날짜마다 한 줄', async () => {
   await env.DB.prepare("INSERT INTO play_stats (day, mode, starts, ends) VALUES (?, 'daily', 5, 5)").bind(old).run();
   assert.deepEqual(env.DB.rows(STATS_SQL), [{
     날짜: today, 기기: 2, '터치 기기': 1, '시작한 판': 3, '끝낸 판': 1,
-    '10구 도전': 1, '끝내기 상황': 1, 연습: 0, '조준 실험': 0, '도전장 판': 0, '도전장 끝': 0, '도전장 보냄': 0, '옛 주소에서 옮김': 0,
+    '10구 도전': 1, '끝내기 상황': 1, 연습: 0, '조준 실험': 0, '도전장 판': 0, '도전장 끝': 0, '도전장 보냄': 0, '대결 판': 0, '대결 끝': 0, '옛 주소에서 옮김': 0,
   }]);
 });
 
@@ -77,7 +77,7 @@ test('npm run stats 표: 도전장 판의 시작·끝과 보낸 수를 따로 �
   assert.equal((await send(env, ev({ mode: 'duel', type: 'end' }))).status, 204);   // 한 건씩 보내는 꼴도 받는다
   assert.deepEqual(env.DB.rows(STATS_SQL), [{
     날짜: today, 기기: 1, '터치 기기': 1, '시작한 판': 8, '끝낸 판': 4,
-    '10구 도전': 5, '끝내기 상황': 0, 연습: 0, '조준 실험': 0, '도전장 판': 3, '도전장 끝': 3, '도전장 보냄': 4, '옛 주소에서 옮김': 0,
+    '10구 도전': 5, '끝내기 상황': 0, 연습: 0, '조준 실험': 0, '도전장 판': 3, '도전장 끝': 3, '도전장 보냄': 4, '대결 판': 0, '대결 끝': 0, '옛 주소에서 옮김': 0,
   }]);
 });
 
@@ -88,6 +88,16 @@ test('npm run stats 표: 옛 주소에서 기록을 가져온 기기 수를 따�
   assert.equal((await send(env, { device: 'd-device-0002', mobile: false, day: today, counts: { move: { starts: 1, ends: 0 } } })).status, 204);
   const [row] = env.DB.rows(STATS_SQL);
   assert.deepEqual([row['기기'], row['시작한 판'], row['끝낸 판'], row['10구 도전'], row['옛 주소에서 옮김']], [2, 2, 1, 2, 2]);
+});
+
+// 모르는 사람과 대결(2026-11-23, src/rival.js): 대결 판(rival)은 판으로 세고 따로 보인다. 10구 판별 칸(다시 시작·나감)은 받지 않는다
+test('npm run stats 표: 대결 판의 시작·끝을 따로 보이고 판 합계에 넣는다. 대결 판의 다시 시작·나감은 받지 않는다', async () => {
+  const env = { DB: memoryD1() }, today = kstDay(Date.now());
+  assert.equal((await send(env, { device: 'd-device-0001', mobile: true, day: today, counts: { rival: { starts: 3, ends: 2 }, challenge: { starts: 1, ends: 1 } } })).status, 204);
+  const [row] = env.DB.rows(STATS_SQL);
+  assert.deepEqual([row['시작한 판'], row['끝낸 판'], row['10구 도전'], row['대결 판'], row['대결 끝'], row['도전장 판']], [4, 3, 1, 3, 2, 0]);
+  const late = { device: 'd-device-0002', mobile: true, day: FUNNEL_FROM, counts: { rival: { starts: 1, ends: 0, restarts: 1 } } };
+  assert.deepEqual(validateEvent(late, FUNNEL_FROM), { ok: false, error: 'bad_counts' });
 });
 
 // 게임이 모아 보내는 묶음(2026-11-04, js/infra/stats.js): { device, mobile, day, counts: { 모드: { starts, ends } } }

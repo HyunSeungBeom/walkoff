@@ -34,6 +34,15 @@ export async function postScenario(body) {
   return { status: res.status, data: await res.json().catch(() => ({})) };
 }
 
+// 모르는 사람과 대결의 상대(서버 worker/src/rival.js, 2026-11-23). 로그인 없이 묻는다(로그인 머리글을 안 붙여 미리 묻는 요청도 없다).
+// score: 내 최근 최고 점수(없으면 null), seen: 이 기기가 이미 친 공 순서의 시드(최근 것부터), playerId: 이 브라우저의 랭킹 ID(내 판을 뺀다).
+// 답의 상태 번호와 내용을 돌려준다(연결이 안 되면 던진다)
+export async function fetchRival({ score, seen, playerId }) {
+  const q = new URLSearchParams({ score: score == null ? '' : String(score), seen: seen.map((s) => s.toString(36)).join(','), player: playerId });
+  const res = await fetch(`${RANKING_API}/rival?${q}`);
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+
 // 이번 주 랭킹. playerId는 이 브라우저의 랭킹 ID(서버가 내 줄을 표시한다)
 export async function fetchRanking(playerId) {
   const res = await fetch(`${RANKING_API}/rankings?player=${encodeURIComponent(playerId)}`);

@@ -14,6 +14,7 @@ import { TITLE_IDS } from '../../js/core/titles.js';
 import { CHAMP_FROM } from '../../js/core/catalog.js';
 import { giveTag, parseFind, findPlayers, sendGift, giftsLeft, inboxOf, markSeen } from './gifts.js';
 import { missionsIn, grantMissions } from './missions.js';
+import { RIVAL_FROM, parseRivalQuery, findRival } from './rival.js';
 
 const HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -30,8 +31,9 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), { status
 // 로그인 없이 받는 경로의 횟수 제한(wrangler.toml [[ratelimits]], 무료). IP마다 센다. 바인딩이 없으면(서버 테스트) 세지 않는다(wrangler dev는 흉내 내서 센다).
 // 넘으면 429: 게임은 통계를 sendBeacon으로 보내 답을 안 보고, 랭킹 화면은 '잠시 뒤 다시'를 띄운다.
 // 선물 받는 사람 찾기(/players, 2026-11-10)와 시드 표(/seeds, 2026-11-18 서명한 표)는 로그인한 사람만 쓰고 계정마다 센다(key).
-// Cloudflare 위치마다 따로 세서, 무료 플랜에서 한국 요청이 미국 두 곳(LAX·SJC)으로 나뉘면 실제로는 정한 수의 두 배쯤에서 걸린다(2026-11-18 실서버 129번 중 127번째부터 429)
-const LIMITERS = { '/events': 'EVENTS_LIMIT', '/rankings': 'RANKINGS_LIMIT', '/players': 'PLAYERS_LIMIT', '/seeds': 'SEEDS_LIMIT' };
+// Cloudflare 위치마다 따로 세서, 무료 플랜에서 한국 요청이 미국 두 곳(LAX·SJC)으로 나뉘면 실제로는 정한 수의 두 배쯤에서 걸린다(2026-11-18 실서버 129번 중 127번째부터 429).
+// 대결 상대 고르기(/rival, 2026-11-23)는 로그인 없이 받아 IP마다 센다
+const LIMITERS = { '/events': 'EVENTS_LIMIT', '/rankings': 'RANKINGS_LIMIT', '/players': 'PLAYERS_LIMIT', '/seeds': 'SEEDS_LIMIT', '/rival': 'RIVAL_LIMIT' };
 async function limited(request, env, path, key = request.headers.get('cf-connecting-ip') ?? 'unknown') {
   const limiter = env[LIMITERS[path]];
   if (!limiter) return false;
@@ -165,6 +167,14 @@ export default {
         const asked = url.searchParams.get('week') ?? '';
         const week = /^\d{4}-\d{2}-\d{2}$/.test(asked) ? weekStart(asked) : weekStart(kstDay(now));
         return json(await rankings(env.DB, week, url.searchParams.get('player'), now, { looks: true }));
+      }
+      // 모르는 사람과 대결(rival.js): 다른 사람의 최근 하루 최고 판 하나(타이밍 없이). 처리방침에 알린 날 + 7일(RIVAL_FROM) 전에는 내주지 않는다
+      if (url.pathname === '/rival' && method === 'GET') {
+        if (await limited(request, env, '/rival')) return tooMany();
+        if (kstDay(now) < RIVAL_FROM) return json({ ok: false, error: 'not_yet', from: RIVAL_FROM }, 403);
+        const q = parseRivalQuery(url.searchParams);
+        if (!q.ok) return json({ ok: false, error: q.error }, 400);
+        return json({ ok: true, rival: await findRival(env.DB, q.value, now) });
       }
       if (url.pathname === '/auth/kakao/start' && method === 'GET') return await loginStart(url, env, now);
       if (url.pathname === '/auth/kakao/callback' && method === 'GET') return await loginCallback(url, env, now);

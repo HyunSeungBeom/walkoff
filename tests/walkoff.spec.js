@@ -74,6 +74,11 @@ async function mockApi(page, opts = {}) {
     }
     if (fail) return reply({ ok: false, error: 'server_error' }, 500);
     if (['/seeds', '/me', '/scores', '/scenario', '/shop/buy', '/shop/equip', '/title', '/players', '/shop/gift', '/gifts/seen'].includes(url.pathname) && auth !== `Bearer ${SESSION}`) return reply({ ok: false, error: 'login_required' }, 401);
+    // 대결 상대(worker/src/rival.js, 2026-11-23): rival이 함수면 (보낸 값) => 상대나 null, 또는 { status, body }(오류 답). 객체면 늘 그 상대, 없으면 상대 없음
+    if (url.pathname === '/rival') {
+      const r = typeof opts.rival === 'function' ? opts.rival(Object.fromEntries(url.searchParams)) : opts.rival;
+      return r?.status ? reply(r.body, r.status) : reply({ ok: true, rival: r ?? null });
+    }
     if (url.pathname === '/scenario') {   // 끝내기 상황: 실제 서버 코드(replayScenario)로 표의 시드로 판을 다시 돌려 끝·점수를 정하고 코인을 준다
       if (opts.scenarioFail) return reply({ ok: false, error: 'server_error' }, 500);
       const { token, bats, moves } = JSON.parse(req.postData() || '{}'), ticket = tickets.find((t) => t.token === token);
@@ -1249,10 +1254,12 @@ test.describe('화면', () => {
       if (!isMobile) return opened(() => tap(page, label));
       await touchEv('pointerdown', r.x + r.w / 2, r.y + r.h / 2);
       await page.waitForTimeout(300);
-      await touchEv('pointerup', r.x + r.w / 2, r.y - 60);   // 끌어서 링크 밖에서 떼면 안 연다
+      await touchEv('pointermove', r.x + r.w / 2, r.y - 60);   // 끌어서(메뉴가 넘치면 끌어 넘긴다. 2026-11-23 대결 줄로 Pixel 7 높이에서도 넘친다)
+      await touchEv('pointerup', r.x + r.w / 2, r.y - 60);   // 링크 밖에서 떼면 안 연다
       await page.waitForTimeout(300);
       expect(popups, label).toEqual([]);
-      return opened(() => page.touchscreen.tap(r.x + r.w / 2, r.y + r.h / 2));
+      const at = await rect(label);   // 끌어 넘겼으면 자리가 바뀌었다
+      return opened(() => page.touchscreen.tap(at.x + at.w / 2, at.y + at.h / 2));
     };
     // 메뉴: 새 소식 띠 바로 아래 '의견 보내기' 띠(만든 사람 한마디와 바깥 화살표)
     await page.evaluate(() => walkoff.openMenu());
@@ -1415,8 +1422,8 @@ test.describe('화면', () => {
       expect(end.fade, `${w}×${h} 끝`).toEqual({ top: true, bottom: false });
       expect(end.last.y + end.last.h, `${w}×${h} 마지막 줄이 화면 안`).toBeLessThanOrEqual(h);
     }
-    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max])).toEqual([390, 111]);   // 390×664(아이폰 사파리)는 의견 보내기 띠·칭호 줄(2026-11-05)·소리 줄(2026-11-12)을 더해 두 줄쯤 넘친다(PC라 진동 줄이 없어 11줄).
-    // 오늘의 미션 띠(2026-11-23)로 34px 늘고 더 좁게(MENU_SIZE.tight)로 31px 줄어 108 → 111px
+    expect(await page.evaluate(() => [walkoff.view.w, walkoff.menu.max])).toEqual([390, 158]);   // 390×664(아이폰 사파리)는 의견 보내기 띠·칭호 줄(2026-11-05)·소리 줄(2026-11-12)을 더해 두 줄쯤 넘친다(PC라 진동 줄이 없어 대결 줄까지 12줄).
+    // 오늘의 미션 띠(2026-11-23)로 34px 늘고 더 좁게(MENU_SIZE.tight)로 31px 줄어 108 → 111px, 대결 줄(2026-11-23)로 47px 늘어 158px
     await page.setViewportSize({ width: 360, height: 480 });   // 카카오톡 안 브라우저처럼 낮은 폰(PC라 진동 줄이 없어 11줄)
     await expect.poll(() => page.evaluate(() => walkoff.menu.max)).toBeGreaterThan(0);
     const box = await page.locator('canvas').boundingBox(), row = (await buttons()).find((b) => b.label === '연습').r;
@@ -2280,7 +2287,7 @@ test.describe('화면', () => {
     });
     expect(rows.map((r) => r.s).join(' ')).toBe([
       '카카오에서는 회원번호만 받아 비밀 키로 바꾼 값만 저장해요.',
-      '닉네임·팀·점수는 랭킹·선물 찾기와 칭호·코인·미션 같은 내 기록에만 써요.',
+      '닉네임·팀·점수는 랭킹·대결 상대(12월 1일부터)·선물 찾기와 칭호·코인·미션 같은 내 기록에만 써요.',
       '판 수·스윙 수, 오류 종류, 처음 온 날 들어온 길과 어디까지 쳤는지(11월 30일부터) 같은 이용 통계는 기기에 만든 무작위 번호로만 보내고, 계정이나 닉네임과는 잇지 않아요.',
       '도전장 주소에는 보낸 사람의 닉네임·팀·점수가 실려요.',
       '랭킹 기록 지우기를 누르면 서버의 계정과 기록을 바로 지워요. 복구용 기록은 7일 뒤 사라져요.',
@@ -3597,6 +3604,188 @@ test.describe('친구 도전장', () => {
     }
     await startTap(page);
     expect(await page.evaluate(() => ({ state: walkoff.game.state, duelTry: walkoff.game.duelTry }))).toEqual({ state: 'loginPrompt', duelTry: 0 });   // 그냥 10구 도전
+    expect(errors).toEqual([]);
+  });
+});
+
+// 모르는 사람과 대결(2026-11-23 사용자, js/game/rival.js·worker/src/rival.js). 가짜 서버의 /rival은 RIVAL(도전장 SENDER와 같은 시드 42 판)을 준다
+const rivalMod = () => import(pathToFileURL(path.join(__dirname, '..', 'js', 'game', 'rival.js')).href);
+const RIVAL = { seed: 42, style: 'classic', bats: 'L', score: 300, lights: 'SRRRRRRRRR', nick: '골든', team: 'lotte' };
+const rivalDayOf = (from) => `${Number(from.slice(5, 7))}/${Number(from.slice(8))}`;   // '11/30'
+// 시드 seed의 공을 모두 지켜본 판(실제로 나올 수 있는 전광판·점수)을 낸 다른 상대
+async function watchedRival(seed, patch = {}) {
+  const core = (f) => import(pathToFileURL(path.join(__dirname, '..', 'js', 'core', f)).href);
+  const [{ makeSequence, pitcherHand, zoneMiss }, { playChallenge }] = await Promise.all([core('pitches.js'), core('challenge.js')]);
+  const seq = makeSequence(seed, pitcherHand(seed) === 'L'), moves = [];
+  for (let left = 10, i = 0; left > 0; i++) { moves.push(null); if (!(zoneMiss(seq[i]) > 0)) left--; }
+  const g = playChallenge(seq, moves, 'R');
+  return { ...RIVAL, seed, score: g.score, lights: g.lights, nick: '민성', team: 'lg', bats: 'R', ...patch };
+}
+const rivalCalls = (errors) => errors.calls.filter((c) => c.path === '/rival');
+// 상대를 묻고 난 뒤의 알림(묻는 동안의 '상대를 찾는 중…'은 건너뛴다)
+const rivalToast = async (page) => {
+  await page.waitForFunction(() => walkoff.game.toast && walkoff.game.toast.text !== '상대를 찾는 중…');
+  return page.evaluate(() => walkoff.game.toast.text);
+};
+
+test.describe('모르는 사람과 대결', () => {
+  test.beforeEach(async ({ page }) => {   // 여는 날(RIVAL_FROM) 낮. 공유는 도전장 시험처럼 가로채 window.__shared에 남긴다
+    const { RIVAL_FROM } = await rivalMod();
+    await page.clock.setFixedTime(new Date(`${RIVAL_FROM}T12:00:00+09:00`));
+    await page.addInitScript(() => {
+      window.__shared = null;
+      navigator.share = async (data) => { window.__shared = data.text; };
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.__shared = t; } } });
+    });
+  });
+
+  test('메뉴 대결은 서버가 골라 준 상대 판을 시작 화면에 보이고 같은 공·상대 타석으로 친다. 첫 판만 전적에 세고 랭킹·코인·연속·최고 기록에 안 들어가며, 같은 상대 다시는 N번째 도전이다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { api: { rival: RIVAL } });
+    await page.evaluate(() => { walkoff.store.set('best', 5000); walkoff.openMenu(); });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['대결', '비슷한 점수와 같은 공']));
+    await tap(page, '대결');
+    await page.waitForFunction(() => walkoff.game.state === 'title' && !!walkoff.game.duel);
+    const pid = await page.evaluate(() => walkoff.settings.playerId);
+    expect(rivalCalls(errors).map((c) => c.query)).toEqual([{ score: '5000', seen: '', player: pid }]);   // 이 기기 최고 점수, 아직 친 공 없음, 내 랭킹 번호
+    expect(await page.evaluate(() => ({ duel: walkoff.game.duel, bats: walkoff.settings.bats, saved: localStorage.getItem('walkoff.bats') })))
+      .toEqual({ duel: { ...RIVAL, n: 1, rival: true }, bats: 'L', saved: null });   // 상대 타석을 고르지만 저장하지는 않는다
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['골든님과 대결 · 300점', '점수가 비슷한 상대예요 · 같은 공으로 넘겨 보세요']));
+    await startTap(page);
+    expect(await page.evaluate(() => {
+      const g = walkoff.game, want = walkoff.makeSequence(42, walkoff.pitcherHand(42) === 'L');
+      return { state: g.state, seed: g.seed, duelTry: g.duelTry, style: g.style, same: JSON.stringify(g.seq) === JSON.stringify(want), ticket: g.ticket };
+    })).toEqual({ state: 'windup', seed: 42, duelTry: 1, style: 'classic', same: true, ticket: null });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['골든', '300점']));   // 전광판 아래 상대 줄
+    await endTry(page, { score: 500 });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['골든님과 대결 · 300점', '이겼어요! 200점 더 쳤어요', '대결 전적 1승 0패 · 랭킹에는 안 올라가요']));
+    const labels = await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label));
+    expect(labels).toEqual(expect.arrayContaining(['결과 공유하기', '다른 상대', '같은 상대 다시', '10구 도전 하기']));
+    expect(labels.filter((l) => ['되갚기', '다시 하기', '처음으로', '비슷한 사람과 대결 ›'].includes(l) || /랭킹/.test(l))).toEqual([]);   // 전적 줄은 누르는 줄이 아니다
+    const records = () => page.evaluate(() => ({ rivals: walkoff.store.get('rivals', null), duels: walkoff.store.get('duels', null), played: walkoff.store.keys('played.').length,
+      best: walkoff.store.get('best', 0), week: walkoff.store.get('weekBest', null), counts: walkoff.store.get('titleCounts', null), timing: walkoff.store.get('timingLog', null) }));
+    expect(await records()).toEqual({ rivals: { w: 1, l: 0, d: 0 }, duels: [{ seed: 42, tries: 1, first: 500 }], played: 0, best: 5000, week: null, counts: null, timing: null });
+    await tap(page, '같은 상대 다시');
+    expect(await page.evaluate(() => ({ seed: walkoff.game.seed, duelTry: walkoff.game.duelTry }))).toEqual({ seed: 42, duelTry: 2 });
+    await endTry(page, { score: 100 });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['골든님과 대결 · 2번째 도전', '골든님 300점에 200점 모자라요', '대결 전적 1승 0패 · 랭킹에는 안 올라가요']));   // 다시 친 판은 전적에 안 센다
+    expect((await records()).rivals).toEqual({ w: 1, l: 0, d: 0 });
+    await tap(page, '10구 도전 하기');   // 대결을 나가 랭킹 판으로: 저장한 타석으로
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, duel: walkoff.game.duel, bats: walkoff.settings.bats }))).toEqual({ state: 'loginPrompt', duel: null, bats: 'R' });
+    expect(errors.calls.filter((c) => c.path !== '/rival')).toEqual([]);   // 로그인 안 한 대결 판은 상대를 묻는 것 말고 아무것도 보내지 않는다
+    expect(errors).toEqual([]);
+  });
+
+  test('다른 상대(스페이스바·단추)는 이 기기가 이미 친 공을 빼고 새 상대를 묻는다. 진 판·비긴 판도 전적에 세고 메뉴 대결 줄에 전적이 보이며, 다 치면 새 상대가 없다고 알린다', async ({ page }) => {
+    const other = await watchedRival(7);
+    const errors = await open(page, '?seed=42', { api: { rival: (q) => [RIVAL, other].find((r) => !q.seen.split(',').includes(r.seed.toString(36))) ?? null } });
+    await page.evaluate(() => walkoff.openRival());
+    await page.waitForFunction(() => walkoff.game.duel?.seed === 42);
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['골든님과 대결 · 300점', '같은 공으로 넘겨 보세요 · 랭킹 없음']));   // 이 기기 점수가 없으면 '점수가 비슷한'이라고 하지 않는다
+    await startTap(page);
+    await endTry(page, { score: 0 });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['졌어요 · 300점 모자라요', '대결 전적 0승 1패 · 랭킹에는 안 올라가요']));
+    await page.waitForFunction(() => walkoff.game.resultT > 0.6);
+    await page.keyboard.press('Space');   // 대결 끝 화면의 스페이스바는 다른 상대
+    await page.waitForFunction((s) => walkoff.game.state === 'title' && walkoff.game.duel?.seed === s, other.seed);
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining([`민성님과 대결 · ${other.score.toLocaleString()}점`]));
+    expect(await page.evaluate(() => walkoff.settings.bats)).toBe('R');   // 새 상대 타석
+    await startTap(page);
+    await endTry(page, { score: other.score });
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['비겼어요 · 같은 점수예요', '대결 전적 0승 1패 1무 · 랭킹에는 안 올라가요']));
+    await tap(page, '다른 상대');
+    expect(await rivalToast(page)).toBe('지금은 새 상대가 없어요');
+    expect(await page.evaluate(() => walkoff.game.state)).toBe('over');   // 화면은 그대로
+    expect(rivalCalls(errors).map((c) => c.query.seen)).toEqual(['', '16', '7,16']);   // 이미 친 공(최근 것부터, 42는 36진수로 16)
+    await page.evaluate(() => walkoff.openMenu());
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['대결', '0승 1패 1무']));
+    expect(errors).toEqual([]);
+  });
+
+  test('상대가 없거나(빈 답·검사에 걸린 판) 서버가 막으면(429·403·500·연결 끊김) 그 까닭을 알리고 메뉴에 그대로 있는다', async ({ page }) => {
+    const { RIVAL_FROM } = await rivalMod();
+    let answer = null;
+    const errors = await open(page, '?seed=42', { api: { rival: () => answer } });
+    const ask = async () => {
+      await page.evaluate(() => { walkoff.game.toast = null; walkoff.openMenu(); });
+      await tap(page, '대결');
+      const toast = await rivalToast(page);
+      return { toast, ...(await page.evaluate(() => ({ state: walkoff.game.state, duel: walkoff.game.duel }))) };
+    };
+    const cases = [
+      [null, '지금은 새 상대가 없어요'],
+      [{ ...RIVAL, score: 99999 }, '지금은 새 상대가 없어요'],   // 그 전광판으로 낼 수 없는 점수
+      [{ ...RIVAL, team: null }, '지금은 새 상대가 없어요'],   // 대결 상대는 랭킹 판이라 팀이 있어야 한다
+      [{ status: 429, body: { ok: false, error: 'rate_limited' } }, '잠시 뒤 다시 눌러 주세요'],
+      [{ status: 403, body: { ok: false, error: 'not_yet', from: RIVAL_FROM } }, `대결은 ${rivalDayOf(RIVAL_FROM)}부터 열려요`],   // 기기 시계가 서버보다 빠를 때
+      [{ status: 500, body: { ok: false, error: 'server_error' } }, '상대를 불러오지 못했어요'],
+    ];
+    for (const [a, want] of cases) {
+      answer = a;
+      expect(await ask(), JSON.stringify(a)).toEqual({ toast: want, state: 'menu', duel: null });
+    }
+    await page.route(`${API}/rival**`, (route) => route.abort());   // 연결이 끊김
+    expect(await ask()).toEqual({ toast: '상대를 불러오지 못했어요', state: 'menu', duel: null });
+    expect(errors).toEqual([]);
+  });
+
+  test('여는 날 전에는 메뉴 대결 줄이 여는 날만 알리고 서버에 묻지 않으며 10구 끝 화면에 대결 링크가 없다. 여는 날부터는 10구 끝 화면 링크로 연다', async ({ page }) => {
+    const { RIVAL_FROM } = await rivalMod(), day = rivalDayOf(RIVAL_FROM), midnight = Date.parse(`${RIVAL_FROM}T00:00:00+09:00`);
+    await page.clock.setFixedTime(midnight - 60_000);   // 여는 날 전날 밤 11시 59분
+    const errors = await open(page, '?seed=42', { api: { rival: RIVAL } });
+    await page.evaluate(() => walkoff.openMenu());
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['대결', `${day}부터 열려요`]));
+    await tap(page, '대결');
+    expect(await rivalToast(page)).toBe(`대결은 ${day}부터 열려요`);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await endTry(page);
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '처음으로'));
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).not.toContain('비슷한 사람과 대결 ›');
+    expect(rivalCalls(errors)).toEqual([]);
+    await page.clock.setFixedTime(midnight);   // 자정이 지났다
+    await tap(page, '비슷한 사람과 대결 ›');
+    await page.waitForFunction(() => walkoff.game.state === 'title' && !!walkoff.game.duel?.rival);
+    expect(rivalCalls(errors).map((c) => c.query.seen)).toEqual(['']);   // ?seed= 판은 도전장 기록에 안 남아 이미 친 공이 없다
+    expect(await drawnTexts(page)).toEqual(expect.arrayContaining(['골든님과 대결 · 300점']));
+    expect(errors).toEqual([]);
+  });
+
+  test('대결 끝 화면의 결과 공유하기는 상대를 싣지 않고 내 점수로 같은 공 도전장을 보낸다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { api: { rival: RIVAL } });
+    const { parseDuel } = await duelMod();
+    await page.evaluate(() => walkoff.openRival());
+    await page.waitForFunction(() => !!walkoff.game.duel?.rival);
+    await startTap(page);
+    await endTry(page, { full: true });
+    await tap(page, '결과 공유하기');
+    await page.waitForFunction(() => window.__shared != null);
+    const lines = (await page.evaluate(() => window.__shared)).split('\n');
+    expect(lines.slice(0, -1)).toEqual(['walkoff 10구 도전장 (좌타)', '테스트님 0점 · 홈런 0', '같은 공 40개로 이 점수를 넘겨 보세요']);   // 상대 닉네임·점수는 게임 밖으로 안 나간다
+    expect(parseDuel(new URL(lines.at(-1)).searchParams.get('vs'))).toEqual({ seed: 42, score: 0, lights: 'RRRRRRRRRR', team: 'lg', bats: 'L', n: 1, nick: '테스트', style: 'classic' });
+    expect(errors).toEqual([]);
+  });
+
+  test('게임과 서버의 여는 날이 같고, 서버가 고른 판(실제 서버가 남기는 꼴)을 게임 검사가 그대로 받는다', async ({ page }) => {
+    const server = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rival.js')).href);
+    const { RIVAL_FROM } = await rivalMod();
+    expect(server.RIVAL_FROM).toBe(RIVAL_FROM);
+    await open(page, '?seed=42');
+    expect(await page.evaluate(async () => (await import('./js/game/rival.js')).RIVAL_FROM)).toBe(RIVAL_FROM);   // 배포한 게임이 읽는 파일
+    const other = await watchedRival(7);
+    const row = { player_id: 'p-other-0001', score: other.score, lights: other.lights, nick: other.nick, team: other.team, play: JSON.stringify({ seed: 7, style: 'classic', bats: 'R', moves: [0, null] }) };
+    const picked = server.pickRival([row], { target: 0 });
+    expect(await page.evaluate(async (r) => (await import('./js/game/rival.js')).parseRival(r), picked)).toEqual({ ...other, n: 1, rival: true });
+  });
+
+  test('처음 온 사람(팀 없음)도 로그인 없이 대결하고, 상대 팀 옷은 입지 않으며 끝 화면에서 팀을 고른다', async ({ page }) => {
+    const errors = await open(page, '?seed=42', { team: null, api: { rival: RIVAL } });
+    const plain = await page.evaluate(() => walkoff.batterColors().jersey);
+    await page.evaluate(() => walkoff.openRival());
+    await page.waitForFunction(() => !!walkoff.game.duel?.rival);
+    await startTap(page);
+    expect(await page.evaluate(() => ({ state: walkoff.game.state, jersey: walkoff.batterColors().jersey }))).toEqual({ state: 'windup', jersey: plain });   // 로그인 권유 없이 바로, 중립 옷
+    await endTry(page, { score: 500 });
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '다른 상대'));   // 끝 화면으로 넘어간 직후에는 단추 목록이 앞 화면 것이다
+    expect(await page.evaluate(() => walkoff.ui.buttons.map((b) => b.label))).toEqual(expect.arrayContaining(['팀을 고르고 주간 랭킹에 올라가요 ›', '다른 상대']));
     expect(errors).toEqual([]);
   });
 });
@@ -6187,6 +6376,29 @@ test.describe('여러 기기(2026-11-18): 뗄 때 공유·낮은 화면·가로 
     await startTap(page);
     await endTry(page, { score: 500 });
     expect(await linkUnder('10구 도전 하기')).toBeLessThanOrEqual(460 - 40 - 6);
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
+    expect(errors).toEqual([]);
+  });
+
+  test('낮은 폰(320×460)에서 대결이 열린 10구 끝 화면의 처음으로·대결 링크와 대결 끝 화면 단추가 모두 화면 안이고 서로·아래 주소와 안 겹친다(2026-11-23 모르는 사람과 대결)', async ({ page, isMobile }) => {
+    test.skip(!isMobile, '폰 배치');
+    const { RIVAL_FROM } = await rivalMod();
+    await page.clock.setFixedTime(new Date(`${RIVAL_FROM}T12:00:00+09:00`));
+    await page.setViewportSize({ width: 320, height: 460 });
+    const errors = await open(page, '?seed=42', { api: { rival: RIVAL } });
+    const under = (label) => page.evaluate((l) => { const r = walkoff.ui.buttons.find((b) => b.label === l).r; return r.y + r.h / 2 + 10; }, label);
+    await page.evaluate(() => walkoff.startGame('challenge'));
+    await endTry(page);
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '비슷한 사람과 대결 ›'));
+    for (const l of ['처음으로', '비슷한 사람과 대결 ›']) expect(await under(l)).toBeLessThanOrEqual(460 - 40 - 6);   // 아래 주소 위
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
+    await tap(page, '비슷한 사람과 대결 ›');
+    await page.waitForFunction(() => walkoff.game.state === 'title' && !!walkoff.game.duel?.rival);
+    expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
+    await startTap(page);
+    await endTry(page, { score: 500 });
+    await page.waitForFunction(() => walkoff.ui.buttons.some((b) => b.label === '같은 상대 다시'));
+    for (const l of ['같은 상대 다시', '10구 도전 하기']) expect(await under(l)).toBeLessThanOrEqual(460 - 40 - 6);
     expect(await buttonsFit(page)).toEqual({ out: [], cross: [] });
     expect(errors).toEqual([]);
   });

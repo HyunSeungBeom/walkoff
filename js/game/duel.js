@@ -37,19 +37,24 @@ export function duelCode(d) {
   return [...(style === 'classic' ? ['a'] : ['b', style]), d.seed.toString(36), d.score.toString(36), d.lights, d.team ?? '-', d.bats, toB64(d.nick), d.n.toString(36)].join('.');
 }
 
-// 주소의 ?vs= 값을 검사해 d로 돌려준다. 하나라도 틀리면 null(그때 게임은 도전장 없이 연다).
-// 닉네임만은 규칙에 안 맞아도(욕·투명 글자·망가진 글자) 도전장을 열고 nick을 null로 준다. 게임은 보낸 사람을 '친구'로 보인다
+// 주소의 ?vs= 값을 검사해 d로 돌려준다. 하나라도 틀리면 null(그때 게임은 도전장 없이 연다)
 export function parseDuel(code) {
   const f = String(code ?? '').split('.');
   const style = f[0] === 'a' && f.length === 8 ? 'classic' : f[0] === 'b' && f.length === 9 && isStyle(f[1]) ? f[1] : null;
   if (!style) return null;
   const [s36, score36, lights, team, bats, nick64, n36] = f.slice(-7);
-  const seed = int36(s36), score = int36(score36), n = int36(n36), nick = cleanNick(fromB64(nick64));
-  if (!(seed >= 1 && seed <= SEED_MAX) || !(score >= 0) || !(n >= 1 && n <= 999)) return null;
-  if (!LIGHTS.test(lights) || !(team === '-' || TEAM_IDS.includes(team)) || !(bats === 'L' || bats === 'R')) return null;
+  if (!(team === '-' || TEAM_IDS.includes(team))) return null;
+  return checkDuel({ seed: int36(s36), score: int36(score36), lights, team: team === '-' ? null : team, bats, n: int36(n36), nick: fromB64(nick64), style });
+}
+
+// 겨룰 판 d(꼴은 duelCode와 같다, team은 id나 null)를 검사해 돌려준다. 하나라도 틀리면 null. 도전장 주소(parseDuel)와 대결 상대(game/rival.js parseRival,
+// 2026-11-23 서버가 골라 준 판)가 같이 쓴다. 닉네임만은 규칙에 안 맞아도(욕·투명 글자·망가진 글자) 판을 열고 nick을 null로 준다(게임은 '친구'·'상대'로 보인다)
+export function checkDuel({ seed, score, lights, team, bats, n, nick, style }) {
+  if (!isStyle(style) || !(Number.isInteger(seed) && seed >= 1 && seed <= SEED_MAX) || !(Number.isInteger(score) && score >= 0) || !(Number.isInteger(n) && n >= 1 && n <= 999)) return null;
+  if (typeof lights !== 'string' || !LIGHTS.test(lights) || !(team == null || TEAM_IDS.includes(team)) || !(bats === 'L' || bats === 'R')) return null;
   const range = scoreRange(lights, makeSequence(seed, pitcherHand(seed) === 'L', style));   // 그 투수 유형의 공 순서로 나올 수 있는 전광판이고, 그 전광판으로 낼 수 있는 점수인지
   if (!range || score < range.min || score > range.max) return null;
-  return { seed, score, lights, team: team === '-' ? null : team, bats, n, nick, style };
+  return { seed, score, lights, team: team ?? null, bats, n, nick: cleanNick(nick), style };
 }
 
 // 이 브라우저가 도전장 공 순서로 친 기록 [{ seed, tries, first }](최근 것부터 DUEL_KEEP개). tries는 그 공으로 판을 시작한 수(보낸 사람이 처음 친 판도 1),
