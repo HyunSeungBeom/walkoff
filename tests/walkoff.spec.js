@@ -515,7 +515,9 @@ test.describe('한 판 끝까지', () => {
   test('실제로 친 10구 도전은 서버가 공마다 타이밍으로 다시 돌린 판과 점수·전광판이 같고, 서버 검사(서버가 내준 시드·한 판 칠 시간)를 통과한다', { tag: '@min' }, async ({ page }) => {
     test.slow();
     const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
-    const errors = await open(page, '', { login: true, api: { seed: 7 } });
+    // 서버처럼 표에 이번 주 투수를 싣는다. 없으면 게임은 정통파로, 서버는 표를 내준 주의 투수(2026-11-23부터 강속구형)로 돌려서
+    // 공마다 타이밍이 조금만 달라도 판이 어긋났다(11-23 CI: 6번째 공을 게임은 2루타, 서버는 홈런)
+    const errors = await open(page, '', { login: true, api: { seed: 7, style: rules.styleAt(Date.now()) } });
     await seedReady(page);
     await page.evaluate(() => walkoff.startGame('challenge'));
     const plan = [null, 0, -40, null, 60, 0, null, -120, 0, 30];   // 그냥 보내기(볼·스트라이크), 정타, 조금 빠름·늦음, 헛스윙을 섞는다
