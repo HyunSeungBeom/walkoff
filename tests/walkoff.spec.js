@@ -572,7 +572,8 @@ test.describe('한 판 끝까지', () => {
 
   test('시작 화면에서 누르면 늘 10구 도전이고, 끝까지 치면 점수를 보내고 연속 기록이 이어진다(어제도 쳤으면 2일 연속)', async ({ page }) => {
     test.slow();
-    const errors = await open(page, '', { login: true });
+    const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
+    const errors = await open(page, '', { login: true, api: { style: rules.styleAt(Date.now()) } });   // 서버처럼 표에 이번 주 투수를 싣는다(2026-11-23부터 정통파가 아니라 없으면 서버가 다시 돌린 판과 어긋난다)
     await setPlayedDays(page, [1]);   // 어제도 쳤다
     await page.keyboard.press('Space');   // 오늘의 10구는 2026-10-30에 없앴다
     expect(await page.evaluate(() => walkoff.game.mode)).toBe('challenge');
@@ -587,7 +588,6 @@ test.describe('한 판 끝까지', () => {
     expect(game.moves.length).toBe(game.lights.length);
     expect(sent.auth).toBe(`Bearer ${SESSION}`);
     expect(sent.body).toEqual({ nick: '테스트', team: 'lg', day: today, ...game, mode: 'challenge', seed: 42, bats: 'R', token: t.token });   // 사람 ID는 서버가 로그인 표에서 꺼낸다
-    const rules = await import(pathToFileURL(path.join(__dirname, '..', 'worker', 'src', 'rules.js')).href);
     // 실제로 친 판은 서버 검사를 통과하고, 서버가 다시 돌린 점수·전광판이 게임과 같다
     expect(rules.validateSubmission(sent.body, Date.now(), 'p-test-0001', ticketRow(t, 'p-test-0001'))).toMatchObject({ ok: true, value: { score: game.score, lights: game.lights, mismatch: null } });
     await page.waitForFunction(() => walkoff.game.rankInfo?.status === 'ok');
