@@ -16,7 +16,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # 2026-11-12 20 → 25분(사용자 결정). 11-11 테스트가 17분으로 20분에 가까웠다
+    timeout-minutes: 35   # 2026-11-23 25 → 35분(사용자 결정). 11-23 테스트가 24분 12초였는데 팀 대항전·대결 시험이 더해진다. 2026-11-12 20 → 25분(11-11 17분)
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
