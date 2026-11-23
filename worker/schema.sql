@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   tag INTEGER,                                   -- 바뀌지 않는 번호(게임은 '골든#4821', 0~9999, 4자리가 차면 10000~99999). 처음 로그인할 때 준다
   games INTEGER NOT NULL DEFAULT 0,              -- 10구 랭킹 판 수(선물은 GIFT_MIN_GAMES판 넘게 친 계정만)
   -- 공개 화면 지키기(2026-11-19, scripts/mod.mjs). 이미 있던 DB에는 migrations/0013_moderation.sql로 더했다
-  hidden_at INTEGER                              -- 계정을 숨긴 시각(ms). 숨긴 계정은 점수·선물을 못 보내고 받는 사람 찾기에 안 나온다
+  hidden_at INTEGER,                             -- 계정을 숨긴 시각(ms). 숨긴 계정은 점수·선물을 못 보내고 받는 사람 찾기에 안 나온다
+  -- 오늘의 미션(2026-11-23, src/missions.js). 이미 있던 DB에는 migrations/0016_missions.sql로 더했다
+  missions TEXT                                  -- 그날 미션 진행(JSON { day, n, paid }, js/core/missions.js). 다음 날 첫 랭킹 판에서 덮어쓴다
 );
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_tag ON accounts (tag);
 CREATE INDEX IF NOT EXISTS accounts_nick ON accounts (nick);   -- 받는 사람 찾기

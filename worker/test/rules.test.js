@@ -154,7 +154,7 @@ test('다시 돌리기(2026-11-19): 서버가 공마다 타이밍으로 판을 �
   const seed = 42, moves = movesBy(seed), game = replayOf(seed, moves);
   const send = (patch = {}, tk = ticket(seed)) => validateSubmission({ ...base, mode: 'challenge', token: 'tk', moves, bats: 'R', lights: game.lights, score: game.score, ...patch }, NOW, PID, tk);
   assert.deepEqual(send(), { ok: true, value: { playerId: PID, nick: base.nick, team: base.team, day: DAY, week: '2026-10-26', score: game.score, lights: game.lights, seed, style: 'classic',
-    play: JSON.stringify({ seed, style: 'classic', bats: 'R', moves }), mismatch: null } });
+    play: JSON.stringify({ seed, style: 'classic', bats: 'R', moves }), results: game.results, mismatch: null } });   // results: 오늘의 미션을 세는 공마다 결과(2026-11-23)
   // 숫자만 고친 요청(2026-10-30 조작처럼): 서버가 다시 돌린 값으로 받고, 보낸 값은 어긋남으로 알린다(로그에만 남는다)
   const forged = send({ score: 99999, lights: 'H'.repeat(10) });
   assert.deepEqual([forged.ok, forged.value.score, forged.value.lights, forged.value.mismatch], [true, game.score, game.lights, { score: 99999, lights: 'H'.repeat(10) }]);

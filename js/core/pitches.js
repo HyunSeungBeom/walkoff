@@ -35,8 +35,8 @@ export const isStyle = (s) => typeof s === 'string' && Object.keys(PITCHER_STYLE
 // 2026-11-23(월) 주부터 이 순서로 돌고, 그 전 주는 모두 정통파다(첫 주는 차이가 가장 큰 강속구형)
 export const STYLE_START = '2026-11-23';
 export const STYLE_ORDER = ['power', 'finesse', 'forkball', 'classic'];
-// 'YYYY-MM-DD'를 1970-01-01부터 센 날 수로(core는 시간을 몰라서 Date 없이 셈한다)
-function dayNo(day) {
+// 'YYYY-MM-DD'를 1970-01-01부터 센 날 수로(core는 시간을 몰라서 Date 없이 셈한다). 오늘의 미션(missions.js)도 이 수로 닷새 묶음을 나눈다
+export function dayNo(day) {
   const [y0, m, d] = day.split('-').map(Number), y = m <= 2 ? y0 - 1 : y0, era = Math.floor(y / 400), yoe = y - era * 400;
   return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + Math.floor((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1 - 719468;
 }

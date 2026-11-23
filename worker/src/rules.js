@@ -79,7 +79,8 @@ export function validateSubmission(b, nowMs, playerId, ticket = null) {
 }
 
 // 타이밍으로 판을 다시 돌려 받는다(위 validateSubmission). 타이밍이 없으면 moves_required, 모양이 틀리거나 판이 마지막 공에서 끝나지 않으면 bad_moves.
-// play는 그 판을 다시 돌릴 재료(시드·투수 유형·타석·공마다 타이밍)이고 그날 최고 판이면 daily_scores에 남는다(board.js saveDaily)
+// play는 그 판을 다시 돌릴 재료(시드·투수 유형·타석·공마다 타이밍)이고 그날 최고 판이면 daily_scores에 남는다(board.js saveDaily).
+// results는 다시 돌린 공마다 결과이고 오늘의 미션을 센다(missions.js, 저장하지 않는다)
 function replaySubmission(b, who, nowMs, ticket) {
   const { moves, bats } = b;
   if (moves === undefined) return { ok: false, error: 'moves_required' };
@@ -93,7 +94,7 @@ function replaySubmission(b, who, nowMs, ticket) {
   if (!game) return { ok: false, error: 'bad_moves' };
   const sent = { score: Number.isInteger(b.score) ? b.score : null, lights: String(b.lights ?? '').slice(0, SEQ_LEN) };
   const mismatch = sent.score !== game.score || sent.lights !== game.lights ? sent : null;   // 게임이 보낸 값(로그에만 남긴다)
-  return { ok: true, value: { ...who, week: weekStart(who.day), score: game.score, lights: game.lights, seed, style, play: JSON.stringify({ seed, style, bats, moves }), mismatch } };
+  return { ok: true, value: { ...who, week: weekStart(who.day), score: game.score, lights: game.lights, seed, style, play: JSON.stringify({ seed, style, bats, moves }), results: game.results, mismatch } };
 }
 
 // 앞 key가 큰 순서로 줄 세우고(같으면 다음 key), 모든 key가 같으면 같은 등수(1, 2, 2, 4). 같은 줄끼리는 목록 순서 그대로다
