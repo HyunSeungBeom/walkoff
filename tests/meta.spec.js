@@ -142,7 +142,7 @@ test.describe('주소 옮기기(2026-11-17)', () => {
     expect(tag('infra/stats.js')).toBeLessThan(tag('main.js'));
   });
 
-  test('CI가 새 주소(Cloudflare Pages)에도 올린다: 미리보기 태그만 새 주소로 바꾸고, 비밀값이 없으면 건너뛰고, 옛 주소를 먼저 올린다. 토큰은 따로 잡의 올리는 단계에만 준다', () => {
+  test('CI가 새 주소(Cloudflare Pages)에도 올린다: 미리보기 태그만 새 주소로 바꾸고, 비밀값이 없으면 건너뛰고, 옛 주소 배포를 기다리지 않는다. 토큰은 따로 잡의 올리는 단계에만 준다', () => {
     const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain(`import('./js/infra/site.js')`);   // 주소는 게임과 같은 곳에서 읽는다
     expect(ci).toContain('cp -r _site _cf');   // 테스트를 거친 같은 파일(앞 판 모듈 폴더 포함)
@@ -155,9 +155,10 @@ test.describe('주소 옮기기(2026-11-17)', () => {
     expect(ci).toContain('worker/node_modules/.bin/wrangler pages deploy _cf --project-name walkoff --branch main');
     expect(ci).toMatch(/if \[ -z "\$CLOUDFLARE_API_TOKEN" \] \|\| \[ -z "\$CLOUDFLARE_ACCOUNT_ID" \]; then [^\n]*exit 0; fi/);
     expect(ci).toContain('CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}');   // 토큰은 레포 비밀값으로만
-    // 2026-11-18 보안 검토: 새 주소는 옛 주소를 올린 뒤 따로 잡에서 올리고, 그 잡에는 옛 주소 배포 권한(id-token)이 없다
+    // 2026-11-18 보안 검토: 새 주소는 따로 잡에서 올리고, 그 잡에는 옛 주소 배포 권한(id-token)이 없다.
+    // 2026-11-24부터 옛 주소 배포를 기다리지 않고 만드는 잡(build)만 기다린다(옛 주소 배포가 실패해도 walkoff.kr은 올라간다)
     const cf = ci.slice(ci.indexOf('\n  deploy-cf:'));
-    expect(cf).toContain('\n    needs: deploy\n');
+    expect(cf).toContain('\n    needs: build\n');
     expect(cf).not.toContain('id-token');
     // 비밀값은 올리는 단계 하나에만 주고, 그 단계는 설치하지 않는다(wrangler는 앞 단계에서 비밀값 없이 받는다)
     expect(ci.match(/secrets\.CLOUDFLARE_\w+/g)).toEqual(['secrets.CLOUDFLARE_API_TOKEN', 'secrets.CLOUDFLARE_ACCOUNT_ID']);
@@ -167,6 +168,31 @@ test.describe('주소 옮기기(2026-11-17)', () => {
     expect(step).not.toMatch(/\bnpm\b|\bnpx\b/);
     expect(cf.indexOf('npm ci --prefix worker')).toBeGreaterThan(0);
     expect(cf.indexOf('npm ci --prefix worker')).toBeLessThan(at);
+  });
+
+  // 2026-11-24 옛 주소 배포가 'No artifacts named github-pages'(올린 묶음이 목록에 늦게 보이는 GitHub 쪽 오류, actions/deploy-pages#451)로 자주 실패했고,
+  // 올리기와 배포를 한 잡에서 해서 그 잡을 다시 돌리면 묶음이 하나 더 올라가 'Multiple artifacts'로 또 막혔다. 그래서 묶음은 만드는 잡(build)만 올린다
+  test('옛 주소(GitHub Pages)는 만드는 잡이 올린 묶음을 따로 잡에서 배포만 한다: 배포 잡을 다시 돌려도 묶음이 늘지 않고, 배포 권한이 있는 잡은 코드를 받거나 설치하지 않는다', () => {
+    const lines = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8').split('\n');
+    // 잡 하나의 줄(주석은 뺀다). 잡은 두 칸 들여 쓴 '이름:' 줄로 시작한다
+    const job = (name) => {
+      const at = lines.indexOf(`  ${name}:`), end = lines.findIndex((l, i) => i > at && /^ {2}[\w-]+:$/.test(l));
+      expect(at, name).toBeGreaterThan(0);
+      return lines.slice(at, end < 0 ? undefined : end).filter((l) => !/^\s*#/.test(l)).map((l) => l.replace(/\s+#\s.*$/, '')).join('\n');
+    };
+    const build = job('build'), pages = job('deploy'), cf = job('deploy-cf');
+    expect(build).toContain('\n    needs: test\n');
+    expect(build).not.toMatch(/id-token|pages: write/);   // npm ci로 남의 코드가 도는 잡이라 배포 권한이 없다
+    for (const up of ['actions/upload-artifact@', 'actions/upload-pages-artifact@']) {
+      expect(build, up).toContain(up);
+      expect(pages, up).not.toContain(up);   // 배포 잡만 다시 돌려도 같은 이름 묶음이 하나 더 생기지 않는다
+      expect(cf, up).not.toContain(up);
+    }
+    expect(pages).toContain('\n    needs: build\n');
+    expect(pages).toContain('id-token: write');
+    expect(pages).toContain('uses: actions/deploy-pages@');
+    expect(pages).not.toMatch(/actions\/checkout|\bnpm\b|\bnpx\b/);
+    expect(pages).toContain("if: steps.deployment.outcome == 'failure'");   // 첫 배포가 실패하면 한 번 더 한다
   });
 });
 

@@ -46,19 +46,12 @@ jobs:
           name: playwright-report
           path: playwright-report/
 
-  deploy:
+  # 배포할 파일을 만들어 묶음 둘(옛 주소 github-pages, 새 주소 cf-site)로 올린다. npm ci로 남의 코드가 도는 잡이라 배포 권한을 주지 않는다.
+  # 두 배포 잡은 이 잡만 기다리고 서로는 기다리지 않는다(2026-11-24): 옛 주소는 walkoff.kr로 넘겨 주기만 해서(11-20) 옛 주소 배포가 막혀도 새 주소는 올라가야 한다
+  build:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    concurrency:
-      group: pages
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -94,17 +87,43 @@ jobs:
           name: cf-site
           path: _cf
           retention-days: 1
-      - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+
+  # 옛 주소(GitHub Pages)는 앞 잡이 올린 묶음을 배포만 한다(2026-11-24). 올린 잡에서 바로 배포하면 방금 올린 묶음이 목록에 늦게 보이는 일(GitHub 쪽,
+  # actions/deploy-pages#451)로 'No artifacts named'가 나고, 그 잡을 다시 돌리면 같은 이름 묶음이 하나 더 올라가 'Multiple artifacts'로 또 막혔다.
+  # 잡을 나누면 목록을 읽기까지 몇 초가 지나고, 이 잡만 다시 돌려도 묶음은 하나다. 코드를 받거나 설치하지 않아 배포 권한(id-token)이 있는 잡에서 남의 코드가 안 돈다
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url || steps.retry.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v6
       - id: deployment
+        uses: actions/deploy-pages@v5
+        continue-on-error: true   # 묶음이 아직 안 보여 실패하면 30초 뒤 한 번 더 한다. 두 번째도 실패하면 잡이 실패한다(그때는 이 잡만 다시 돌린다)
+      - name: 첫 배포가 실패하면 30초 기다리기
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 30
+      - id: retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v5
 
   # 새 주소(Cloudflare Pages)는 따로 잡에서 올린다(2026-11-18 보안 검토): 옛 주소 배포 권한(id-token)이 없고, 토큰은 올리는 단계에만 준다.
-  # 옛 주소 다음에 올린다(Cloudflare가 막혀도 옛 주소는 배포된다). 새 주소는 index.html을 매번 다시 확인해서(max-age=0) 10분 캐시 문제는 작지만 앞 판 폴더는 같이 간다
+  # 옛 주소 배포와 같이 돈다(2026-11-24 전에는 옛 주소 다음이라 옛 주소가 실패하면 못 올라갔다). 새 주소는 index.html을 매번 다시 확인해서(max-age=0)
+  # 10분 캐시 문제는 작지만 앞 판 폴더는 같이 간다(옛 주소에서 읽은 앞 판이라, 옛 주소만 실패한 다음 판에서는 새 주소의 바로 앞 판과 다를 수 있다)
   deploy-cf:
-    needs: deploy
+    needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
